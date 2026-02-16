@@ -1,0 +1,129 @@
+name: Backend CI/CD
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - main
+  push:
+    branches:
+      - dev
+      - main
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  ci:
+    name: Test and Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Run tests
+        run: npm run test -- --runInBand --watchman=false
+
+  docker:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: ci
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_uri: ${{ steps.image.outputs.image_uri }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve image metadata
+        id: image
+        run: |
+          IMAGE_NAME="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
+          IMAGE_URI="${{ env.REGISTRY }}/${IMAGE_NAME}:${{ github.sha }}"
+          echo "image_name=${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ steps.image.outputs.image_uri }}
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.image_name }}:latest
+
+  deploy:
+    name: Deploy to Vultr
+    runs-on: ubuntu-latest
+    needs: docker
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Deploy container over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          IMAGE_URI: ${{ needs.docker.outputs.image_uri }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_PAT: ${{ secrets.GHCR_PAT }}
+          CONTAINER_NAME: lucent-backend
+          HOST_PORT: ${{ secrets.VULTR_HOST_PORT }}
+          CONTAINER_PORT: 3000
+          ENV_FILE_PATH: ${{ secrets.VULTR_ENV_FILE_PATH }}
+        with:
+          host: ${{ secrets.VULTR_HOST }}
+          username: ${{ secrets.VULTR_USER }}
+          key: ${{ secrets.VULTR_SSH_KEY }}
+          port: ${{ secrets.VULTR_SSH_PORT || 22 }}
+          script_stop: true
+          envs: IMAGE_URI,GHCR_USERNAME,GHCR_PAT,CONTAINER_NAME,HOST_PORT,CONTAINER_PORT,ENV_FILE_PATH
+          script: |
+            set -euo pipefail
+
+            echo "${GHCR_PAT}" | docker login ghcr.io -u "${GHCR_USERNAME}" --password-stdin
+            docker pull "${IMAGE_URI}"
+
+            docker stop "${CONTAINER_NAME}" || true
+            docker rm "${CONTAINER_NAME}" || true
+
+            if [ -n "${ENV_FILE_PATH:-}" ] && [ -f "${ENV_FILE_PATH}" ]; then
+              docker run -d \
+                --name "${CONTAINER_NAME}" \
+                --restart unless-stopped \
+                -p "${HOST_PORT:-3000}:${CONTAINER_PORT:-3000}" \
+                --env-file "${ENV_FILE_PATH}" \
+                "${IMAGE_URI}"
+            else
+              docker run -d \
+                --name "${CONTAINER_NAME}" \
+                --restart unless-stopped \
+                -p "${HOST_PORT:-3000}:${CONTAINER_PORT:-3000}" \
+                "${IMAGE_URI}"
+            fi
+
+            docker image prune -af --filter "until=72h"
