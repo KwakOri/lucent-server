@@ -150,18 +150,32 @@ curl -X POST http://localhost:3000/notifications/kakao/alimtalk \
 2. `SENDON_MOCK=false`로 설정
 3. SDK 구조에 맞게 factory/class/method env 값 조정
 
-## 4) Docker run
+## 4) Docker (local / deploy split)
 
-### Build image
+### Local backend only
 
 ```bash
-docker build -t lucent-backend:local .
+docker build -f Dockerfile.local -t lucent-backend:local .
+docker run --rm -p 3001:3000 lucent-backend:local
 ```
 
-### Run container
+If you have local env file, add `--env-file .env`.
+
+### Local frontend + backend together
+
+Run from project root (`lucent`):
 
 ```bash
-docker run --rm -p 3000:3000 --env-file .env lucent-backend:local
+docker compose -f backend/docker-compose.local.yml up --build
+```
+
+- Frontend: `http://localhost:3000`
+- Backend: `http://localhost:3001`
+
+### Deploy image build (CI/CD target)
+
+```bash
+docker build -f Dockerfile.deploy -t lucent-backend:deploy .
 ```
 
 ## 5) GitHub Actions CI/CD
@@ -180,7 +194,7 @@ Workflow file: `.github/workflows/backend-cicd.yml`
 
 - Trigger: `push` to `main`
 - Steps:
-  - Docker image build
+  - Docker image build (`Dockerfile.deploy`)
   - Push image to GHCR (`ghcr.io`)
   - SSH deploy to Vultr server
 

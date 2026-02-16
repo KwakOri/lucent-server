@@ -1,0 +1,58 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    container_name: lucent-backend-local
+    command: >
+      sh -c "if [ ! -d /app/node_modules/.bin ]; then npm ci; fi && npm run start:dev"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: development
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./:/app
+      - backend_node_modules:/app/node_modules
+    networks:
+      - lucent-local
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile.local
+    container_name: lucent-frontend-local
+    command: >
+      sh -c "if [ ! -d /app/node_modules/.bin ]; then npm ci; fi && npm run dev -- --hostname 0.0.0.0 --port 3000"
+    env_file:
+      - path: ../frontend/.env.local
+        required: false
+    environment:
+      NODE_ENV: development
+      BACKEND_API_URL: http://backend:3000
+      NEXT_PUBLIC_BACKEND_API_URL: http://localhost:3001
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../frontend:/app
+      - frontend_node_modules:/app/node_modules
+      - frontend_next:/app/.next
+    networks:
+      - lucent-local
+
+volumes:
+  backend_node_modules:
+  frontend_node_modules:
+  frontend_next:
+
+networks:
+  lucent-local:
+    driver: bridge

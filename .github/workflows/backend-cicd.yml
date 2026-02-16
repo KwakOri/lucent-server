@@ -72,7 +72,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
+          file: ./Dockerfile.deploy
           push: true
           tags: |
             ${{ steps.image.outputs.image_uri }}
