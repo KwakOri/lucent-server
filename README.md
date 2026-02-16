@@ -9,9 +9,21 @@ npm run start:dev
 
 ## 2) API overview
 
-- `GET /` : starter response
-- `GET /health` : health check
-- `POST /notifications/kakao/alimtalk` : Sendon 알림톡 전송
+All endpoints use `/api` prefix.
+
+- `GET /api/` : starter response
+- `GET /api/health` : health check
+- `POST /api/notifications/kakao/alimtalk` : Sendon 알림톡 전송
+- `GET /api/products` : 상품 목록 조회 (`ids`, `page`, `limit`, `projectId`, `type` 지원)
+- `GET /api/products/:id` : 상품 상세 조회
+- `GET /api/products/slug/:slug` : 상품 slug 조회
+- `GET /api/products/:id/sample` : 샘플 오디오 스트리밍
+- `GET /api/projects` : 프로젝트 목록 조회
+- `GET /api/projects/:id` : 프로젝트 상세 조회
+- `GET /api/projects/slug/:slug` : 프로젝트 slug 조회
+- `GET /api/artists` : 아티스트 목록 조회 (`projectId` 지원)
+- `GET /api/artists/:id` : 아티스트 상세 조회
+- `GET /api/artists/slug/:slug` : 아티스트 slug 조회
 
 Request example:
 
