@@ -45,6 +45,18 @@ All endpoints use `/api` prefix.
 - `GET /api/cart/count` : 장바구니 아이템 수 조회 (비로그인 시 `0`)
 - `PATCH /api/cart/:itemId` : 장바구니 아이템 수량 변경 (`Authorization` 필요)
 - `DELETE /api/cart/:itemId` : 장바구니 아이템 삭제 (`Authorization` 필요)
+- `GET /api/orders` : 주문 목록 조회 (사용자/관리자)
+- `POST /api/orders` : 주문 생성
+- `GET /api/orders/:id` : 주문 상세 조회
+- `PATCH /api/orders/:id` : 주문 상태 변경 (관리자)
+- `DELETE /api/orders/:id` : 주문 취소 (사용자, `PENDING`만)
+- `PATCH /api/orders/:id/status` : 주문 상태 변경 (관리자)
+- `PATCH /api/orders/:id/items/status` : 주문 아이템 상태 일괄 변경 (관리자)
+- `GET /api/orders/:id/items/:itemId/download` : 디지털 상품 다운로드 URL 생성
+- `GET /api/orders/:id/items/:itemId/shipment` : 배송 추적 정보 조회
+- `PATCH /api/admin/orders/bulk-update` : 주문 상태 일괄 변경 (관리자)
+- `GET /api/users/me/voicepacks` : 내 보이스팩 목록 조회
+- `GET /api/download/:productId` : 레거시 상품 다운로드 리다이렉트
 
 Request example:
 
@@ -64,6 +76,7 @@ curl -X POST http://localhost:3000/notifications/kakao/alimtalk \
 ## 3) Sendon runtime config
 
 ### Default mode
+
 - `SENDON_ENABLED=true`
 - `SENDON_MOCK=true`
 
@@ -131,6 +144,7 @@ docker run --rm -p 3000:3000 --env-file .env lucent-backend:local
 Workflow file: `.github/workflows/backend-cicd.yml`
 
 ### CI
+
 - Trigger: `pull_request` or `push` to `dev`, `main`
 - Steps:
   - `npm ci`
@@ -138,6 +152,7 @@ Workflow file: `.github/workflows/backend-cicd.yml`
   - `npm run test -- --runInBand --watchman=false`
 
 ### CD
+
 - Trigger: `push` to `main`
 - Steps:
   - Docker image build
