@@ -24,6 +24,7 @@ All endpoints use `/api` prefix.
 - `GET /api/artists` : 아티스트 목록 조회 (`projectId` 지원)
 - `GET /api/artists/:id` : 아티스트 상세 조회
 - `GET /api/artists/slug/:slug` : 아티스트 slug 조회
+- `GET /api/address/search` : 카카오 주소 검색 프록시 (`query`, `page`, `size`)
 
 Request example:
 
@@ -62,6 +63,7 @@ curl -X POST http://localhost:3000/notifications/kakao/alimtalk \
 - `SENDON_SDK_CLIENT_FACTORY` (default: `createClient`)
 - `SENDON_SDK_CLIENT_CLASS` (default: `SendonClient`)
 - `SENDON_SDK_SEND_METHOD` (default: `sendAlimtalk`)
+- `KAKAO_REST_API_KEY` (주소 검색 API 사용 시)
 
 ### Supabase (type-safe client)
 

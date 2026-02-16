@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AddressModule } from './address/address.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ArtistsModule } from './artists/artists.module';
@@ -9,7 +10,7 @@ import { ProjectsModule } from './projects/projects.module';
 import { SendonModule } from './sendon/sendon.module';
 
 @Module({
-  imports: [AppConfigModule, SendonModule, NotificationsModule, ProductsModule, ProjectsModule, ArtistsModule],
+  imports: [AppConfigModule, SendonModule, NotificationsModule, ProductsModule, ProjectsModule, ArtistsModule, AddressModule],
   controllers: [AppController],
   providers: [AppService],
 })
