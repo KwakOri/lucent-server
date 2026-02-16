@@ -25,6 +25,20 @@ All endpoints use `/api` prefix.
 - `GET /api/artists/:id` : 아티스트 상세 조회
 - `GET /api/artists/slug/:slug` : 아티스트 slug 조회
 - `GET /api/address/search` : 카카오 주소 검색 프록시 (`query`, `page`, `size`)
+- `POST /api/auth/send-verification` : 회원가입 이메일 인증코드 발송
+- `POST /api/auth/verify-code` : 이메일 인증코드 검증
+- `GET /api/auth/verify-email` : 이메일 링크 인증 후 프론트 페이지로 리다이렉트
+- `POST /api/auth/signup` : 인증 토큰 기반 회원가입 + 세션 발급
+- `POST /api/auth/login` : 로그인
+- `POST /api/auth/logout` : 로그아웃(토큰 검증)
+- `GET /api/auth/session` : 세션 확인 (`Authorization: Bearer <token>`)
+- `POST /api/auth/reset-password` : 비밀번호 재설정 메일 발송
+- `POST /api/auth/update-password` : 재설정 토큰으로 비밀번호 변경
+- `GET /api/profiles` : 내 프로필 조회 (`Authorization` 필요)
+- `GET /api/profiles/me` : 내 프로필 조회 (`Authorization` 필요)
+- `PATCH /api/profiles/me` : 내 프로필 수정 (`Authorization` 필요)
+- `GET /api/profiles/:id` : 프로필 조회
+- `PATCH /api/profiles/:id` : 프로필 수정 (`Authorization` 필요, 본인만)
 
 Request example:
 
@@ -64,6 +78,8 @@ curl -X POST http://localhost:3000/notifications/kakao/alimtalk \
 - `SENDON_SDK_CLIENT_CLASS` (default: `SendonClient`)
 - `SENDON_SDK_SEND_METHOD` (default: `sendAlimtalk`)
 - `KAKAO_REST_API_KEY` (주소 검색 API 사용 시)
+- `ADMIN_EMAILS` (comma-separated, 세션 응답의 관리자 판별)
+- `FRONTEND_APP_URL` (이메일 인증/비밀번호 재설정 리다이렉트 기준 URL)
 
 ### Supabase (type-safe client)
 
@@ -72,6 +88,17 @@ curl -X POST http://localhost:3000/notifications/kakao/alimtalk \
 - 필수 env:
   - `SUPABASE_URL`
   - `SUPABASE_SERVICE_ROLE_KEY`
+- 권장 env:
+  - `SUPABASE_ANON_KEY` (or `NEXT_PUBLIC_SUPABASE_ANON_KEY`)
+
+### SMTP (Auth 이메일 인증/비밀번호 재설정)
+
+- `SMTP_HOST` (default: `smtp.gmail.com`)
+- `SMTP_PORT` (default: `587`)
+- `SMTP_SECURE` (`true`/`false`, optional)
+- `SMTP_USER`
+- `SMTP_PASS`
+- `SMTP_FROM` (optional, 미설정 시 `SMTP_USER` 사용)
 
 ### Production (real SDK send)
 
