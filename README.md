@@ -51,6 +51,14 @@ curl -X POST http://localhost:3000/notifications/kakao/alimtalk \
 - `SENDON_SDK_CLIENT_CLASS` (default: `SendonClient`)
 - `SENDON_SDK_SEND_METHOD` (default: `sendAlimtalk`)
 
+### Supabase (type-safe client)
+
+- DB 타입 파일: `src/types/database.ts`
+- Supabase 클라이언트 유틸: `src/supabase/supabase.client.ts`
+- 필수 env:
+  - `SUPABASE_URL`
+  - `SUPABASE_SERVICE_ROLE_KEY`
+
 ### Production (real SDK send)
 
 1. Sendon SDK 패키지를 프로젝트에 설치
