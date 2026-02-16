@@ -39,6 +39,12 @@ All endpoints use `/api` prefix.
 - `PATCH /api/profiles/me` : 내 프로필 수정 (`Authorization` 필요)
 - `GET /api/profiles/:id` : 프로필 조회
 - `PATCH /api/profiles/:id` : 프로필 수정 (`Authorization` 필요, 본인만)
+- `GET /api/cart` : 장바구니 조회 (`Authorization` 필요)
+- `POST /api/cart` : 장바구니 상품 추가 (`Authorization` 필요)
+- `DELETE /api/cart` : 장바구니 비우기 (`Authorization` 필요)
+- `GET /api/cart/count` : 장바구니 아이템 수 조회 (비로그인 시 `0`)
+- `PATCH /api/cart/:itemId` : 장바구니 아이템 수량 변경 (`Authorization` 필요)
+- `DELETE /api/cart/:itemId` : 장바구니 아이템 삭제 (`Authorization` 필요)
 
 Request example:
 
