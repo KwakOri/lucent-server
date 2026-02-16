@@ -60,6 +60,10 @@ All endpoints use `/api` prefix.
 - `GET /api/logs` : 로그 목록 조회 (관리자, 필터/검색/페이지네이션)
 - `GET /api/logs/:id` : 로그 단건 조회 (관리자)
 - `GET /api/logs/stats` : 로그 통계 조회 (관리자)
+- `GET /api/images` : 이미지 목록 조회 (관리자)
+- `POST /api/images/upload` : 이미지 업로드 (관리자, multipart/form-data)
+- `GET /api/images/:id` : 이미지 단건 조회 (로그인 사용자)
+- `DELETE /api/images/:id` : 이미지 소프트 삭제 (관리자)
 
 Request example:
 
@@ -112,6 +116,14 @@ curl -X POST http://localhost:3000/notifications/kakao/alimtalk \
   - `SUPABASE_SERVICE_ROLE_KEY`
 - 권장 env:
   - `SUPABASE_ANON_KEY` (or `NEXT_PUBLIC_SUPABASE_ANON_KEY`)
+
+### Cloudflare R2 (Images)
+
+- `R2_ACCOUNT_ID`
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+- `R2_BUCKET_NAME`
+- `R2_PUBLIC_URL`
 
 ### SMTP (Auth 이메일 인증/비밀번호 재설정)
 

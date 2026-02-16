@@ -6,6 +6,7 @@ import { AuthModule } from './auth/auth.module';
 import { ArtistsModule } from './artists/artists.module';
 import { CartModule } from './cart/cart.module';
 import { AppConfigModule } from './config/app-config.module';
+import { ImagesModule } from './images/images.module';
 import { LogsModule } from './logs/logs.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { OrdersModule } from './orders/orders.module';
@@ -19,6 +20,7 @@ import { SendonModule } from './sendon/sendon.module';
     AppConfigModule,
     SendonModule,
     NotificationsModule,
+    ImagesModule,
     LogsModule,
     OrdersModule,
     ProductsModule,
