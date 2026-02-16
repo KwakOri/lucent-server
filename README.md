@@ -7,7 +7,57 @@ npm ci
 npm run start:dev
 ```
 
-## 2) Docker run
+## 2) API overview
+
+- `GET /` : starter response
+- `GET /health` : health check
+- `POST /notifications/kakao/alimtalk` : Sendon 알림톡 전송
+
+Request example:
+
+```bash
+curl -X POST http://localhost:3000/notifications/kakao/alimtalk \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "recipientPhone": "010-1234-5678",
+    "templateCode": "WELCOME",
+    "message": "환영합니다",
+    "templateVariables": {
+      "name": "홍길동"
+    }
+  }'
+```
+
+## 3) Sendon runtime config
+
+### Default mode
+- `SENDON_ENABLED=true`
+- `SENDON_MOCK=true`
+
+기본은 mock 모드라 실제 발송 없이 내부 로그/응답만 반환합니다.
+
+### Environment variables
+
+- `PORT` (default: `3000`)
+- `CORS_ORIGINS` (comma-separated)
+- `SENDON_ENABLED` (`true`/`false`)
+- `SENDON_MOCK` (`true`/`false`)
+- `SENDON_API_KEY`
+- `SENDON_API_SECRET`
+- `SENDON_SENDER_KEY`
+- `SENDON_BASE_URL` (optional)
+- `SENDON_SDK_PACKAGE` (default: `@sendon/sdk`)
+- `SENDON_SDK_CLIENT_FACTORY` (default: `createClient`)
+- `SENDON_SDK_CLIENT_CLASS` (default: `SendonClient`)
+- `SENDON_SDK_SEND_METHOD` (default: `sendAlimtalk`)
+
+### Production (real SDK send)
+
+1. Sendon SDK 패키지를 프로젝트에 설치
+2. `SENDON_MOCK=false`로 설정
+3. SDK 구조에 맞게 factory/class/method env 값 조정
+
+## 4) Docker run
 
 ### Build image
 
@@ -21,7 +71,7 @@ docker build -t lucent-backend:local .
 docker run --rm -p 3000:3000 --env-file .env lucent-backend:local
 ```
 
-## 3) GitHub Actions CI/CD
+## 5) GitHub Actions CI/CD
 
 Workflow file: `.github/workflows/backend-cicd.yml`
 
@@ -39,7 +89,7 @@ Workflow file: `.github/workflows/backend-cicd.yml`
   - Push image to GHCR (`ghcr.io`)
   - SSH deploy to Vultr server
 
-## 4) Required GitHub Secrets
+## 6) Required GitHub Secrets
 
 Add these repository secrets:
 
@@ -52,7 +102,7 @@ Add these repository secrets:
 - `GHCR_USERNAME`: GitHub username that can read package from GHCR
 - `GHCR_PAT`: Personal Access Token with `read:packages`
 
-## 5) Server prerequisites (Vultr)
+## 7) Server prerequisites (Vultr)
 
 Install Docker on the server, then prepare runtime env file.
 
@@ -63,13 +113,23 @@ mkdir -p /opt/lucent/backend
 cat > /opt/lucent/backend/.env <<'ENV'
 NODE_ENV=production
 PORT=3000
-# Add app secrets below
+SENDON_ENABLED=true
+SENDON_MOCK=false
+SENDON_API_KEY=replace-me
+SENDON_API_SECRET=replace-me
+SENDON_SENDER_KEY=replace-me
+# Optional
+# SENDON_BASE_URL=https://...
+# SENDON_SDK_PACKAGE=@sendon/sdk
+# SENDON_SDK_CLIENT_FACTORY=createClient
+# SENDON_SDK_CLIENT_CLASS=SendonClient
+# SENDON_SDK_SEND_METHOD=sendAlimtalk
 ENV
 ```
 
 If `VULTR_ENV_FILE_PATH` is set to `/opt/lucent/backend/.env`, the deploy workflow attaches it automatically.
 
-## 6) Branch strategy for deployment
+## 8) Branch strategy for deployment
 
 - Feature branch: CI only
 - `dev` branch: CI + Docker image push
