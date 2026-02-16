@@ -19,6 +19,7 @@ type SessionUserSummary = {
   };
   session: {
     accessToken: string;
+    refreshToken: string;
     expiresAt: number | null;
   };
 };
@@ -359,6 +360,7 @@ export class AuthService {
       },
       session: {
         accessToken: data.session.access_token,
+        refreshToken: data.session.refresh_token,
         expiresAt: data.session.expires_at || null,
       },
     };
