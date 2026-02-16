@@ -121,6 +121,13 @@ export class AuthController {
     return successResponse({ message: '로그아웃되었습니다' });
   }
 
+  @Post('oauth/profile-sync')
+  @HttpCode(200)
+  async syncOAuthProfile(@Headers('authorization') authorization?: string) {
+    const result = await this.authService.syncOAuthProfile(authorization);
+    return successResponse(result);
+  }
+
   @Get('session')
   async getSession(@Headers('authorization') authorization?: string) {
     const result = await this.authService.getSession(authorization);

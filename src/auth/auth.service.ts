@@ -370,6 +370,94 @@ export class AuthService {
     await this.authSessionService.requireUser(authorizationHeader);
   }
 
+  async syncOAuthProfile(
+    authorizationHeader?: string,
+  ): Promise<{ isNewUser: boolean }> {
+    const user =
+      await this.authSessionService.requireUser(authorizationHeader);
+    const supabase = getSupabaseClient();
+
+    const { data: existingProfile, error: existingProfileError } =
+      await supabase
+        .from('profiles')
+        .select('id')
+        .eq('id', user.id)
+        .maybeSingle();
+
+    if (existingProfileError) {
+      throw new ApiException(
+        'OAuth 프로필 확인에 실패했습니다',
+        500,
+        'OAUTH_PROFILE_FETCH_FAILED',
+      );
+    }
+
+    if (existingProfile) {
+      return { isNewUser: false };
+    }
+
+    if (!user.email) {
+      throw new ApiException(
+        'OAuth 사용자 이메일 정보를 찾을 수 없습니다',
+        400,
+        'OAUTH_EMAIL_MISSING',
+      );
+    }
+
+    const { data: emailProfile, error: emailProfileError } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('email', user.email)
+      .maybeSingle();
+
+    if (emailProfileError) {
+      throw new ApiException(
+        'OAuth 이메일 확인에 실패했습니다',
+        500,
+        'OAUTH_EMAIL_CHECK_FAILED',
+      );
+    }
+
+    if (emailProfile && emailProfile.id !== user.id) {
+      throw new ApiException(
+        '이미 가입된 이메일입니다. 기존 계정으로 로그인하세요.',
+        409,
+        'EMAIL_ALREADY_EXISTS',
+      );
+    }
+
+    const profileName =
+      (typeof user.user_metadata?.full_name === 'string' &&
+        user.user_metadata.full_name) ||
+      (typeof user.user_metadata?.name === 'string'
+        ? user.user_metadata.name
+        : null);
+
+    const { error: insertError } = await supabase.from('profiles').insert({
+      id: user.id,
+      email: user.email,
+      name: profileName,
+      phone: null,
+      main_address: null,
+      detail_address: null,
+    });
+
+    if (insertError) {
+      // 동시 요청으로 이미 생성된 경우 기존 사용자로 처리
+      if (insertError.code === '23505') {
+        return { isNewUser: false };
+      }
+
+      throw new ApiException(
+        '프로필 생성에 실패했습니다',
+        500,
+        'PROFILE_CREATE_FAILED',
+      );
+    }
+
+    return { isNewUser: true };
+  }
+
   async getSession(authorizationHeader?: string) {
     const user =
       await this.authSessionService.getUserFromAuthorizationHeader(
