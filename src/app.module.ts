@@ -4,6 +4,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { ArtistsModule } from './artists/artists.module';
+import { CartModule } from './cart/cart.module';
 import { AppConfigModule } from './config/app-config.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { ProfilesModule } from './profiles/profiles.module';
@@ -21,6 +22,7 @@ import { SendonModule } from './sendon/sendon.module';
     ArtistsModule,
     AddressModule,
     AuthModule,
+    CartModule,
     ProfilesModule,
   ],
   controllers: [AppController],
