@@ -7,6 +7,7 @@ import { ArtistsModule } from './artists/artists.module';
 import { CartModule } from './cart/cart.module';
 import { AppConfigModule } from './config/app-config.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { OrdersModule } from './orders/orders.module';
 import { ProfilesModule } from './profiles/profiles.module';
 import { ProductsModule } from './products/products.module';
 import { ProjectsModule } from './projects/projects.module';
@@ -17,6 +18,7 @@ import { SendonModule } from './sendon/sendon.module';
     AppConfigModule,
     SendonModule,
     NotificationsModule,
+    OrdersModule,
     ProductsModule,
     ProjectsModule,
     ArtistsModule,
