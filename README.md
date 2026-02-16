@@ -57,6 +57,9 @@ All endpoints use `/api` prefix.
 - `PATCH /api/admin/orders/bulk-update` : 주문 상태 일괄 변경 (관리자)
 - `GET /api/users/me/voicepacks` : 내 보이스팩 목록 조회
 - `GET /api/download/:productId` : 레거시 상품 다운로드 리다이렉트
+- `GET /api/logs` : 로그 목록 조회 (관리자, 필터/검색/페이지네이션)
+- `GET /api/logs/:id` : 로그 단건 조회 (관리자)
+- `GET /api/logs/stats` : 로그 통계 조회 (관리자)
 
 Request example:
 

@@ -5,6 +5,8 @@
 
 # Logs
 logs
+!src/logs/
+!src/logs/**
 *.log
 npm-debug.log*
 pnpm-debug.log*
