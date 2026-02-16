@@ -8,5 +8,4 @@ coverage
 *.log
 .env
 .env.*
-Dockerfile
 README.md
