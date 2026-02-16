@@ -14,15 +14,25 @@ All endpoints use `/api` prefix.
 - `GET /api/` : starter response
 - `GET /api/health` : health check
 - `POST /api/notifications/kakao/alimtalk` : Sendon 알림톡 전송
-- `GET /api/products` : 상품 목록 조회 (`ids`, `page`, `limit`, `projectId`, `type` 지원)
-- `GET /api/products/:id` : 상품 상세 조회
+- `GET /api/products` : 상품 목록 조회 (`ids`, `page`, `limit`, `projectId`, `type`, `isActive=true|false|all` 지원)
+- `POST /api/products` : 상품 생성 (관리자)
+- `GET /api/products/:id` : 상품 상세 조회 (`includePrivate=true`는 관리자만)
+- `PATCH /api/products/:id` : 상품 수정 (관리자)
+- `DELETE /api/products/:id` : 상품 삭제 (관리자)
 - `GET /api/products/slug/:slug` : 상품 slug 조회
 - `GET /api/products/:id/sample` : 샘플 오디오 스트리밍
-- `GET /api/projects` : 프로젝트 목록 조회
+- `GET /api/projects` : 프로젝트 목록 조회 (`isActive=true|false|all`, `false|all`은 관리자)
+- `POST /api/projects` : 프로젝트 생성 (관리자)
+- `PATCH /api/projects/reorder` : 프로젝트 순서 변경 (관리자)
 - `GET /api/projects/:id` : 프로젝트 상세 조회
+- `PATCH /api/projects/:id` : 프로젝트 수정 (관리자)
+- `DELETE /api/projects/:id` : 프로젝트 삭제 (관리자, 소프트 삭제)
 - `GET /api/projects/slug/:slug` : 프로젝트 slug 조회
-- `GET /api/artists` : 아티스트 목록 조회 (`projectId` 지원)
+- `GET /api/artists` : 아티스트 목록 조회 (`projectId`, `isActive=true|false|all`, `false|all`은 관리자)
+- `POST /api/artists` : 아티스트 생성 (관리자)
 - `GET /api/artists/:id` : 아티스트 상세 조회
+- `PATCH /api/artists/:id` : 아티스트 수정 (관리자)
+- `DELETE /api/artists/:id` : 아티스트 삭제 (관리자, 소프트 삭제)
 - `GET /api/artists/slug/:slug` : 아티스트 slug 조회
 - `GET /api/address/search` : 카카오 주소 검색 프록시 (`query`, `page`, `size`)
 - `POST /api/auth/send-verification` : 회원가입 이메일 인증코드 발송
