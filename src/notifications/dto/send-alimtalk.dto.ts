@@ -1,8 +1,14 @@
-import { AlimtalkTemplateVariables } from '../../sendon/sendon.types';
+import {
+  SendonAlimtalkFallback,
+  SendonAlimtalkRecipient,
+  SendonAlimtalkReservation,
+} from '../../sendon/sendon.types';
 
 export class SendAlimtalkDto {
-  recipientPhone: string;
+  sendProfileId?: string;
   templateId: string;
-  message: string;
-  templateVariables?: AlimtalkTemplateVariables | Array<string | number>;
+  to: Array<string | SendonAlimtalkRecipient>;
+  reservation?: SendonAlimtalkReservation;
+  useCredit?: boolean;
+  fallback?: SendonAlimtalkFallback;
 }
