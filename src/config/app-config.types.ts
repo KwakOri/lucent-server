@@ -1,14 +1,10 @@
 export interface SendonRuntimeConfig {
   enabled: boolean;
   mock: boolean;
+  accountId: string;
   apiKey: string;
-  apiSecret: string;
-  senderKey: string;
   baseUrl: string;
   sdkPackage: string;
-  sdkClientFactory: string;
-  sdkClientClass: string;
-  sdkSendMethod: string;
 }
 
 export interface AppRuntimeConfig {

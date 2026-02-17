@@ -11,24 +11,26 @@ export class SendonSdkGateway implements SendonGateway {
 
   async sendAlimtalk(payload: SendonAlimtalkPayload): Promise<SendonAlimtalkResult> {
     const client = await this.getClient();
-    const methodName = this.configService.sendon.sdkSendMethod;
-    const sendMethod = client?.[methodName];
+    const sendMethod = client?.kakao?.sendAlimTalk;
 
     if (typeof sendMethod !== 'function') {
       throw new Error(
-        `Sendon SDK method "${methodName}" was not found. Check SENDON_SDK_SEND_METHOD in environment variables.`,
+        'Sendon SDK method "kakao.sendAlimTalk" was not found. Check SDK package/version.',
       );
     }
 
-    const request = {
-      to: payload.recipientPhone,
-      templateCode: payload.templateCode,
+    const request: Record<string, unknown> = {
+      phone: payload.recipientPhone,
+      templateId: payload.templateCode,
       message: payload.message,
-      variables: payload.templateVariables ?? {},
-      senderKey: this.configService.sendon.senderKey,
     };
 
-    const raw = await sendMethod.call(client, request);
+    const variables = this.resolveVariables(payload.templateVariables);
+    if (variables.length > 0) {
+      request.variables = variables;
+    }
+
+    const raw = await sendMethod.call(client.kakao, request);
 
     return {
       provider: 'sendon',
@@ -44,8 +46,10 @@ export class SendonSdkGateway implements SendonGateway {
     }
 
     const config = this.configService.sendon;
-    if (!config.apiKey || !config.apiSecret) {
-      throw new Error('SENDON_API_KEY and SENDON_API_SECRET are required when SENDON_MOCK=false.');
+    if (!config.accountId || !config.apiKey) {
+      throw new Error(
+        'SENDON_ID and SENDON_API_KEY are required when SENDON_MOCK=false.',
+      );
     }
 
     let sdkModule: any;
@@ -58,47 +62,50 @@ export class SendonSdkGateway implements SendonGateway {
       throw error;
     }
 
-    const clientOptions = {
-      apiKey: config.apiKey,
-      apiSecret: config.apiSecret,
-      baseUrl: config.baseUrl || undefined,
+    const clientOptions: Record<string, unknown> = {
+      id: config.accountId,
+      apikey: config.apiKey,
     };
+    if (config.baseUrl) {
+      clientOptions.baseUrl = config.baseUrl;
+    }
 
-    this.sdkClient = this.createClientFromModule(sdkModule, clientOptions, config.sdkClientFactory, config.sdkClientClass);
+    this.sdkClient = this.createClientFromModule(sdkModule, clientOptions);
     this.logger.log(`Sendon SDK client initialized from package "${config.sdkPackage}".`);
 
     return this.sdkClient;
   }
 
-  private createClientFromModule(
-    sdkModule: any,
-    clientOptions: Record<string, unknown>,
-    factoryName: string,
-    className: string,
-  ) {
-    const moduleDefault = sdkModule?.default;
-    const factory =
-      sdkModule?.[factoryName] ||
-      moduleDefault?.[factoryName] ||
-      (typeof sdkModule?.createClient === 'function' ? sdkModule.createClient : undefined) ||
-      (typeof moduleDefault?.createClient === 'function' ? moduleDefault.createClient : undefined);
+  private createClientFromModule(sdkModule: any, clientOptions: Record<string, unknown>) {
+    const constructors = [
+      sdkModule?.Sendon,
+      sdkModule?.default?.Sendon,
+      sdkModule?.default,
+    ];
 
-    if (typeof factory === 'function') {
-      return factory(clientOptions);
-    }
-
-    const ClientClass = sdkModule?.[className] || moduleDefault?.[className];
-    if (typeof ClientClass === 'function') {
-      return new ClientClass(clientOptions);
-    }
-
-    if (moduleDefault && typeof moduleDefault === 'function') {
-      return new moduleDefault(clientOptions);
+    for (const Ctor of constructors) {
+      if (typeof Ctor === 'function') {
+        return new Ctor(clientOptions);
+      }
     }
 
     throw new Error(
-      `Could not initialize Sendon SDK client. Check SENDON_SDK_CLIENT_FACTORY ("${factoryName}") and SENDON_SDK_CLIENT_CLASS ("${className}").`,
+      'Could not initialize Sendon SDK client. Expected "Sendon" export from SDK package.',
     );
+  }
+
+  private resolveVariables(
+    input: SendonAlimtalkPayload['templateVariables'],
+  ): Array<string | number> {
+    if (!input) {
+      return [];
+    }
+
+    if (Array.isArray(input)) {
+      return input;
+    }
+
+    return Object.values(input);
   }
 
   private resolveRequestId(raw: any): string | null {
@@ -106,6 +113,13 @@ export class SendonSdkGateway implements SendonGateway {
       return null;
     }
 
-    return raw.requestId || raw.messageId || raw.id || null;
+    return (
+      raw.requestId ||
+      raw.messageId ||
+      raw.id ||
+      raw?.data?.requestId ||
+      raw?.data?.messageId ||
+      null
+    );
   }
 }

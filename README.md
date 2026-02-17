@@ -78,17 +78,19 @@ All endpoints use `/api` prefix.
 Request example:
 
 ```bash
-curl -X POST http://localhost:3000/notifications/kakao/alimtalk \
+curl -X POST http://localhost:3000/api/notifications/kakao/alimtalk \
   -H 'Content-Type: application/json' \
   -d '{
     "recipientPhone": "010-1234-5678",
-    "templateCode": "WELCOME",
+    "templateId": "WELCOME",
     "message": "환영합니다",
     "templateVariables": {
       "name": "홍길동"
     }
   }'
 ```
+
+`templateId` 사용을 권장하며, 레거시 호환을 위해 `templateCode`도 허용합니다.
 
 ## 3) Sendon runtime config
 
@@ -105,14 +107,10 @@ curl -X POST http://localhost:3000/notifications/kakao/alimtalk \
 - `CORS_ORIGINS` (comma-separated)
 - `SENDON_ENABLED` (`true`/`false`)
 - `SENDON_MOCK` (`true`/`false`)
+- `SENDON_ID` (센드온 계정 아이디)
 - `SENDON_API_KEY`
-- `SENDON_API_SECRET`
-- `SENDON_SENDER_KEY`
 - `SENDON_BASE_URL` (optional)
-- `SENDON_SDK_PACKAGE` (default: `@sendon/sdk`)
-- `SENDON_SDK_CLIENT_FACTORY` (default: `createClient`)
-- `SENDON_SDK_CLIENT_CLASS` (default: `SendonClient`)
-- `SENDON_SDK_SEND_METHOD` (default: `sendAlimtalk`)
+- `SENDON_SDK_PACKAGE` (default: `@alipeople/sendon-sdk-typescript`)
 - `KAKAO_REST_API_KEY` (주소 검색 API 사용 시)
 - `ADMIN_EMAILS` (comma-separated, 세션 응답의 관리자 판별)
 - `FRONTEND_APP_URL` (이메일 인증/비밀번호 재설정 리다이렉트 기준 URL)
@@ -146,9 +144,17 @@ curl -X POST http://localhost:3000/notifications/kakao/alimtalk \
 
 ### Production (real SDK send)
 
-1. Sendon SDK 패키지를 프로젝트에 설치
+Official SDK reference: `https://sdk.sendon.io/docs`
+
+1. 공식 SDK 패키지를 설치한다.
+
+```bash
+npm install @alipeople/sendon-sdk-typescript
+```
+
 2. `SENDON_MOCK=false`로 설정
-3. SDK 구조에 맞게 factory/class/method env 값 조정
+3. `SENDON_ID`, `SENDON_API_KEY`를 설정한다.
+4. 알림톡 요청은 SDK 공식 메서드(`sendon.kakao.sendAlimTalk`)를 사용한다.
 
 ## 4) Docker (local / deploy split)
 
@@ -224,15 +230,11 @@ NODE_ENV=production
 PORT=3000
 SENDON_ENABLED=true
 SENDON_MOCK=false
+SENDON_ID=replace-me
 SENDON_API_KEY=replace-me
-SENDON_API_SECRET=replace-me
-SENDON_SENDER_KEY=replace-me
 # Optional
 # SENDON_BASE_URL=https://...
-# SENDON_SDK_PACKAGE=@sendon/sdk
-# SENDON_SDK_CLIENT_FACTORY=createClient
-# SENDON_SDK_CLIENT_CLASS=SendonClient
-# SENDON_SDK_SEND_METHOD=sendAlimtalk
+# SENDON_SDK_PACKAGE=@alipeople/sendon-sdk-typescript
 ENV
 ```
 

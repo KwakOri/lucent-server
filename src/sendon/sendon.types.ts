@@ -6,7 +6,7 @@ export interface SendonAlimtalkPayload {
   recipientPhone: string;
   templateCode: string;
   message: string;
-  templateVariables?: AlimtalkTemplateVariables;
+  templateVariables?: AlimtalkTemplateVariables | Array<string | number>;
 }
 
 export interface SendonAlimtalkResult {
