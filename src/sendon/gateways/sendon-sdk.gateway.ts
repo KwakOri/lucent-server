@@ -21,7 +21,7 @@ export class SendonSdkGateway implements SendonGateway {
 
     const request: Record<string, unknown> = {
       phone: payload.recipientPhone,
-      templateId: payload.templateCode,
+      templateId: payload.templateId,
       message: payload.message,
     };
 

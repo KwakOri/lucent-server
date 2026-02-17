@@ -4,7 +4,7 @@ export interface AlimtalkTemplateVariables {
 
 export interface SendonAlimtalkPayload {
   recipientPhone: string;
-  templateCode: string;
+  templateId: string;
   message: string;
   templateVariables?: AlimtalkTemplateVariables | Array<string | number>;
 }

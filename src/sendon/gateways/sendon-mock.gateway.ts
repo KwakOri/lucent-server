@@ -9,7 +9,7 @@ export class SendonMockGateway implements SendonGateway {
     const requestId = `mock-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
 
     this.logger.log(
-      `Mock alimtalk accepted (requestId=${requestId}, templateCode=${payload.templateCode}, recipient=${payload.recipientPhone})`,
+      `Mock alimtalk accepted (requestId=${requestId}, templateId=${payload.templateId}, recipient=${payload.recipientPhone})`,
     );
 
     return {
