@@ -90,8 +90,6 @@ curl -X POST http://localhost:3000/api/notifications/kakao/alimtalk \
   }'
 ```
 
-`templateId` 사용을 권장하며, 레거시 호환을 위해 `templateCode`도 허용합니다.
-
 ## 3) Sendon runtime config
 
 ### Default mode

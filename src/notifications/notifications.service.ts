@@ -8,15 +8,12 @@ export class NotificationsService {
 
   async sendKakaoAlimtalk(dto: SendAlimtalkDto) {
     const normalizedRecipient = this.normalizeAndValidatePhone(dto.recipientPhone);
-    const templateCode = this.requireNonEmpty(
-      dto.templateId ?? dto.templateCode ?? '',
-      'templateId',
-    );
+    const templateId = this.requireNonEmpty(dto.templateId, 'templateId');
     const message = this.requireNonEmpty(dto.message, 'message');
 
     return this.sendonService.sendAlimtalk({
       recipientPhone: normalizedRecipient,
-      templateCode,
+      templateId,
       message,
       templateVariables: dto.templateVariables,
     });

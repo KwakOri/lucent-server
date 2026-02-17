@@ -39,7 +39,7 @@ describe('NotificationsService', () => {
 
     expect(sendonService.sendAlimtalk).toHaveBeenCalledWith({
       recipientPhone: '01012345678',
-      templateCode: 'WELCOME',
+      templateId: 'WELCOME',
       message: 'hello',
       templateVariables: undefined,
     });
@@ -55,17 +55,13 @@ describe('NotificationsService', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('accepts legacy templateCode field for backward compatibility', async () => {
-    await service.sendKakaoAlimtalk({
-      recipientPhone: '01012345678',
-      templateCode: 'WELCOME',
-      message: 'hello',
-    });
-
-    expect(sendonService.sendAlimtalk).toHaveBeenCalledWith(
-      expect.objectContaining({
-        templateCode: 'WELCOME',
+  it('throws when templateId is missing', async () => {
+    await expect(
+      service.sendKakaoAlimtalk({
+        recipientPhone: '01012345678',
+        templateId: '',
+        message: 'hello',
       }),
-    );
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 });
