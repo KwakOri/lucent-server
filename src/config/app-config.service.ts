@@ -24,14 +24,16 @@ export class AppConfigService {
       sendon: {
         enabled: this.readBoolean('SENDON_ENABLED', true),
         mock: this.readBoolean('SENDON_MOCK', true),
+        accountId: this.readString(
+          'SENDON_ID',
+          this.readString('SENDON_ACCOUNT_ID', ''),
+        ),
         apiKey: this.readString('SENDON_API_KEY', ''),
-        apiSecret: this.readString('SENDON_API_SECRET', ''),
-        senderKey: this.readString('SENDON_SENDER_KEY', ''),
         baseUrl: this.readString('SENDON_BASE_URL', ''),
-        sdkPackage: this.readString('SENDON_SDK_PACKAGE', '@sendon/sdk'),
-        sdkClientFactory: this.readString('SENDON_SDK_CLIENT_FACTORY', 'createClient'),
-        sdkClientClass: this.readString('SENDON_SDK_CLIENT_CLASS', 'SendonClient'),
-        sdkSendMethod: this.readString('SENDON_SDK_SEND_METHOD', 'sendAlimtalk'),
+        sdkPackage: this.readString(
+          'SENDON_SDK_PACKAGE',
+          '@alipeople/sendon-sdk-typescript',
+        ),
       },
     };
   }

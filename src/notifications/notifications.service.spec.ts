@@ -33,7 +33,7 @@ describe('NotificationsService', () => {
   it('normalizes recipient phone and forwards request to SendonService', async () => {
     await service.sendKakaoAlimtalk({
       recipientPhone: '010-1234-5678',
-      templateCode: 'WELCOME',
+      templateId: 'WELCOME',
       message: 'hello',
     });
 
@@ -49,9 +49,23 @@ describe('NotificationsService', () => {
     await expect(
       service.sendKakaoAlimtalk({
         recipientPhone: '',
-        templateCode: 'WELCOME',
+        templateId: 'WELCOME',
         message: 'hello',
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('accepts legacy templateCode field for backward compatibility', async () => {
+    await service.sendKakaoAlimtalk({
+      recipientPhone: '01012345678',
+      templateCode: 'WELCOME',
+      message: 'hello',
+    });
+
+    expect(sendonService.sendAlimtalk).toHaveBeenCalledWith(
+      expect.objectContaining({
+        templateCode: 'WELCOME',
+      }),
+    );
   });
 });
