@@ -81,12 +81,16 @@ Request example:
 curl -X POST http://localhost:3000/api/notifications/kakao/alimtalk \
   -H 'Content-Type: application/json' \
   -d '{
-    "recipientPhone": "010-1234-5678",
+    "sendProfileId": "pfid-1234567890",
     "templateId": "WELCOME",
-    "message": "환영합니다",
-    "templateVariables": {
-      "name": "홍길동"
-    }
+    "to": [
+      {
+        "phone": "010-1234-5678",
+        "variables": {
+          "#{이름}": "홍길동"
+        }
+      }
+    ]
   }'
 ```
 
@@ -107,7 +111,7 @@ curl -X POST http://localhost:3000/api/notifications/kakao/alimtalk \
 - `SENDON_MOCK` (`true`/`false`)
 - `SENDON_ID` (센드온 계정 아이디)
 - `SENDON_API_KEY`
-- `SENDON_BASE_URL` (optional)
+- `SENDON_SEND_PROFILE_ID` (optional, 요청 본문에서 `sendProfileId` 생략 시 기본값)
 - `SENDON_SDK_PACKAGE` (default: `@alipeople/sendon-sdk-typescript`)
 - `KAKAO_REST_API_KEY` (주소 검색 API 사용 시)
 - `ADMIN_EMAILS` (comma-separated, 세션 응답의 관리자 판별)
@@ -152,7 +156,8 @@ npm install @alipeople/sendon-sdk-typescript
 
 2. `SENDON_MOCK=false`로 설정
 3. `SENDON_ID`, `SENDON_API_KEY`를 설정한다.
-4. 알림톡 요청은 SDK 공식 메서드(`sendon.kakao.sendAlimTalk`)를 사용한다.
+4. 필요하면 `SENDON_SEND_PROFILE_ID`를 기본 발신 프로필로 설정한다.
+5. 알림톡 요청은 SDK 공식 스키마(`sendProfileId`, `templateId`, `to[]`)를 사용한다.
 
 ## 4) Docker (local / deploy split)
 
@@ -231,7 +236,7 @@ SENDON_MOCK=false
 SENDON_ID=replace-me
 SENDON_API_KEY=replace-me
 # Optional
-# SENDON_BASE_URL=https://...
+# SENDON_SEND_PROFILE_ID=pfid-1234567890
 # SENDON_SDK_PACKAGE=@alipeople/sendon-sdk-typescript
 ENV
 ```

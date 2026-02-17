@@ -3,7 +3,7 @@ export interface SendonRuntimeConfig {
   mock: boolean;
   accountId: string;
   apiKey: string;
-  baseUrl: string;
+  defaultSendProfileId: string;
   sdkPackage: string;
 }
 

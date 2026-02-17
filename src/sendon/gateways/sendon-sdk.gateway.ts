@@ -20,17 +20,27 @@ export class SendonSdkGateway implements SendonGateway {
     }
 
     const request: Record<string, unknown> = {
-      phone: payload.recipientPhone,
+      sendProfileId: payload.sendProfileId,
       templateId: payload.templateId,
-      message: payload.message,
+      to: payload.to,
     };
 
-    const variables = this.resolveVariables(payload.templateVariables);
-    if (variables.length > 0) {
-      request.variables = variables;
+    if (payload.reservation) {
+      request.reservation = payload.reservation;
+    }
+
+    if (typeof payload.useCredit === 'boolean') {
+      request.useCredit = payload.useCredit;
+    }
+
+    if (payload.fallback) {
+      request.fallback = payload.fallback;
     }
 
     const raw = await sendMethod.call(client.kakao, request);
+    if (!this.isSuccessResponse(raw)) {
+      throw new Error(this.buildFailureMessage(raw));
+    }
 
     return {
       provider: 'sendon',
@@ -66,9 +76,6 @@ export class SendonSdkGateway implements SendonGateway {
       id: config.accountId,
       apikey: config.apiKey,
     };
-    if (config.baseUrl) {
-      clientOptions.baseUrl = config.baseUrl;
-    }
 
     this.sdkClient = this.createClientFromModule(sdkModule, clientOptions);
     this.logger.log(`Sendon SDK client initialized from package "${config.sdkPackage}".`);
@@ -94,18 +101,20 @@ export class SendonSdkGateway implements SendonGateway {
     );
   }
 
-  private resolveVariables(
-    input: SendonAlimtalkPayload['templateVariables'],
-  ): Array<string | number> {
-    if (!input) {
-      return [];
+  private isSuccessResponse(raw: any): boolean {
+    return raw?.code === 200;
+  }
+
+  private buildFailureMessage(raw: any): string {
+    const code = raw?.code;
+    const errorCode = raw?.errorCode;
+    const message = raw?.message || 'Unknown sendon error';
+
+    if (code || errorCode) {
+      return `Sendon API returned failure response (code=${code ?? 'unknown'}, errorCode=${errorCode ?? 'none'}): ${message}`;
     }
 
-    if (Array.isArray(input)) {
-      return input;
-    }
-
-    return Object.values(input);
+    return `Sendon API returned failure response: ${message}`;
   }
 
   private resolveRequestId(raw: any): string | null {
@@ -114,11 +123,11 @@ export class SendonSdkGateway implements SendonGateway {
     }
 
     return (
-      raw.requestId ||
-      raw.messageId ||
-      raw.id ||
-      raw?.data?.requestId ||
-      raw?.data?.messageId ||
+      raw?.data?.groupId ||
+      raw?.groupId ||
+      raw?.requestId ||
+      raw?.messageId ||
+      raw?.id ||
       null
     );
   }

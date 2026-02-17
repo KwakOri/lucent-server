@@ -1,12 +1,36 @@
-export interface AlimtalkTemplateVariables {
-  [key: string]: string | number;
+export interface SendonAlimtalkRecipient {
+  phone: string;
+  variables?: Record<string, string>;
+}
+
+export interface SendonAlimtalkReservation {
+  dateTime: string | null;
+}
+
+export type SendonAlimtalkFallbackType = 'NONE' | 'TEMPLATE' | 'CUSTOM';
+export type SendonAlimtalkFallbackCustomType = 'SMS' | 'LMS' | 'MMS';
+
+export interface SendonAlimtalkFallbackCustom {
+  type: SendonAlimtalkFallbackCustomType;
+  senderNumber: string;
+  isAd?: boolean;
+  message: string;
+  title?: string;
+  images?: string[];
+}
+
+export interface SendonAlimtalkFallback {
+  fallbackType?: SendonAlimtalkFallbackType;
+  custom?: SendonAlimtalkFallbackCustom;
 }
 
 export interface SendonAlimtalkPayload {
-  recipientPhone: string;
+  sendProfileId: string;
   templateId: string;
-  message: string;
-  templateVariables?: AlimtalkTemplateVariables | Array<string | number>;
+  to: Array<string | SendonAlimtalkRecipient>;
+  reservation?: SendonAlimtalkReservation;
+  useCredit?: boolean;
+  fallback?: SendonAlimtalkFallback;
 }
 
 export interface SendonAlimtalkResult {

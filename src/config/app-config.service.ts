@@ -29,7 +29,10 @@ export class AppConfigService {
           this.readString('SENDON_ACCOUNT_ID', ''),
         ),
         apiKey: this.readString('SENDON_API_KEY', ''),
-        baseUrl: this.readString('SENDON_BASE_URL', ''),
+        defaultSendProfileId: this.readString(
+          'SENDON_SEND_PROFILE_ID',
+          this.readString('SENDON_DEFAULT_SEND_PROFILE_ID', ''),
+        ),
         sdkPackage: this.readString(
           'SENDON_SDK_PACKAGE',
           '@alipeople/sendon-sdk-typescript',
