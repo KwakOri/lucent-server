@@ -70,6 +70,12 @@ export class ProjectsService {
     });
 
     if (error) {
+      console.error('[ProjectsService.getProjects] Supabase 에러:', {
+        message: error.message,
+        code: error.code,
+        details: error.details,
+        hint: error.hint,
+      });
       throw new ApiException(
         '프로젝트 목록 조회 실패',
         500,
