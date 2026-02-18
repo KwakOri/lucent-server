@@ -78,7 +78,7 @@ All endpoints use `/api` prefix.
 Request example:
 
 ```bash
-curl -X POST http://localhost:3000/api/notifications/kakao/alimtalk \
+curl -X POST http://localhost:3001/api/notifications/kakao/alimtalk \
   -H 'Content-Type: application/json' \
   -d '{
     "sendProfileId": "pfid-1234567890",
@@ -105,7 +105,7 @@ curl -X POST http://localhost:3000/api/notifications/kakao/alimtalk \
 
 ### Environment variables
 
-- `PORT` (default: `3000`)
+- `PORT` (default: `3001`)
 - `CORS_ORIGINS` (comma-separated)
 - `SENDON_ENABLED` (`true`/`false`)
 - `SENDON_MOCK` (`true`/`false`)
