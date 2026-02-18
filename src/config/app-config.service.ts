@@ -19,7 +19,7 @@ export class AppConfigService {
 
   private load(): AppRuntimeConfig {
     return {
-      port: this.readNumber('PORT', 3000),
+      port: this.readNumber('PORT', 3001),
       corsOrigins: this.readCsv('CORS_ORIGINS'),
       sendon: {
         enabled: this.readBoolean('SENDON_ENABLED', true),
