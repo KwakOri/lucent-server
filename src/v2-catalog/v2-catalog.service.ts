@@ -159,6 +159,7 @@ interface UpdateV2DigitalAssetInput {
 interface MigrationCheckResult {
   key: string;
   passed: boolean;
+  severity: 'BLOCKING' | 'ADVISORY';
   expected: string;
   actual: string;
   detail: string;
@@ -167,8 +168,22 @@ interface MigrationCheckResult {
 interface ReadSwitchChecklistItem {
   key: string;
   passed: boolean;
+  severity: 'BLOCKING' | 'ADVISORY';
   detail: string;
   action: string;
+}
+
+interface ReadSwitchRemediationTask {
+  check_key: string;
+  severity: 'BLOCKING' | 'ADVISORY';
+  title: string;
+  detail: string;
+  expected: string;
+  actual: string;
+  action: string;
+  sample_source: string | null;
+  sample_count: number;
+  samples: any[];
 }
 
 @Injectable()
@@ -1710,6 +1725,7 @@ export class V2CatalogService {
       {
         key: 'projects_backfill_complete',
         passed: missingProjectMappings.length === 0,
+        severity: this.resolveMigrationCheckSeverity('projects_backfill_complete'),
         expected: 'missing_project_mappings=0',
         actual: `missing_project_mappings=${missingProjectMappings.length}`,
         detail: 'legacy projects가 모두 v2_projects로 매핑되어야 함',
@@ -1717,6 +1733,7 @@ export class V2CatalogService {
       {
         key: 'artists_backfill_complete',
         passed: missingArtistMappings.length === 0,
+        severity: this.resolveMigrationCheckSeverity('artists_backfill_complete'),
         expected: 'missing_artist_mappings=0',
         actual: `missing_artist_mappings=${missingArtistMappings.length}`,
         detail: 'legacy artists가 모두 v2_artists로 매핑되어야 함',
@@ -1724,6 +1741,7 @@ export class V2CatalogService {
       {
         key: 'products_backfill_complete',
         passed: missingProductMappings.length === 0,
+        severity: this.resolveMigrationCheckSeverity('products_backfill_complete'),
         expected: 'missing_product_mappings=0',
         actual: `missing_product_mappings=${missingProductMappings.length}`,
         detail: 'legacy products가 모두 v2_products로 매핑되어야 함',
@@ -1731,6 +1749,7 @@ export class V2CatalogService {
       {
         key: 'project_artist_links_complete',
         passed: missingProjectArtistLinks.length === 0,
+        severity: this.resolveMigrationCheckSeverity('project_artist_links_complete'),
         expected: 'missing_project_artist_links=0',
         actual: `missing_project_artist_links=${missingProjectArtistLinks.length}`,
         detail: 'legacy artist.project_id 기준 링크가 v2_project_artists에 존재해야 함',
@@ -1738,6 +1757,9 @@ export class V2CatalogService {
       {
         key: 'product_project_mapping_consistent',
         passed: productProjectMappingMismatch.length === 0,
+        severity: this.resolveMigrationCheckSeverity(
+          'product_project_mapping_consistent',
+        ),
         expected: 'product_project_mapping_mismatch=0',
         actual: `product_project_mapping_mismatch=${productProjectMappingMismatch.length}`,
         detail: 'v2_products.project_id가 legacy product.project_id 매핑과 일치해야 함',
@@ -1745,6 +1767,7 @@ export class V2CatalogService {
       {
         key: 'v2_products_have_variants',
         passed: productsWithoutVariants.length === 0,
+        severity: this.resolveMigrationCheckSeverity('v2_products_have_variants'),
         expected: 'products_without_variants=0',
         actual: `products_without_variants=${productsWithoutVariants.length}`,
         detail: '모든 v2 product는 최소 1개의 variant를 가져야 함',
@@ -1752,6 +1775,9 @@ export class V2CatalogService {
       {
         key: 'active_products_have_primary_media',
         passed: activeProductsWithoutPrimaryMedia.length === 0,
+        severity: this.resolveMigrationCheckSeverity(
+          'active_products_have_primary_media',
+        ),
         expected: 'active_products_without_primary_media=0',
         actual: `active_products_without_primary_media=${activeProductsWithoutPrimaryMedia.length}`,
         detail: 'ACTIVE product는 ACTIVE primary media를 가져야 함',
@@ -1759,6 +1785,7 @@ export class V2CatalogService {
       {
         key: 'digital_variants_have_assets',
         passed: digitalVariantsWithoutAssets.length === 0,
+        severity: this.resolveMigrationCheckSeverity('digital_variants_have_assets'),
         expected: 'digital_variants_without_assets=0',
         actual: `digital_variants_without_assets=${digitalVariantsWithoutAssets.length}`,
         detail: 'DIGITAL variant는 최소 1개의 digital asset을 가져야 함',
@@ -1766,6 +1793,9 @@ export class V2CatalogService {
       {
         key: 'active_digital_variants_have_ready_assets',
         passed: activeDigitalVariantsWithoutReadyAsset.length === 0,
+        severity: this.resolveMigrationCheckSeverity(
+          'active_digital_variants_have_ready_assets',
+        ),
         expected: 'active_digital_variants_without_ready_asset=0',
         actual: `active_digital_variants_without_ready_asset=${activeDigitalVariantsWithoutReadyAsset.length}`,
         detail: 'ACTIVE DIGITAL variant는 READY asset을 가져야 함',
@@ -1773,7 +1803,7 @@ export class V2CatalogService {
     ];
 
     const blockingChecks = checks
-      .filter((check) => !check.passed)
+      .filter((check) => !check.passed && check.severity === 'BLOCKING')
       .map((check) => check.key);
 
     return {
@@ -1950,21 +1980,76 @@ export class V2CatalogService {
       (check) => ({
         key: check.key,
         passed: check.passed,
+        severity: check.severity,
         detail: check.detail,
         action: this.resolveReadSwitchAction(check.key),
       }),
     );
 
     const passedChecks = checklist.filter((item) => item.passed).length;
+    const failedChecks = checklist.length - passedChecks;
+    const blockingFailedChecks = checklist.filter(
+      (item) => !item.passed && item.severity === 'BLOCKING',
+    ).length;
 
     return {
       generated_at: compareReport.generated_at,
       ready: compareReport.read_switch.ready,
       total_checks: checklist.length,
       passed_checks: passedChecks,
-      failed_checks: checklist.length - passedChecks,
+      failed_checks: failedChecks,
+      blocking_failed_checks: blockingFailedChecks,
+      advisory_failed_checks: failedChecks - blockingFailedChecks,
       blocking_checks: compareReport.read_switch.blocking_checks,
       checklist,
+      recommended_order: compareReport.read_switch.recommended_order,
+    };
+  }
+
+  async getReadSwitchRemediationTasks(sampleLimit = 20): Promise<any> {
+    const compareReport = await this.getMigrationCompareReport(sampleLimit);
+    const differences = (compareReport.differences || {}) as Record<string, unknown>;
+    const failedChecks = (compareReport.checks as MigrationCheckResult[]).filter(
+      (check) => !check.passed,
+    );
+
+    const tasks: ReadSwitchRemediationTask[] = failedChecks.map((check) => {
+      const differenceSource = this.resolveDifferenceSourceByCheckKey(check.key);
+      const samples = this.resolveDifferenceSamples(
+        differences,
+        differenceSource?.group,
+        differenceSource?.key,
+      );
+
+      return {
+        check_key: check.key,
+        severity: check.severity,
+        title: this.resolveReadSwitchTaskTitle(check.key),
+        detail: check.detail,
+        expected: check.expected,
+        actual: check.actual,
+        action: this.resolveReadSwitchAction(check.key),
+        sample_source: differenceSource
+          ? `${differenceSource.group}.${differenceSource.key}`
+          : null,
+        sample_count: samples.length,
+        samples,
+      };
+    });
+
+    const blockingTasks = tasks.filter((task) => task.severity === 'BLOCKING');
+    const advisoryTasks = tasks.filter((task) => task.severity === 'ADVISORY');
+
+    return {
+      generated_at: compareReport.generated_at,
+      ready: compareReport.read_switch.ready,
+      summary: {
+        failed_total: tasks.length,
+        blocking_failed: blockingTasks.length,
+        advisory_failed: advisoryTasks.length,
+      },
+      blocking_tasks: blockingTasks,
+      advisory_tasks: advisoryTasks,
       recommended_order: compareReport.read_switch.recommended_order,
     };
   }
@@ -2063,6 +2148,88 @@ export class V2CatalogService {
     };
 
     return actions[checkKey] || '차이 리포트 샘플을 확인하고 데이터 정합성 보정';
+  }
+
+  private resolveMigrationCheckSeverity(
+    checkKey: string,
+  ): 'BLOCKING' | 'ADVISORY' {
+    const advisoryKeys = new Set([
+      'active_products_have_primary_media',
+      'active_digital_variants_have_ready_assets',
+    ]);
+
+    return advisoryKeys.has(checkKey) ? 'ADVISORY' : 'BLOCKING';
+  }
+
+  private resolveReadSwitchTaskTitle(checkKey: string): string {
+    const titles: Record<string, string> = {
+      projects_backfill_complete: '프로젝트 매핑 누락 보정',
+      artists_backfill_complete: '아티스트 매핑 누락 보정',
+      products_backfill_complete: '상품 매핑 누락 보정',
+      project_artist_links_complete: '프로젝트-아티스트 링크 보정',
+      product_project_mapping_consistent: '상품-프로젝트 매핑 불일치 보정',
+      v2_products_have_variants: '상품 variant 누락 보정',
+      active_products_have_primary_media: '활성 상품 primary media 보강',
+      digital_variants_have_assets: '디지털 variant asset 보강',
+      active_digital_variants_have_ready_assets:
+        '활성 디지털 variant READY asset 보강',
+    };
+
+    return titles[checkKey] || checkKey;
+  }
+
+  private resolveDifferenceSourceByCheckKey(
+    checkKey: string,
+  ): { group: string; key: string } | null {
+    const mapping: Record<string, { group: string; key: string }> = {
+      projects_backfill_complete: { group: 'missing_mappings', key: 'projects' },
+      artists_backfill_complete: { group: 'missing_mappings', key: 'artists' },
+      products_backfill_complete: { group: 'missing_mappings', key: 'products' },
+      project_artist_links_complete: {
+        group: 'integrity',
+        key: 'missing_project_artist_links',
+      },
+      product_project_mapping_consistent: {
+        group: 'data_mismatch',
+        key: 'product_project_mapping',
+      },
+      v2_products_have_variants: {
+        group: 'integrity',
+        key: 'products_without_variants',
+      },
+      active_products_have_primary_media: {
+        group: 'integrity',
+        key: 'active_products_without_primary_media',
+      },
+      digital_variants_have_assets: {
+        group: 'integrity',
+        key: 'digital_variants_without_assets',
+      },
+      active_digital_variants_have_ready_assets: {
+        group: 'integrity',
+        key: 'active_digital_variants_without_ready_asset',
+      },
+    };
+
+    return mapping[checkKey] || null;
+  }
+
+  private resolveDifferenceSamples(
+    differences: Record<string, unknown>,
+    group?: string,
+    key?: string,
+  ): any[] {
+    if (!group || !key) {
+      return [];
+    }
+
+    const groupValue = differences[group];
+    if (!groupValue || typeof groupValue !== 'object') {
+      return [];
+    }
+
+    const sampleValue = (groupValue as Record<string, unknown>)[key];
+    return Array.isArray(sampleValue) ? sampleValue : [];
   }
 
   private async ensureProjectExists(projectId: string): Promise<void> {

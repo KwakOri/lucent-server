@@ -45,6 +45,18 @@ export class V2CatalogController {
     return successResponse(checklist);
   }
 
+  @Get('migration/remediation-tasks')
+  async getReadSwitchRemediationTasks(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('sampleLimit') sampleLimit?: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const tasks = await this.v2CatalogService.getReadSwitchRemediationTasks(
+      this.parseSampleLimit(sampleLimit),
+    );
+    return successResponse(tasks);
+  }
+
   @Get('projects')
   async getProjects(
     @Headers('authorization') authorization: string | undefined,
