@@ -189,6 +189,44 @@ export class V2CatalogController {
     return successResponse(component);
   }
 
+  @Post('bundles/components/:id/options')
+  async createBundleComponentOption(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') componentId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const option = await this.v2CatalogService.createBundleComponentOption(
+      componentId,
+      body,
+    );
+    return successResponse(option);
+  }
+
+  @Patch('bundles/component-options/:id')
+  async updateBundleComponentOption(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') optionId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const option = await this.v2CatalogService.updateBundleComponentOption(
+      optionId,
+      body,
+    );
+    return successResponse(option);
+  }
+
+  @Delete('bundles/component-options/:id')
+  async deleteBundleComponentOption(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') optionId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    await this.v2CatalogService.deleteBundleComponentOption(optionId);
+    return successResponse({ message: 'bundle component option이 삭제되었습니다' });
+  }
+
   @Delete('bundles/components/:id')
   async deleteBundleComponent(
     @Headers('authorization') authorization: string | undefined,

@@ -202,6 +202,20 @@ interface UpdateV2BundleComponentInput {
   metadata?: Record<string, unknown>;
 }
 
+interface CreateV2BundleComponentOptionInput {
+  option_key?: string;
+  option_value?: string;
+  sort_order?: number;
+  metadata?: Record<string, unknown>;
+}
+
+interface UpdateV2BundleComponentOptionInput {
+  option_key?: string;
+  option_value?: string;
+  sort_order?: number;
+  metadata?: Record<string, unknown>;
+}
+
 interface BundleComponentSelectionInput {
   component_variant_id?: string;
   quantity?: number;
@@ -2725,6 +2739,134 @@ export class V2CatalogService {
     return data;
   }
 
+  async createBundleComponentOption(
+    componentId: string,
+    input: CreateV2BundleComponentOptionInput,
+  ): Promise<any> {
+    const component = await this.getBundleComponentById(componentId);
+    const definition = await this.getBundleDefinitionById(component.bundle_definition_id);
+    this.assertBundleDefinitionEditable(definition.status);
+
+    const optionKey = this.normalizeRequiredText(
+      input.option_key,
+      'option_key는 필수입니다',
+    );
+    const optionValue = this.normalizeRequiredText(
+      input.option_value,
+      'option_value는 필수입니다',
+    );
+    this.assertSortOrder(input.sort_order);
+
+    const { data, error } = await this.supabase
+      .from('v2_bundle_component_options')
+      .insert({
+        bundle_component_id: componentId,
+        option_key: optionKey,
+        option_value: optionValue,
+        sort_order: input.sort_order ?? 0,
+        metadata: input.metadata ?? {},
+      })
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      if (error?.code === '23505') {
+        throw new ApiException(
+          '이미 존재하는 bundle component option입니다',
+          409,
+          'V2_BUNDLE_COMPONENT_OPTION_EXISTS',
+        );
+      }
+      throw new ApiException(
+        'bundle component option 생성 실패',
+        500,
+        'V2_BUNDLE_COMPONENT_OPTION_CREATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async updateBundleComponentOption(
+    optionId: string,
+    input: UpdateV2BundleComponentOptionInput,
+  ): Promise<any> {
+    const current = await this.getBundleComponentOptionById(optionId);
+    const component = await this.getBundleComponentById(current.bundle_component_id);
+    const definition = await this.getBundleDefinitionById(component.bundle_definition_id);
+    this.assertBundleDefinitionEditable(definition.status);
+
+    const updateData: Record<string, unknown> = {};
+
+    if (input.option_key !== undefined) {
+      updateData.option_key = this.normalizeRequiredText(
+        input.option_key,
+        'option_key는 필수입니다',
+      );
+    }
+    if (input.option_value !== undefined) {
+      updateData.option_value = this.normalizeRequiredText(
+        input.option_value,
+        'option_value는 필수입니다',
+      );
+    }
+    if (input.sort_order !== undefined) {
+      this.assertSortOrder(input.sort_order);
+      updateData.sort_order = input.sort_order;
+    }
+    if (input.metadata !== undefined) {
+      updateData.metadata = input.metadata ?? {};
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return current;
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_bundle_component_options')
+      .update(updateData)
+      .eq('id', optionId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      if (error?.code === '23505') {
+        throw new ApiException(
+          '이미 존재하는 bundle component option입니다',
+          409,
+          'V2_BUNDLE_COMPONENT_OPTION_EXISTS',
+        );
+      }
+      throw new ApiException(
+        'bundle component option 수정 실패',
+        500,
+        'V2_BUNDLE_COMPONENT_OPTION_UPDATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async deleteBundleComponentOption(optionId: string): Promise<void> {
+    const current = await this.getBundleComponentOptionById(optionId);
+    const component = await this.getBundleComponentById(current.bundle_component_id);
+    const definition = await this.getBundleDefinitionById(component.bundle_definition_id);
+    this.assertBundleDefinitionEditable(definition.status);
+
+    const { error } = await this.supabase
+      .from('v2_bundle_component_options')
+      .delete()
+      .eq('id', optionId);
+
+    if (error) {
+      throw new ApiException(
+        'bundle component option 삭제 실패',
+        500,
+        'V2_BUNDLE_COMPONENT_OPTION_DELETE_FAILED',
+      );
+    }
+  }
+
   async deleteBundleComponent(componentId: string): Promise<void> {
     const component = await this.getBundleComponentById(componentId);
     const definition = await this.getBundleDefinitionById(component.bundle_definition_id);
@@ -3331,6 +3473,31 @@ export class V2CatalogService {
         'bundle component를 찾을 수 없습니다',
         404,
         'V2_BUNDLE_COMPONENT_NOT_FOUND',
+      );
+    }
+
+    return data;
+  }
+
+  private async getBundleComponentOptionById(optionId: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('v2_bundle_component_options')
+      .select('*')
+      .eq('id', optionId)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'bundle component option 조회 실패',
+        500,
+        'V2_BUNDLE_COMPONENT_OPTION_FETCH_FAILED',
+      );
+    }
+    if (!data) {
+      throw new ApiException(
+        'bundle component option을 찾을 수 없습니다',
+        404,
+        'V2_BUNDLE_COMPONENT_OPTION_NOT_FOUND',
       );
     }
 
