@@ -13,6 +13,9 @@ type V2MediaRole = 'PRIMARY' | 'GALLERY' | 'DETAIL';
 type V2MediaStatus = 'DRAFT' | 'ACTIVE' | 'INACTIVE' | 'ARCHIVED';
 type V2AssetRole = 'PRIMARY' | 'BONUS';
 type V2DigitalAssetStatus = 'DRAFT' | 'READY' | 'RETIRED';
+type V2BundleMode = 'FIXED' | 'CUSTOMIZABLE';
+type V2BundleStatus = 'DRAFT' | 'ACTIVE' | 'ARCHIVED';
+type V2BundlePricingStrategy = 'WEIGHTED' | 'FIXED_AMOUNT';
 
 interface CreateV2ProjectInput {
   name?: string;
@@ -154,6 +157,72 @@ interface UpdateV2DigitalAssetInput {
   checksum?: string | null;
   status?: V2DigitalAssetStatus;
   metadata?: Record<string, unknown>;
+}
+
+interface CreateV2BundleDefinitionInput {
+  bundle_product_id?: string;
+  anchor_product_id?: string;
+  mode?: V2BundleMode;
+  status?: V2BundleStatus;
+  pricing_strategy?: V2BundlePricingStrategy;
+  version_no?: number;
+  metadata?: Record<string, unknown>;
+}
+
+interface UpdateV2BundleDefinitionInput {
+  mode?: V2BundleMode;
+  status?: V2BundleStatus;
+  pricing_strategy?: V2BundlePricingStrategy;
+  metadata?: Record<string, unknown>;
+}
+
+interface CloneV2BundleDefinitionVersionInput {
+  metadata_patch?: Record<string, unknown>;
+}
+
+interface CreateV2BundleComponentInput {
+  component_variant_id?: string;
+  is_required?: boolean;
+  min_quantity?: number;
+  max_quantity?: number;
+  default_quantity?: number;
+  sort_order?: number;
+  price_allocation_weight?: number;
+  metadata?: Record<string, unknown>;
+}
+
+interface UpdateV2BundleComponentInput {
+  component_variant_id?: string;
+  is_required?: boolean;
+  min_quantity?: number;
+  max_quantity?: number;
+  default_quantity?: number;
+  sort_order?: number;
+  price_allocation_weight?: number;
+  metadata?: Record<string, unknown>;
+}
+
+interface BundleComponentSelectionInput {
+  component_variant_id?: string;
+  quantity?: number;
+}
+
+interface ValidateV2BundleDefinitionInput {
+  selected_components?: BundleComponentSelectionInput[];
+}
+
+interface ResolveV2BundleInput {
+  bundle_definition_id?: string;
+  parent_variant_id?: string | null;
+  parent_quantity?: number;
+  parent_unit_amount?: number | null;
+  selected_components?: BundleComponentSelectionInput[];
+}
+
+interface PreviewV2BundleInput {
+  bundle_definition_id?: string;
+  parent_quantity?: number;
+  selected_components?: BundleComponentSelectionInput[];
 }
 
 interface MigrationCheckResult {
@@ -2054,6 +2123,994 @@ export class V2CatalogService {
     };
   }
 
+  async getBundleDefinitions(filters: {
+    bundleProductId?: string;
+    status?: V2BundleStatus;
+  }): Promise<any[]> {
+    if (filters.bundleProductId) {
+      const bundleProduct = await this.getProductById(filters.bundleProductId);
+      if (bundleProduct.product_kind !== 'BUNDLE') {
+        throw new ApiException(
+          'bundle_product_id는 BUNDLE product여야 합니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+    }
+    if (filters.status) {
+      this.assertBundleStatus(filters.status);
+    }
+
+    let query = this.supabase
+      .from('v2_bundle_definitions')
+      .select('*')
+      .is('deleted_at', null)
+      .order('version_no', { ascending: false });
+
+    if (filters.bundleProductId) {
+      query = query.eq('bundle_product_id', filters.bundleProductId);
+    }
+    if (filters.status) {
+      query = query.eq('status', filters.status);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw new ApiException(
+        'bundle definition 목록 조회 실패',
+        500,
+        'V2_BUNDLE_DEFINITIONS_FETCH_FAILED',
+      );
+    }
+
+    return data || [];
+  }
+
+  async getBundleDefinitionById(definitionId: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('v2_bundle_definitions')
+      .select('*')
+      .eq('id', definitionId)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'bundle definition 조회 실패',
+        500,
+        'V2_BUNDLE_DEFINITION_FETCH_FAILED',
+      );
+    }
+    if (!data) {
+      throw new ApiException(
+        'bundle definition을 찾을 수 없습니다',
+        404,
+        'V2_BUNDLE_DEFINITION_NOT_FOUND',
+      );
+    }
+
+    return data;
+  }
+
+  async createBundleDefinition(input: CreateV2BundleDefinitionInput): Promise<any> {
+    const bundleProductId = this.normalizeRequiredText(
+      input.bundle_product_id,
+      'bundle_product_id는 필수입니다',
+    );
+    const bundleProduct = await this.getProductById(bundleProductId);
+    if (bundleProduct.product_kind !== 'BUNDLE') {
+      throw new ApiException(
+        'bundle_product_id는 BUNDLE product여야 합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const anchorProductId =
+      this.normalizeOptionalText(input.anchor_product_id) ?? bundleProductId;
+    if (anchorProductId !== bundleProductId) {
+      throw new ApiException(
+        '현재 1차 rollout에서는 anchor_product_id는 bundle_product_id와 동일해야 합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const mode = input.mode ?? 'FIXED';
+    const status = input.status ?? 'DRAFT';
+    const pricingStrategy = input.pricing_strategy ?? 'WEIGHTED';
+
+    this.assertBundleMode(mode);
+    this.assertBundleStatus(status);
+    this.assertBundlePricingStrategy(pricingStrategy);
+
+    let versionNo: number;
+    if (input.version_no !== undefined) {
+      this.assertPositiveInteger(input.version_no, 'version_no');
+      await this.assertBundleDefinitionVersionAvailable(
+        bundleProductId,
+        input.version_no,
+      );
+      versionNo = input.version_no;
+    } else {
+      versionNo = await this.getNextBundleDefinitionVersion(bundleProductId);
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_bundle_definitions')
+      .insert({
+        bundle_product_id: bundleProductId,
+        anchor_product_id: anchorProductId,
+        version_no: versionNo,
+        mode,
+        status,
+        pricing_strategy: pricingStrategy,
+        metadata: input.metadata ?? {},
+      })
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'bundle definition 생성 실패',
+        500,
+        'V2_BUNDLE_DEFINITION_CREATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async updateBundleDefinition(
+    definitionId: string,
+    input: UpdateV2BundleDefinitionInput,
+  ): Promise<any> {
+    const current = await this.getBundleDefinitionById(definitionId);
+    const updateData: Record<string, unknown> = {};
+
+    if (input.mode !== undefined) {
+      this.assertBundleMode(input.mode);
+      updateData.mode = input.mode;
+    }
+    if (input.pricing_strategy !== undefined) {
+      this.assertBundlePricingStrategy(input.pricing_strategy);
+      updateData.pricing_strategy = input.pricing_strategy;
+    }
+    if (input.status !== undefined) {
+      this.assertBundleStatus(input.status);
+      if (input.status === 'ACTIVE') {
+        throw new ApiException(
+          'ACTIVE 전환은 publish API를 사용하세요',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+      this.assertBundleStatusTransition(current.status, input.status);
+      updateData.status = input.status;
+    }
+    if (input.metadata !== undefined) {
+      updateData.metadata = input.metadata ?? {};
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return current;
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_bundle_definitions')
+      .update(updateData)
+      .eq('id', definitionId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'bundle definition 수정 실패',
+        500,
+        'V2_BUNDLE_DEFINITION_UPDATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async publishBundleDefinition(definitionId: string): Promise<any> {
+    const current = await this.getBundleDefinitionById(definitionId);
+    if (current.status === 'ARCHIVED') {
+      throw new ApiException(
+        'ARCHIVED bundle definition은 publish할 수 없습니다',
+        400,
+        'INVALID_STATUS_TRANSITION',
+      );
+    }
+    const validation = await this.validateBundleDefinition(definitionId, {});
+    if (!validation.ready) {
+      throw new ApiException(
+        'bundle definition 검증 실패: publish 전에 구성 유효성을 먼저 해결하세요',
+        400,
+        'V2_BUNDLE_DEFINITION_NOT_READY',
+      );
+    }
+
+    const { error: resetError } = await this.supabase
+      .from('v2_bundle_definitions')
+      .update({ status: 'DRAFT' })
+      .eq('bundle_product_id', current.bundle_product_id)
+      .eq('status', 'ACTIVE')
+      .is('deleted_at', null)
+      .neq('id', definitionId);
+
+    if (resetError) {
+      throw new ApiException(
+        '기존 ACTIVE bundle definition 정리 실패',
+        500,
+        'V2_BUNDLE_DEFINITION_UPDATE_FAILED',
+      );
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_bundle_definitions')
+      .update({ status: 'ACTIVE' })
+      .eq('id', definitionId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'bundle definition publish 실패',
+        500,
+        'V2_BUNDLE_DEFINITION_PUBLISH_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async archiveBundleDefinition(definitionId: string): Promise<any> {
+    const current = await this.getBundleDefinitionById(definitionId);
+    this.assertBundleStatusTransition(current.status, 'ARCHIVED');
+
+    const { data, error } = await this.supabase
+      .from('v2_bundle_definitions')
+      .update({ status: 'ARCHIVED' })
+      .eq('id', definitionId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'bundle definition archive 실패',
+        500,
+        'V2_BUNDLE_DEFINITION_ARCHIVE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async cloneBundleDefinitionVersion(
+    definitionId: string,
+    input: CloneV2BundleDefinitionVersionInput,
+  ): Promise<any> {
+    const sourceDefinition = await this.getBundleDefinitionById(definitionId);
+    if (sourceDefinition.status === 'ARCHIVED') {
+      throw new ApiException(
+        'ARCHIVED bundle definition은 clone할 수 없습니다',
+        400,
+        'INVALID_STATUS_TRANSITION',
+      );
+    }
+
+    const nextVersion = await this.getNextBundleDefinitionVersion(
+      sourceDefinition.bundle_product_id,
+    );
+    const clonedAt = new Date().toISOString();
+    const cloneMetadata = {
+      ...(sourceDefinition.metadata ?? {}),
+      ...(input.metadata_patch ?? {}),
+      cloned_from_definition_id: sourceDefinition.id,
+      cloned_at: clonedAt,
+    };
+
+    const { data: newDefinition, error: createError } = await this.supabase
+      .from('v2_bundle_definitions')
+      .insert({
+        bundle_product_id: sourceDefinition.bundle_product_id,
+        anchor_product_id: sourceDefinition.anchor_product_id,
+        version_no: nextVersion,
+        mode: sourceDefinition.mode,
+        status: 'DRAFT',
+        pricing_strategy: sourceDefinition.pricing_strategy,
+        metadata: cloneMetadata,
+      })
+      .select('*')
+      .single();
+
+    if (createError || !newDefinition) {
+      throw new ApiException(
+        'bundle definition version clone 실패',
+        500,
+        'V2_BUNDLE_DEFINITION_CLONE_FAILED',
+      );
+    }
+
+    const sourceComponents = await this.fetchBundleComponents(definitionId);
+    if (sourceComponents.length > 0) {
+      const { data: insertedComponents, error: componentInsertError } = await this.supabase
+        .from('v2_bundle_components')
+        .insert(
+          sourceComponents.map((component) => ({
+            bundle_definition_id: newDefinition.id,
+            component_variant_id: component.component_variant_id,
+            is_required: component.is_required,
+            min_quantity: component.min_quantity,
+            max_quantity: component.max_quantity,
+            default_quantity: component.default_quantity,
+            sort_order: component.sort_order,
+            price_allocation_weight: component.price_allocation_weight,
+            metadata: {
+              ...(component.metadata ?? {}),
+              cloned_from_component_id: component.id,
+              cloned_at: clonedAt,
+            },
+          })),
+        )
+        .select('id, component_variant_id');
+
+      if (componentInsertError) {
+        throw new ApiException(
+          'bundle component clone 실패',
+          500,
+          'V2_BUNDLE_COMPONENT_CLONE_FAILED',
+        );
+      }
+
+      const sourceComponentIds = sourceComponents.map((component) => component.id);
+      const { data: optionRows, error: optionFetchError } = await this.supabase
+        .from('v2_bundle_component_options')
+        .select('*')
+        .in('bundle_component_id', sourceComponentIds)
+        .order('sort_order', { ascending: true });
+
+      if (optionFetchError) {
+        throw new ApiException(
+          'bundle component option 조회 실패',
+          500,
+          'V2_BUNDLE_COMPONENT_OPTIONS_FETCH_FAILED',
+        );
+      }
+
+      if ((optionRows || []).length > 0) {
+        const sourceByVariantId = new Map(
+          sourceComponents.map((component) => [
+            component.component_variant_id as string,
+            component.id as string,
+          ]),
+        );
+        const insertedByVariantId = new Map<string, string>(
+          ((insertedComponents || []) as any[]).map((component) => [
+            component.component_variant_id as string,
+            component.id as string,
+          ]),
+        );
+        const oldToNewComponentId = new Map<string, string>();
+        sourceByVariantId.forEach((oldId, variantId) => {
+          const newId = insertedByVariantId.get(variantId);
+          if (newId) {
+            oldToNewComponentId.set(oldId, newId);
+          }
+        });
+
+        const rowsToInsert = (optionRows || [])
+          .map((row) => {
+            const mappedComponentId = oldToNewComponentId.get(
+              row.bundle_component_id as string,
+            );
+            if (!mappedComponentId) {
+              return null;
+            }
+            return {
+              bundle_component_id: mappedComponentId,
+              option_key: row.option_key,
+              option_value: row.option_value,
+              sort_order: row.sort_order ?? 0,
+              metadata: {
+                ...(row.metadata ?? {}),
+                cloned_from_option_id: row.id,
+                cloned_at: clonedAt,
+              },
+            };
+          })
+          .filter((row) => row !== null);
+
+        if (rowsToInsert.length > 0) {
+          const { error: optionInsertError } = await this.supabase
+            .from('v2_bundle_component_options')
+            .insert(rowsToInsert);
+
+          if (optionInsertError) {
+            throw new ApiException(
+              'bundle component option clone 실패',
+              500,
+              'V2_BUNDLE_COMPONENT_OPTIONS_CLONE_FAILED',
+            );
+          }
+        }
+      }
+    }
+
+    return this.getBundleDefinitionById(newDefinition.id);
+  }
+
+  async getBundleComponents(bundleDefinitionId: string): Promise<any[]> {
+    await this.getBundleDefinitionById(bundleDefinitionId);
+    const components = await this.fetchBundleComponents(bundleDefinitionId);
+    if (components.length === 0) {
+      return [];
+    }
+
+    const componentIds = components.map((component) => component.id);
+    const { data: optionRows, error: optionError } = await this.supabase
+      .from('v2_bundle_component_options')
+      .select('*')
+      .in('bundle_component_id', componentIds)
+      .order('sort_order', { ascending: true });
+
+    if (optionError) {
+      throw new ApiException(
+        'bundle component option 조회 실패',
+        500,
+        'V2_BUNDLE_COMPONENT_OPTIONS_FETCH_FAILED',
+      );
+    }
+
+    const optionsByComponentId = new Map<string, any[]>();
+    for (const option of optionRows || []) {
+      const current = optionsByComponentId.get(option.bundle_component_id) || [];
+      current.push(option);
+      optionsByComponentId.set(option.bundle_component_id, current);
+    }
+
+    return components.map((component) => ({
+      ...component,
+      options: optionsByComponentId.get(component.id) || [],
+    }));
+  }
+
+  async createBundleComponent(
+    bundleDefinitionId: string,
+    input: CreateV2BundleComponentInput,
+  ): Promise<any> {
+    const definition = await this.getBundleDefinitionById(bundleDefinitionId);
+    if (definition.status === 'ARCHIVED') {
+      throw new ApiException(
+        'ARCHIVED bundle definition에는 component를 추가할 수 없습니다',
+        400,
+        'INVALID_STATUS_TRANSITION',
+      );
+    }
+
+    const componentVariantId = this.normalizeRequiredText(
+      input.component_variant_id,
+      'component_variant_id는 필수입니다',
+    );
+    const componentVariant = await this.getVariantById(componentVariantId);
+    await this.assertBundleComponentVariantAllowed(componentVariant);
+
+    const minQuantity = input.min_quantity ?? 1;
+    const maxQuantity = input.max_quantity ?? minQuantity;
+    const defaultQuantity = input.default_quantity ?? minQuantity;
+    this.assertBundleComponentQuantityRange(minQuantity, maxQuantity, defaultQuantity);
+    this.assertSortOrder(input.sort_order);
+
+    const priceAllocationWeight = input.price_allocation_weight ?? 1;
+    this.assertNonNegativeNumber(
+      priceAllocationWeight,
+      'price_allocation_weight는 0 이상의 수여야 합니다',
+    );
+
+    const { data, error } = await this.supabase
+      .from('v2_bundle_components')
+      .insert({
+        bundle_definition_id: bundleDefinitionId,
+        component_variant_id: componentVariant.id,
+        is_required: input.is_required ?? true,
+        min_quantity: minQuantity,
+        max_quantity: maxQuantity,
+        default_quantity: defaultQuantity,
+        sort_order: input.sort_order ?? 0,
+        price_allocation_weight: priceAllocationWeight,
+        metadata: input.metadata ?? {},
+      })
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'bundle component 생성 실패',
+        500,
+        'V2_BUNDLE_COMPONENT_CREATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async updateBundleComponent(
+    componentId: string,
+    input: UpdateV2BundleComponentInput,
+  ): Promise<any> {
+    const current = await this.getBundleComponentById(componentId);
+    const definition = await this.getBundleDefinitionById(current.bundle_definition_id);
+    if (definition.status === 'ARCHIVED') {
+      throw new ApiException(
+        'ARCHIVED bundle definition의 component는 수정할 수 없습니다',
+        400,
+        'INVALID_STATUS_TRANSITION',
+      );
+    }
+
+    const updateData: Record<string, unknown> = {};
+
+    if (input.component_variant_id !== undefined) {
+      const variantId = this.normalizeRequiredText(
+        input.component_variant_id,
+        'component_variant_id는 필수입니다',
+      );
+      const variant = await this.getVariantById(variantId);
+      await this.assertBundleComponentVariantAllowed(variant);
+      updateData.component_variant_id = variantId;
+    }
+
+    const nextMin = input.min_quantity ?? current.min_quantity;
+    const nextMax = input.max_quantity ?? current.max_quantity;
+    const nextDefault = input.default_quantity ?? current.default_quantity;
+    this.assertBundleComponentQuantityRange(nextMin, nextMax, nextDefault);
+
+    if (input.min_quantity !== undefined) {
+      updateData.min_quantity = input.min_quantity;
+    }
+    if (input.max_quantity !== undefined) {
+      updateData.max_quantity = input.max_quantity;
+    }
+    if (input.default_quantity !== undefined) {
+      updateData.default_quantity = input.default_quantity;
+    }
+    if (input.is_required !== undefined) {
+      updateData.is_required = input.is_required;
+    }
+    if (input.sort_order !== undefined) {
+      this.assertSortOrder(input.sort_order);
+      updateData.sort_order = input.sort_order;
+    }
+    if (input.price_allocation_weight !== undefined) {
+      this.assertNonNegativeNumber(
+        input.price_allocation_weight,
+        'price_allocation_weight는 0 이상의 수여야 합니다',
+      );
+      updateData.price_allocation_weight = input.price_allocation_weight;
+    }
+    if (input.metadata !== undefined) {
+      updateData.metadata = input.metadata ?? {};
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return current;
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_bundle_components')
+      .update(updateData)
+      .eq('id', componentId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'bundle component 수정 실패',
+        500,
+        'V2_BUNDLE_COMPONENT_UPDATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async deleteBundleComponent(componentId: string): Promise<void> {
+    const component = await this.getBundleComponentById(componentId);
+    const definition = await this.getBundleDefinitionById(component.bundle_definition_id);
+    if (definition.status === 'ARCHIVED') {
+      throw new ApiException(
+        'ARCHIVED bundle definition의 component는 삭제할 수 없습니다',
+        400,
+        'INVALID_STATUS_TRANSITION',
+      );
+    }
+    const { error } = await this.supabase
+      .from('v2_bundle_components')
+      .update({
+        deleted_at: new Date().toISOString(),
+      })
+      .eq('id', componentId);
+
+    if (error) {
+      throw new ApiException(
+        'bundle component 삭제 실패',
+        500,
+        'V2_BUNDLE_COMPONENT_DELETE_FAILED',
+      );
+    }
+  }
+
+  async validateBundleDefinition(
+    bundleDefinitionId: string,
+    input: ValidateV2BundleDefinitionInput,
+  ): Promise<any> {
+    const definition = await this.getBundleDefinitionById(bundleDefinitionId);
+    const bundleProduct = await this.getProductById(definition.bundle_product_id);
+    const components = await this.fetchBundleComponents(bundleDefinitionId);
+    const selectedMap = this.normalizeBundleSelectionMap(input.selected_components);
+    const componentVariantIds = components.map(
+      (component) => component.component_variant_id as string,
+    );
+
+    let componentVariantsResolvable = true;
+    let componentVariantsDetail = 'all component variants are active and resolvable';
+    if (componentVariantIds.length > 0) {
+      const { data: variants, error: variantsError } = await this.supabase
+        .from('v2_product_variants')
+        .select('id,status')
+        .in('id', componentVariantIds)
+        .is('deleted_at', null);
+
+      if (variantsError) {
+        throw new ApiException(
+          'bundle validation용 variant 조회 실패',
+          500,
+          'V2_VARIANTS_FETCH_FAILED',
+        );
+      }
+
+      const variantById = new Map<string, any>(
+        ((variants || []) as any[]).map((variant) => [variant.id as string, variant]),
+      );
+
+      const missingVariantIds = componentVariantIds.filter(
+        (variantId) => !variantById.has(variantId),
+      );
+      const inactiveVariantIds = ((variants || []) as any[])
+        .filter((variant) => variant.status === 'INACTIVE')
+        .map((variant) => variant.id as string);
+
+      if (missingVariantIds.length > 0 || inactiveVariantIds.length > 0) {
+        componentVariantsResolvable = false;
+        componentVariantsDetail = `missing=${missingVariantIds.length}, inactive=${inactiveVariantIds.length}`;
+      }
+    }
+
+    const componentByVariantId = new Map(
+      components.map((component) => [component.component_variant_id as string, component]),
+    );
+    const selectedKnown = Array.from(selectedMap.keys()).every((variantId) =>
+      componentByVariantId.has(variantId),
+    );
+
+    const resolvedSelections = components.map((component) => {
+      const variantId = component.component_variant_id as string;
+      const selectedQuantity = selectedMap.get(variantId);
+      const quantityPerParent =
+        definition.mode === 'CUSTOMIZABLE'
+          ? (selectedQuantity ?? component.default_quantity)
+          : component.default_quantity;
+      return {
+        bundle_component_id: component.id,
+        component_variant_id: variantId,
+        quantity_per_parent: quantityPerParent,
+      };
+    });
+
+    const selectedWithinRange = resolvedSelections.every((selection) => {
+      const component = componentByVariantId.get(selection.component_variant_id);
+      if (!component) {
+        return false;
+      }
+      return (
+        selection.quantity_per_parent >= component.min_quantity &&
+        selection.quantity_per_parent <= component.max_quantity
+      );
+    });
+
+    const requiredSatisfied = components.every((component) => {
+      if (!component.is_required) {
+        return true;
+      }
+      const matched = resolvedSelections.find(
+        (selection) => selection.component_variant_id === component.component_variant_id,
+      );
+      return (matched?.quantity_per_parent ?? 0) >= component.min_quantity;
+    });
+    const fixedModeSelectionConsistent =
+      definition.mode !== 'FIXED' ||
+      Array.from(selectedMap.entries()).every(([variantId, quantity]) => {
+        const component = componentByVariantId.get(variantId);
+        return !!component && quantity === component.default_quantity;
+      });
+
+    const checks = [
+      {
+        key: 'bundle_product_kind_valid',
+        passed: bundleProduct.product_kind === 'BUNDLE',
+        detail: `bundle_product_kind=${bundleProduct.product_kind}`,
+      },
+      {
+        key: 'has_components',
+        passed: components.length > 0,
+        detail: `component_count=${components.length}`,
+      },
+      {
+        key: 'component_variants_resolvable',
+        passed: componentVariantsResolvable,
+        detail: componentVariantsDetail,
+      },
+      {
+        key: 'component_quantity_range_valid',
+        passed: components.every(
+          (component) =>
+            component.min_quantity <= component.default_quantity &&
+            component.default_quantity <= component.max_quantity,
+        ),
+        detail: '각 component의 min/default/max 범위 유효성 확인',
+      },
+      {
+        key: 'pricing_weights_valid',
+        passed:
+          definition.pricing_strategy !== 'WEIGHTED' ||
+          components.every(
+            (component) => Number(component.price_allocation_weight ?? 0) > 0,
+          ),
+        detail: `pricing_strategy=${definition.pricing_strategy}`,
+      },
+      {
+        key: 'fixed_mode_components_required',
+        passed:
+          definition.mode !== 'FIXED' ||
+          components.every((component) => component.is_required === true),
+        detail: `mode=${definition.mode}`,
+      },
+      {
+        key: 'fixed_mode_selection_consistent',
+        passed: fixedModeSelectionConsistent,
+        detail:
+          definition.mode !== 'FIXED'
+            ? 'mode is not FIXED'
+            : 'selected quantities must match default quantities',
+      },
+      {
+        key: 'selected_components_known',
+        passed: selectedKnown,
+        detail: selectedKnown
+          ? 'all selected components are known'
+          : 'unknown selected component variant exists',
+      },
+      {
+        key: 'selected_components_within_range',
+        passed: selectedWithinRange,
+        detail: selectedWithinRange
+          ? 'selected quantities are within range'
+          : 'selected quantity out of range exists',
+      },
+      {
+        key: 'required_components_satisfied',
+        passed: requiredSatisfied,
+        detail: requiredSatisfied
+          ? 'all required components are satisfied'
+          : 'required component quantity is missing',
+      },
+    ];
+
+    return {
+      bundle_definition_id: bundleDefinitionId,
+      mode: definition.mode,
+      status: definition.status,
+      ready: checks.every((check) => check.passed),
+      checks,
+      selected_components_resolved: resolvedSelections,
+    };
+  }
+
+  async previewBundle(input: PreviewV2BundleInput): Promise<any> {
+    return this.resolveBundle({
+      bundle_definition_id: input.bundle_definition_id,
+      parent_variant_id: null,
+      parent_quantity: input.parent_quantity,
+      parent_unit_amount: null,
+      selected_components: input.selected_components,
+    });
+  }
+
+  async resolveBundle(input: ResolveV2BundleInput): Promise<any> {
+    const bundleDefinitionId = this.normalizeRequiredText(
+      input.bundle_definition_id,
+      'bundle_definition_id는 필수입니다',
+    );
+    const parentQuantity = input.parent_quantity ?? 1;
+    this.assertPositiveInteger(parentQuantity, 'parent_quantity');
+
+    let parentUnitAmount: number | null = null;
+    if (input.parent_unit_amount !== undefined && input.parent_unit_amount !== null) {
+      if (
+        !Number.isInteger(input.parent_unit_amount) ||
+        input.parent_unit_amount < 0
+      ) {
+        throw new ApiException(
+          'parent_unit_amount는 0 이상의 정수여야 합니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+      parentUnitAmount = input.parent_unit_amount;
+    }
+
+    const definition = await this.getBundleDefinitionById(bundleDefinitionId);
+    const validation = await this.validateBundleDefinition(bundleDefinitionId, {
+      selected_components: input.selected_components,
+    });
+    if (!validation.ready) {
+      throw new ApiException(
+        'bundle resolve 전 구성 검증에 실패했습니다',
+        400,
+        'BUNDLE_RESOLVE_VALIDATION_FAILED',
+      );
+    }
+
+    const components = await this.fetchBundleComponents(bundleDefinitionId);
+    const componentVariantIds = components.map(
+      (component) => component.component_variant_id as string,
+    );
+    const { data: variants, error: variantsError } = await this.supabase
+      .from('v2_product_variants')
+      .select('id,product_id,sku,title,fulfillment_type,requires_shipping,status')
+      .in('id', componentVariantIds)
+      .is('deleted_at', null);
+
+    if (variantsError) {
+      throw new ApiException(
+        'bundle resolve용 variant 조회 실패',
+        500,
+        'V2_VARIANTS_FETCH_FAILED',
+      );
+    }
+
+    const variantById = new Map<string, any>(
+      ((variants || []) as any[]).map((variant) => [variant.id as string, variant]),
+    );
+    const missingVariantIds = componentVariantIds.filter(
+      (variantId) => !variantById.has(variantId),
+    );
+    if (missingVariantIds.length > 0) {
+      throw new ApiException(
+        'bundle resolve에 필요한 component variant를 찾을 수 없습니다',
+        400,
+        'BUNDLE_RESOLVE_VARIANT_NOT_FOUND',
+      );
+    }
+    const inactiveVariantIds = ((variants || []) as any[])
+      .filter((variant) => variant.status === 'INACTIVE')
+      .map((variant) => variant.id as string);
+    if (inactiveVariantIds.length > 0) {
+      throw new ApiException(
+        'INACTIVE component variant는 bundle resolve에 사용할 수 없습니다',
+        400,
+        'BUNDLE_RESOLVE_VARIANT_INACTIVE',
+      );
+    }
+
+    const resolvedSelections = validation.selected_components_resolved as Array<{
+      bundle_component_id: string;
+      component_variant_id: string;
+      quantity_per_parent: number;
+    }>;
+
+    const componentById = new Map(
+      components.map((component) => [component.id as string, component]),
+    );
+
+    const componentLines = resolvedSelections
+      .map((selection) => {
+        const component = componentById.get(selection.bundle_component_id);
+        const variant = variantById.get(selection.component_variant_id);
+        if (!component || !variant || selection.quantity_per_parent <= 0) {
+          return null;
+        }
+        return {
+          line_type: 'BUNDLE_COMPONENT',
+          bundle_component_id_snapshot: component.id,
+          component_variant_id: variant.id,
+          component_variant_sku: variant.sku,
+          component_variant_title: variant.title,
+          fulfillment_type: variant.fulfillment_type,
+          requires_shipping: variant.requires_shipping,
+          quantity_per_parent: selection.quantity_per_parent,
+          quantity: selection.quantity_per_parent * parentQuantity,
+          allocation_weight:
+            Number(component.price_allocation_weight ?? 0) *
+            selection.quantity_per_parent,
+          allocated_unit_amount: null as number | null,
+          allocated_discount_amount: 0,
+          allocated_total_amount_per_parent: null as number | null,
+        };
+      })
+      .filter((line): line is NonNullable<typeof line> => line !== null);
+
+    if (parentUnitAmount !== null && componentLines.length > 0) {
+      const allocations = this.allocateAmountByWeights(
+        parentUnitAmount,
+        componentLines.map((line) => line.allocation_weight),
+      );
+      componentLines.forEach((line, index) => {
+        const perParentAllocated = allocations[index] ?? 0;
+        line.allocated_total_amount_per_parent = perParentAllocated;
+        const unitAmount = Math.floor(perParentAllocated / line.quantity_per_parent);
+        line.allocated_unit_amount = unitAmount;
+        line.allocated_discount_amount =
+          perParentAllocated - unitAmount * line.quantity_per_parent;
+      });
+    }
+
+    const digitalLines = componentLines.filter(
+      (line) => line.fulfillment_type === 'DIGITAL',
+    );
+    const physicalLines = componentLines.filter(
+      (line) => line.fulfillment_type === 'PHYSICAL',
+    );
+    const allocatedComponentTotalPerParent =
+      parentUnitAmount === null
+        ? null
+        : componentLines.reduce(
+            (sum, line) => sum + (line.allocated_total_amount_per_parent ?? 0),
+            0,
+          );
+
+    return {
+      bundle_definition_id: bundleDefinitionId,
+      mode: definition.mode,
+      status: definition.status,
+      parent_line: {
+        line_type: 'BUNDLE_PARENT',
+        bundle_definition_id_snapshot: bundleDefinitionId,
+        parent_variant_id: input.parent_variant_id ?? null,
+        quantity: parentQuantity,
+        parent_unit_amount: parentUnitAmount,
+      },
+      component_lines: componentLines,
+      fulfillment_groups: {
+        digital: digitalLines.map((line) => ({
+          component_variant_id: line.component_variant_id,
+          quantity: line.quantity,
+        })),
+        physical: physicalLines.map((line) => ({
+          component_variant_id: line.component_variant_id,
+          quantity: line.quantity,
+        })),
+      },
+      summary: {
+        component_line_count: componentLines.length,
+        total_component_quantity: componentLines.reduce(
+          (sum, line) => sum + line.quantity,
+          0,
+        ),
+        allocation: {
+          parent_unit_amount: parentUnitAmount,
+          component_total_per_parent: allocatedComponentTotalPerParent,
+          difference_per_parent:
+            parentUnitAmount === null || allocatedComponentTotalPerParent === null
+              ? null
+              : parentUnitAmount - allocatedComponentTotalPerParent,
+        },
+      },
+    };
+  }
+
   private normalizeMigrationSampleLimit(sampleLimit: number): number {
     if (!Number.isFinite(sampleLimit)) {
       return 20;
@@ -2230,6 +3287,271 @@ export class V2CatalogService {
 
     const sampleValue = (groupValue as Record<string, unknown>)[key];
     return Array.isArray(sampleValue) ? sampleValue : [];
+  }
+
+  private async fetchBundleComponents(bundleDefinitionId: string): Promise<any[]> {
+    const { data, error } = await this.supabase
+      .from('v2_bundle_components')
+      .select('*')
+      .eq('bundle_definition_id', bundleDefinitionId)
+      .is('deleted_at', null)
+      .order('sort_order', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        'bundle component 목록 조회 실패',
+        500,
+        'V2_BUNDLE_COMPONENTS_FETCH_FAILED',
+      );
+    }
+
+    return data || [];
+  }
+
+  private async getBundleComponentById(componentId: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('v2_bundle_components')
+      .select('*')
+      .eq('id', componentId)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'bundle component 조회 실패',
+        500,
+        'V2_BUNDLE_COMPONENT_FETCH_FAILED',
+      );
+    }
+    if (!data) {
+      throw new ApiException(
+        'bundle component를 찾을 수 없습니다',
+        404,
+        'V2_BUNDLE_COMPONENT_NOT_FOUND',
+      );
+    }
+
+    return data;
+  }
+
+  private async getNextBundleDefinitionVersion(
+    bundleProductId: string,
+  ): Promise<number> {
+    const { data, error } = await this.supabase
+      .from('v2_bundle_definitions')
+      .select('version_no')
+      .eq('bundle_product_id', bundleProductId)
+      .order('version_no', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'bundle definition version 조회 실패',
+        500,
+        'V2_BUNDLE_DEFINITION_FETCH_FAILED',
+      );
+    }
+
+    return (data?.version_no ?? 0) + 1;
+  }
+
+  private async assertBundleDefinitionVersionAvailable(
+    bundleProductId: string,
+    versionNo: number,
+  ): Promise<void> {
+    const { data, error } = await this.supabase
+      .from('v2_bundle_definitions')
+      .select('id')
+      .eq('bundle_product_id', bundleProductId)
+      .eq('version_no', versionNo)
+      .is('deleted_at', null)
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'bundle definition version 중복 검사 실패',
+        500,
+        'V2_BUNDLE_DEFINITION_FETCH_FAILED',
+      );
+    }
+    if (data) {
+      throw new ApiException(
+        '이미 사용 중인 bundle version입니다',
+        409,
+        'V2_BUNDLE_DEFINITION_VERSION_EXISTS',
+      );
+    }
+  }
+
+  private async assertBundleComponentVariantAllowed(variant: any): Promise<void> {
+    const product = await this.getProductById(variant.product_id as string);
+    if (product.product_kind === 'BUNDLE') {
+      throw new ApiException(
+        '1차 rollout에서는 BUNDLE을 component로 중첩할 수 없습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    if (variant.status === 'INACTIVE') {
+      throw new ApiException(
+        'INACTIVE variant는 bundle component로 사용할 수 없습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private normalizeBundleSelectionMap(
+    selections: BundleComponentSelectionInput[] | undefined,
+  ): Map<string, number> {
+    const result = new Map<string, number>();
+    if (!selections || selections.length === 0) {
+      return result;
+    }
+
+    for (const selection of selections) {
+      const variantId = this.normalizeRequiredText(
+        selection.component_variant_id,
+        'selected_components.component_variant_id는 필수입니다',
+      );
+      const quantity = selection.quantity ?? 0;
+      if (!Number.isInteger(quantity) || quantity < 0) {
+        throw new ApiException(
+          'selected_components.quantity는 0 이상의 정수여야 합니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+      result.set(variantId, quantity);
+    }
+
+    return result;
+  }
+
+  private assertBundleMode(value: string): void {
+    const allowed: V2BundleMode[] = ['FIXED', 'CUSTOMIZABLE'];
+    if (!allowed.includes(value as V2BundleMode)) {
+      throw new ApiException(
+        'bundle mode 값이 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private assertBundleStatus(value: string): void {
+    const allowed: V2BundleStatus[] = ['DRAFT', 'ACTIVE', 'ARCHIVED'];
+    if (!allowed.includes(value as V2BundleStatus)) {
+      throw new ApiException(
+        'bundle status 값이 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private assertBundlePricingStrategy(value: string): void {
+    const allowed: V2BundlePricingStrategy[] = ['WEIGHTED', 'FIXED_AMOUNT'];
+    if (!allowed.includes(value as V2BundlePricingStrategy)) {
+      throw new ApiException(
+        'bundle pricing_strategy 값이 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private assertBundleStatusTransition(
+    current: V2BundleStatus,
+    next: V2BundleStatus,
+  ): void {
+    const allowed: Record<V2BundleStatus, V2BundleStatus[]> = {
+      DRAFT: ['DRAFT', 'ACTIVE', 'ARCHIVED'],
+      ACTIVE: ['ACTIVE', 'DRAFT', 'ARCHIVED'],
+      ARCHIVED: ['ARCHIVED'],
+    };
+    if (!allowed[current].includes(next)) {
+      throw new ApiException(
+        `허용되지 않는 bundle 상태 전이입니다: ${current} -> ${next}`,
+        400,
+        'INVALID_STATUS_TRANSITION',
+      );
+    }
+  }
+
+  private assertBundleComponentQuantityRange(
+    minQuantity: number,
+    maxQuantity: number,
+    defaultQuantity: number,
+  ): void {
+    if (
+      !Number.isInteger(minQuantity) ||
+      !Number.isInteger(maxQuantity) ||
+      !Number.isInteger(defaultQuantity) ||
+      minQuantity < 0 ||
+      maxQuantity < 1 ||
+      minQuantity > maxQuantity ||
+      defaultQuantity < minQuantity ||
+      defaultQuantity > maxQuantity
+    ) {
+      throw new ApiException(
+        'bundle component 수량(min/max/default) 범위가 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private assertNonNegativeNumber(value: number, errorMessage: string): void {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new ApiException(errorMessage, 400, 'VALIDATION_ERROR');
+    }
+  }
+
+  private allocateAmountByWeights(totalAmount: number, weights: number[]): number[] {
+    if (weights.length === 0) {
+      return [];
+    }
+    const normalizedWeights = weights.map((weight) => (weight > 0 ? weight : 0));
+    const totalWeight = normalizedWeights.reduce((sum, weight) => sum + weight, 0);
+
+    if (totalWeight <= 0) {
+      const base = Math.floor(totalAmount / weights.length);
+      let remainder = totalAmount - base * weights.length;
+      return weights.map((_, index) => {
+        if (remainder > 0) {
+          remainder -= 1;
+          return base + 1;
+        }
+        return base;
+      });
+    }
+
+    const rawAllocations = normalizedWeights.map(
+      (weight) => (totalAmount * weight) / totalWeight,
+    );
+    const floored = rawAllocations.map((value) => Math.floor(value));
+    let remainder =
+      totalAmount - floored.reduce((sum, allocation) => sum + allocation, 0);
+
+    const order = rawAllocations
+      .map((value, index) => ({
+        index,
+        fraction: value - Math.floor(value),
+      }))
+      .sort((a, b) => b.fraction - a.fraction);
+
+    let orderIndex = 0;
+    while (remainder > 0 && order.length > 0) {
+      const target = order[orderIndex % order.length];
+      floored[target.index] += 1;
+      remainder -= 1;
+      orderIndex += 1;
+    }
+
+    return floored;
   }
 
   private async ensureProjectExists(projectId: string): Promise<void> {

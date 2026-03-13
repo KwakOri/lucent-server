@@ -57,6 +57,182 @@ export class V2CatalogController {
     return successResponse(tasks);
   }
 
+  @Get('bundles/definitions')
+  async getBundleDefinitions(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('bundleProductId') bundleProductId?: string,
+    @Query('status') status?: 'DRAFT' | 'ACTIVE' | 'ARCHIVED',
+  ) {
+    await this.requireAdmin(authorization);
+    const definitions = await this.v2CatalogService.getBundleDefinitions({
+      bundleProductId,
+      status,
+    });
+    return successResponse(definitions);
+  }
+
+  @Get('bundles/definitions/:id')
+  async getBundleDefinitionById(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') definitionId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const definition = await this.v2CatalogService.getBundleDefinitionById(
+      definitionId,
+    );
+    return successResponse(definition);
+  }
+
+  @Post('bundles/definitions')
+  async createBundleDefinition(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const definition = await this.v2CatalogService.createBundleDefinition(body);
+    return successResponse(definition);
+  }
+
+  @Patch('bundles/definitions/:id')
+  async updateBundleDefinition(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') definitionId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const definition = await this.v2CatalogService.updateBundleDefinition(
+      definitionId,
+      body,
+    );
+    return successResponse(definition);
+  }
+
+  @Post('bundles/definitions/:id/publish')
+  async publishBundleDefinition(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') definitionId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const definition = await this.v2CatalogService.publishBundleDefinition(
+      definitionId,
+    );
+    return successResponse(
+      definition,
+      'bundle definition이 ACTIVE 상태로 변경되었습니다',
+    );
+  }
+
+  @Post('bundles/definitions/:id/archive')
+  async archiveBundleDefinition(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') definitionId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const definition = await this.v2CatalogService.archiveBundleDefinition(
+      definitionId,
+    );
+    return successResponse(
+      definition,
+      'bundle definition이 ARCHIVED 상태로 변경되었습니다',
+    );
+  }
+
+  @Post('bundles/definitions/:id/clone-version')
+  async cloneBundleDefinitionVersion(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') definitionId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const definition = await this.v2CatalogService.cloneBundleDefinitionVersion(
+      definitionId,
+      body,
+    );
+    return successResponse(definition, 'bundle definition 신규 버전이 생성되었습니다');
+  }
+
+  @Get('bundles/definitions/:id/components')
+  async getBundleComponents(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') definitionId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const components = await this.v2CatalogService.getBundleComponents(definitionId);
+    return successResponse(components);
+  }
+
+  @Post('bundles/definitions/:id/components')
+  async createBundleComponent(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') definitionId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const component = await this.v2CatalogService.createBundleComponent(
+      definitionId,
+      body,
+    );
+    return successResponse(component);
+  }
+
+  @Patch('bundles/components/:id')
+  async updateBundleComponent(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') componentId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const component = await this.v2CatalogService.updateBundleComponent(
+      componentId,
+      body,
+    );
+    return successResponse(component);
+  }
+
+  @Delete('bundles/components/:id')
+  async deleteBundleComponent(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') componentId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    await this.v2CatalogService.deleteBundleComponent(componentId);
+    return successResponse({ message: 'bundle component가 삭제되었습니다' });
+  }
+
+  @Post('bundles/definitions/:id/validate')
+  async validateBundleDefinition(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') definitionId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const validation = await this.v2CatalogService.validateBundleDefinition(
+      definitionId,
+      body,
+    );
+    return successResponse(validation);
+  }
+
+  @Post('bundles/preview')
+  async previewBundle(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const preview = await this.v2CatalogService.previewBundle(body);
+    return successResponse(preview);
+  }
+
+  @Post('bundles/resolve')
+  async resolveBundle(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2CatalogService.resolveBundle(body);
+    return successResponse(result);
+  }
+
   @Get('projects')
   async getProjects(
     @Headers('authorization') authorization: string | undefined,
