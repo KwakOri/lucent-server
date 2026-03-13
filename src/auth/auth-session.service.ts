@@ -5,6 +5,15 @@ import { getSupabaseClient } from '../supabase/supabase.client';
 
 @Injectable()
 export class AuthSessionService {
+  private parseBooleanEnv(value?: string): boolean {
+    if (!value) {
+      return false;
+    }
+
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes';
+  }
+
   extractAccessToken(authorizationHeader?: string): string | null {
     if (!authorizationHeader) {
       return null;
@@ -67,5 +76,13 @@ export class AuthSessionService {
       .filter(Boolean);
 
     return adminEmails.includes(email.toLowerCase());
+  }
+
+  isLocalAdminBypassEnabled(): boolean {
+    if (process.env.NODE_ENV === 'production') {
+      return false;
+    }
+
+    return this.parseBooleanEnv(process.env.LOCAL_ADMIN_BYPASS);
   }
 }

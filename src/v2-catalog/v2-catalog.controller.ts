@@ -631,6 +631,10 @@ export class V2CatalogController {
   }
 
   private async requireAdmin(authorization: string | undefined): Promise<void> {
+    if (this.authSessionService.isLocalAdminBypassEnabled()) {
+      return;
+    }
+
     const user = await this.authSessionService.requireUser(authorization);
     if (!this.authSessionService.isAdmin(user.email)) {
       throw new ApiException('관리자 권한이 필요합니다', 403, 'ADMIN_REQUIRED');

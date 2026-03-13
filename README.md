@@ -115,6 +115,7 @@ curl -X POST http://localhost:3001/api/notifications/kakao/alimtalk \
 - `SENDON_SDK_PACKAGE` (default: `@alipeople/sendon-sdk-typescript`)
 - `KAKAO_REST_API_KEY` (주소 검색 API 사용 시)
 - `ADMIN_EMAILS` (comma-separated, 세션 응답의 관리자 판별)
+- `LOCAL_ADMIN_BYPASS` (local/dev only, `true`면 `/api/v2/catalog/admin/*` 관리자 인증 우회)
 - `FRONTEND_APP_URL` (이메일 인증/비밀번호 재설정 리다이렉트 기준 URL)
 
 ### Supabase (type-safe client)
