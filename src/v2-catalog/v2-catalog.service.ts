@@ -233,6 +233,14 @@ interface ResolveV2BundleInput {
   selected_components?: BundleComponentSelectionInput[];
 }
 
+interface BuildV2BundleOpsContractInput {
+  bundle_definition_id?: string;
+  parent_variant_id?: string | null;
+  parent_quantity?: number;
+  parent_unit_amount?: number | null;
+  selected_components?: BundleComponentSelectionInput[];
+}
+
 interface PreviewV2BundleInput {
   bundle_definition_id?: string;
   parent_quantity?: number;
@@ -3252,6 +3260,74 @@ export class V2CatalogService {
               ? null
               : parentUnitAmount - allocatedComponentTotalPerParent,
         },
+      },
+    };
+  }
+
+  async buildBundleOpsContract(input: BuildV2BundleOpsContractInput): Promise<any> {
+    const resolved = await this.resolveBundle({
+      bundle_definition_id: input.bundle_definition_id,
+      parent_variant_id: input.parent_variant_id,
+      parent_quantity: input.parent_quantity,
+      parent_unit_amount: input.parent_unit_amount,
+      selected_components: input.selected_components,
+    });
+
+    const componentContracts = (resolved.component_lines as any[]).map((line) => ({
+      bundle_component_id_snapshot: line.bundle_component_id_snapshot as string,
+      component_variant_id: line.component_variant_id as string,
+      component_variant_sku: line.component_variant_sku as string,
+      fulfillment_type: line.fulfillment_type as V2FulfillmentType,
+      requires_shipping: Boolean(line.requires_shipping),
+      quantity: Number(line.quantity ?? 0),
+      refund_contract: {
+        supported: true,
+        basis: 'COMPONENT_LINE',
+        quantity_field: 'order_items.quantity',
+        amount_fields: [
+          'order_items.allocated_unit_amount',
+          'order_items.allocated_discount_amount',
+        ],
+        snapshot_field: 'order_items.bundle_component_id_snapshot',
+      },
+      reship_contract: {
+        supported:
+          line.fulfillment_type === 'PHYSICAL' && Boolean(line.requires_shipping),
+        basis: 'COMPONENT_LINE',
+        quantity_field: 'order_items.quantity',
+        snapshot_field: 'order_items.bundle_component_id_snapshot',
+      },
+      digital_regrant_contract: {
+        supported: line.fulfillment_type === 'DIGITAL',
+        basis: 'COMPONENT_LINE',
+        snapshot_field: 'order_items.bundle_component_id_snapshot',
+      },
+    }));
+
+    return {
+      bundle_definition_id: resolved.bundle_definition_id,
+      mode: resolved.mode,
+      status: resolved.status,
+      policy_version: '2026-03-13.bundle-component-ops.v1',
+      parent_line_contract: {
+        line_type: 'BUNDLE_PARENT',
+        direct_refund_supported: false,
+        direct_reship_supported: false,
+        reason:
+          'parent line은 component 분해 기준의 참조 행이며, CS/환불/재발송은 component line 기준으로 처리합니다',
+      },
+      component_line_contracts: componentContracts,
+      summary: {
+        component_line_count: componentContracts.length,
+        refundable_component_lines: componentContracts.filter(
+          (contract) => contract.refund_contract.supported,
+        ).length,
+        reshippable_component_lines: componentContracts.filter(
+          (contract) => contract.reship_contract.supported,
+        ).length,
+        digital_regrant_component_lines: componentContracts.filter(
+          (contract) => contract.digital_regrant_contract.supported,
+        ).length,
       },
     };
   }

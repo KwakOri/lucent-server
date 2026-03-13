@@ -271,6 +271,16 @@ export class V2CatalogController {
     return successResponse(result);
   }
 
+  @Post('bundles/ops-contract')
+  async buildBundleOpsContract(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const contract = await this.v2CatalogService.buildBundleOpsContract(body);
+    return successResponse(contract);
+  }
+
   @Get('projects')
   async getProjects(
     @Headers('authorization') authorization: string | undefined,
