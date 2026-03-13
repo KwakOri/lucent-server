@@ -241,6 +241,12 @@ interface BuildV2BundleOpsContractInput {
   selected_components?: BundleComponentSelectionInput[];
 }
 
+interface BuildV2BundleCanaryReportInput {
+  definition_ids?: string[];
+  sample_parent_quantity?: number;
+  sample_parent_unit_amount?: number | null;
+}
+
 interface PreviewV2BundleInput {
   bundle_definition_id?: string;
   parent_quantity?: number;
@@ -3330,6 +3336,268 @@ export class V2CatalogService {
         ).length,
       },
     };
+  }
+
+  async buildBundleCanaryReport(
+    input: BuildV2BundleCanaryReportInput,
+  ): Promise<any> {
+    const generatedAt = new Date().toISOString();
+    const explicitDefinitionIds = Array.isArray(input.definition_ids)
+      ? Array.from(
+          new Set(
+            input.definition_ids
+              .map((id) => this.normalizeOptionalText(id))
+              .filter((id): id is string => !!id),
+          ),
+        )
+      : [];
+
+    const sampleParentQuantity = input.sample_parent_quantity ?? 1;
+    this.assertPositiveInteger(sampleParentQuantity, 'sample_parent_quantity');
+
+    let sampleParentUnitAmount: number | null = null;
+    if (
+      input.sample_parent_unit_amount !== undefined &&
+      input.sample_parent_unit_amount !== null
+    ) {
+      if (
+        !Number.isInteger(input.sample_parent_unit_amount) ||
+        input.sample_parent_unit_amount < 0
+      ) {
+        throw new ApiException(
+          'sample_parent_unit_amount는 0 이상의 정수여야 합니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+      sampleParentUnitAmount = input.sample_parent_unit_amount;
+    }
+
+    let targetDefinitionIds = explicitDefinitionIds;
+    let source: 'EXPLICIT' | 'ACTIVE_DEFAULT' = 'EXPLICIT';
+
+    if (targetDefinitionIds.length === 0) {
+      source = 'ACTIVE_DEFAULT';
+      const { data: activeDefinitions, error } = await this.supabase
+        .from('v2_bundle_definitions')
+        .select('id')
+        .eq('status', 'ACTIVE')
+        .is('deleted_at', null)
+        .order('updated_at', { ascending: false })
+        .limit(20);
+
+      if (error) {
+        throw new ApiException(
+          'canary 대상 bundle definition 조회 실패',
+          500,
+          'V2_BUNDLE_DEFINITIONS_FETCH_FAILED',
+        );
+      }
+
+      targetDefinitionIds = ((activeDefinitions || []) as any[]).map(
+        (definition) => definition.id as string,
+      );
+    }
+
+    if (targetDefinitionIds.length === 0) {
+      return {
+        generated_at: generatedAt,
+        source,
+        sample_parent_quantity: sampleParentQuantity,
+        sample_parent_unit_amount: sampleParentUnitAmount,
+        target_count: 0,
+        summary: {
+          ready_count: 0,
+          monitoring_count: 0,
+          blocked_count: 0,
+        },
+        targets: [],
+      };
+    }
+
+    const targets = [];
+
+    for (const definitionId of targetDefinitionIds) {
+      const definition = await this.getBundleDefinitionById(definitionId);
+      const validation = await this.validateBundleDefinition(definitionId, {});
+
+      let shadowResolvePass = false;
+      let shadowResolveError: string | null = null;
+      let shadowAllocationDiff: number | null = null;
+
+      if (validation.ready) {
+        try {
+          const shadowResolved = await this.resolveBundle({
+            bundle_definition_id: definitionId,
+            parent_quantity: sampleParentQuantity,
+            parent_unit_amount: sampleParentUnitAmount,
+            selected_components: [],
+          });
+          shadowAllocationDiff =
+            shadowResolved.summary?.allocation?.difference_per_parent ?? null;
+          shadowResolvePass =
+            shadowAllocationDiff === null || shadowAllocationDiff === 0;
+          if (!shadowResolvePass) {
+            shadowResolveError = `allocation difference=${shadowAllocationDiff}`;
+          }
+        } catch (error) {
+          shadowResolveError = this.extractApiExceptionMessage(error);
+        }
+      } else {
+        shadowResolveError = 'validation_not_ready';
+      }
+
+      const liveSnapshot = await this.buildBundleCanaryLiveSnapshotSummary(
+        definitionId,
+      );
+
+      let canaryStatus: 'READY' | 'MONITORING' | 'BLOCKED' = 'BLOCKED';
+      if (validation.ready && shadowResolvePass) {
+        if (!liveSnapshot.has_live_orders) {
+          canaryStatus = 'READY';
+        } else if (liveSnapshot.snapshot_integrity_passed === true) {
+          canaryStatus = 'MONITORING';
+        } else {
+          canaryStatus = 'BLOCKED';
+        }
+      }
+
+      targets.push({
+        definition_id: definitionId,
+        bundle_product_id: definition.bundle_product_id,
+        version_no: definition.version_no,
+        status: definition.status,
+        mode: definition.mode,
+        validation_ready: validation.ready,
+        failed_validation_checks: (validation.checks as any[])
+          .filter((check) => !check.passed)
+          .map((check) => check.key),
+        shadow_resolution: {
+          pass: shadowResolvePass,
+          error: shadowResolveError,
+          allocation_difference_per_parent: shadowAllocationDiff,
+        },
+        live_snapshot: liveSnapshot,
+        canary_status: canaryStatus,
+      });
+    }
+
+    return {
+      generated_at: generatedAt,
+      source,
+      sample_parent_quantity: sampleParentQuantity,
+      sample_parent_unit_amount: sampleParentUnitAmount,
+      target_count: targets.length,
+      summary: {
+        ready_count: targets.filter((target) => target.canary_status === 'READY')
+          .length,
+        monitoring_count: targets.filter(
+          (target) => target.canary_status === 'MONITORING',
+        ).length,
+        blocked_count: targets.filter(
+          (target) => target.canary_status === 'BLOCKED',
+        ).length,
+      },
+      targets,
+    };
+  }
+
+  private async buildBundleCanaryLiveSnapshotSummary(
+    definitionId: string,
+  ): Promise<{
+    has_live_orders: boolean;
+    parent_line_count: number;
+    component_line_count: number;
+    component_missing_parent_ref: number;
+    orphan_component_lines: number;
+    component_missing_snapshot: number;
+    snapshot_integrity_passed: boolean | null;
+  }> {
+    const components = await this.fetchBundleComponents(definitionId);
+    const componentIds = components.map((component) => component.id as string);
+
+    const { data: parentRows, error: parentError } = await this.supabase
+      .from('order_items')
+      .select(
+        'id,order_id,line_type,parent_order_item_id,bundle_definition_id_snapshot,bundle_component_id_snapshot,allocated_unit_amount,allocated_discount_amount',
+      )
+      .eq('line_type', 'BUNDLE_PARENT')
+      .eq('bundle_definition_id_snapshot', definitionId);
+
+    if (parentError) {
+      throw new ApiException(
+        'canary parent snapshot 조회 실패',
+        500,
+        'ORDER_ITEMS_FETCH_FAILED',
+      );
+    }
+
+    let componentRows: any[] = [];
+    if (componentIds.length > 0) {
+      const { data: fetchedComponentRows, error: componentError } = await this.supabase
+        .from('order_items')
+        .select(
+          'id,order_id,line_type,parent_order_item_id,bundle_definition_id_snapshot,bundle_component_id_snapshot,allocated_unit_amount,allocated_discount_amount',
+        )
+        .eq('line_type', 'BUNDLE_COMPONENT')
+        .in('bundle_component_id_snapshot', componentIds);
+
+      if (componentError) {
+        throw new ApiException(
+          'canary component snapshot 조회 실패',
+          500,
+          'ORDER_ITEMS_FETCH_FAILED',
+        );
+      }
+
+      componentRows = fetchedComponentRows || [];
+    }
+
+    const parentIdSet = new Set<string>(
+      ((parentRows || []) as any[]).map((row) => row.id as string),
+    );
+    const componentMissingParentRef = componentRows.filter(
+      (row) => !row.parent_order_item_id,
+    ).length;
+    const orphanComponentLines = componentRows.filter(
+      (row) =>
+        !!row.parent_order_item_id && !parentIdSet.has(row.parent_order_item_id),
+    ).length;
+    const componentMissingSnapshot = componentRows.filter(
+      (row) => !row.bundle_component_id_snapshot,
+    ).length;
+    const hasLiveOrders =
+      (parentRows || []).length > 0 || componentRows.length > 0;
+    const snapshotIntegrityPassed = hasLiveOrders
+      ? componentMissingParentRef === 0 &&
+        orphanComponentLines === 0 &&
+        componentMissingSnapshot === 0
+      : null;
+
+    return {
+      has_live_orders: hasLiveOrders,
+      parent_line_count: (parentRows || []).length,
+      component_line_count: componentRows.length,
+      component_missing_parent_ref: componentMissingParentRef,
+      orphan_component_lines: orphanComponentLines,
+      component_missing_snapshot: componentMissingSnapshot,
+      snapshot_integrity_passed: snapshotIntegrityPassed,
+    };
+  }
+
+  private extractApiExceptionMessage(error: unknown): string {
+    if (error instanceof ApiException) {
+      return error.message;
+    }
+    if (
+      error &&
+      typeof error === 'object' &&
+      'message' in error &&
+      typeof (error as { message?: unknown }).message === 'string'
+    ) {
+      return (error as { message: string }).message;
+    }
+    return 'unknown_error';
   }
 
   private normalizeMigrationSampleLimit(sampleLimit: number): number {

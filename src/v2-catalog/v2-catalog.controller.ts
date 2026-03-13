@@ -281,6 +281,16 @@ export class V2CatalogController {
     return successResponse(contract);
   }
 
+  @Post('bundles/canary-report')
+  async buildBundleCanaryReport(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const report = await this.v2CatalogService.buildBundleCanaryReport(body);
+    return successResponse(report);
+  }
+
   @Get('projects')
   async getProjects(
     @Headers('authorization') authorization: string | undefined,
