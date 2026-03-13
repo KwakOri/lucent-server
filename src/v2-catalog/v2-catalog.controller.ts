@@ -21,6 +21,30 @@ export class V2CatalogController {
     private readonly authSessionService: AuthSessionService,
   ) {}
 
+  @Get('migration/compare-report')
+  async getMigrationCompareReport(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('sampleLimit') sampleLimit?: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const report = await this.v2CatalogService.getMigrationCompareReport(
+      this.parseSampleLimit(sampleLimit),
+    );
+    return successResponse(report);
+  }
+
+  @Get('migration/read-switch-checklist')
+  async getReadSwitchChecklist(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('sampleLimit') sampleLimit?: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const checklist = await this.v2CatalogService.getReadSwitchChecklist(
+      this.parseSampleLimit(sampleLimit),
+    );
+    return successResponse(checklist);
+  }
+
   @Get('projects')
   async getProjects(
     @Headers('authorization') authorization: string | undefined,
@@ -366,5 +390,15 @@ export class V2CatalogController {
       throw new ApiException('관리자 권한이 필요합니다', 403, 'ADMIN_REQUIRED');
     }
   }
-}
 
+  private parseSampleLimit(value?: string): number {
+    if (!value) {
+      return 20;
+    }
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) {
+      return 20;
+    }
+    return parsed;
+  }
+}

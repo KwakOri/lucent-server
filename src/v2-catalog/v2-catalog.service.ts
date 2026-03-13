@@ -156,6 +156,21 @@ interface UpdateV2DigitalAssetInput {
   metadata?: Record<string, unknown>;
 }
 
+interface MigrationCheckResult {
+  key: string;
+  passed: boolean;
+  expected: string;
+  actual: string;
+  detail: string;
+}
+
+interface ReadSwitchChecklistItem {
+  key: string;
+  passed: boolean;
+  detail: string;
+  action: string;
+}
+
 @Injectable()
 export class V2CatalogService {
   private get supabase(): any {
@@ -1425,6 +1440,631 @@ export class V2CatalogService {
     };
   }
 
+  async getMigrationCompareReport(sampleLimit = 20): Promise<any> {
+    const safeSampleLimit = this.normalizeMigrationSampleLimit(sampleLimit);
+
+    const [
+      legacyProjects,
+      legacyArtists,
+      legacyProducts,
+      v2Projects,
+      v2Artists,
+      v2ProjectArtists,
+      v2Products,
+      v2Variants,
+      v2ProductMedia,
+      v2DigitalAssets,
+    ] = await Promise.all([
+      this.fetchLegacyRows(
+        'projects',
+        'id,name,slug,is_active',
+        '프로젝트 비교 데이터 조회 실패',
+        'V2_MIGRATION_COMPARE_FAILED',
+      ),
+      this.fetchLegacyRows(
+        'artists',
+        'id,project_id,name,slug,is_active',
+        '아티스트 비교 데이터 조회 실패',
+        'V2_MIGRATION_COMPARE_FAILED',
+      ),
+      this.fetchLegacyRows(
+        'products',
+        'id,project_id,name,slug,type,is_active,digital_file_url',
+        '상품 비교 데이터 조회 실패',
+        'V2_MIGRATION_COMPARE_FAILED',
+      ),
+      this.fetchV2Rows(
+        'v2_projects',
+        'id,legacy_project_id,name,slug,status,is_active',
+        'v2 프로젝트 비교 데이터 조회 실패',
+        'V2_MIGRATION_COMPARE_FAILED',
+      ),
+      this.fetchV2Rows(
+        'v2_artists',
+        'id,legacy_artist_id,name,slug,status',
+        'v2 아티스트 비교 데이터 조회 실패',
+        'V2_MIGRATION_COMPARE_FAILED',
+      ),
+      this.fetchV2Rows(
+        'v2_project_artists',
+        'id,project_id,artist_id,status,is_primary',
+        'v2 프로젝트-아티스트 비교 데이터 조회 실패',
+        'V2_MIGRATION_COMPARE_FAILED',
+      ),
+      this.fetchV2Rows(
+        'v2_products',
+        'id,legacy_product_id,project_id,title,slug,status,metadata',
+        'v2 상품 비교 데이터 조회 실패',
+        'V2_MIGRATION_COMPARE_FAILED',
+      ),
+      this.fetchV2Rows(
+        'v2_product_variants',
+        'id,product_id,fulfillment_type,status',
+        'v2 variant 비교 데이터 조회 실패',
+        'V2_MIGRATION_COMPARE_FAILED',
+      ),
+      this.fetchV2Rows(
+        'v2_product_media',
+        'id,product_id,is_primary,status',
+        'v2 media 비교 데이터 조회 실패',
+        'V2_MIGRATION_COMPARE_FAILED',
+      ),
+      this.fetchV2Rows(
+        'v2_digital_assets',
+        'id,variant_id,status',
+        'v2 digital asset 비교 데이터 조회 실패',
+        'V2_MIGRATION_COMPARE_FAILED',
+      ),
+    ]);
+
+    const backfilledProjects = v2Projects.filter(
+      (project) => project.legacy_project_id !== null,
+    );
+    const backfilledArtists = v2Artists.filter(
+      (artist) => artist.legacy_artist_id !== null,
+    );
+    const backfilledProducts = v2Products.filter(
+      (product) => product.legacy_product_id !== null,
+    );
+
+    const legacyProjectsById = new Map(
+      legacyProjects.map((project) => [project.id, project]),
+    );
+    const legacyArtistsById = new Map(
+      legacyArtists.map((artist) => [artist.id, artist]),
+    );
+    const legacyProductsById = new Map(
+      legacyProducts.map((product) => [product.id, product]),
+    );
+
+    const v2ProjectsById = new Map(v2Projects.map((project) => [project.id, project]));
+    const v2ArtistsById = new Map(v2Artists.map((artist) => [artist.id, artist]));
+    const v2ProjectsByLegacyId = new Map(
+      backfilledProjects.map((project) => [project.legacy_project_id, project]),
+    );
+    const v2ArtistsByLegacyId = new Map(
+      backfilledArtists.map((artist) => [artist.legacy_artist_id, artist]),
+    );
+    const v2ProductsByLegacyId = new Map(
+      backfilledProducts.map((product) => [product.legacy_product_id, product]),
+    );
+
+    const missingProjectMappings = legacyProjects.filter(
+      (project) => !v2ProjectsByLegacyId.has(project.id),
+    );
+    const missingArtistMappings = legacyArtists.filter(
+      (artist) => !v2ArtistsByLegacyId.has(artist.id),
+    );
+    const missingProductMappings = legacyProducts.filter(
+      (product) => !v2ProductsByLegacyId.has(product.id),
+    );
+
+    const orphanProjectMappings = backfilledProjects.filter(
+      (project) => !legacyProjectsById.has(project.legacy_project_id),
+    );
+    const orphanArtistMappings = backfilledArtists.filter(
+      (artist) => !legacyArtistsById.has(artist.legacy_artist_id),
+    );
+    const orphanProductMappings = backfilledProducts.filter(
+      (product) => !legacyProductsById.has(product.legacy_product_id),
+    );
+
+    const projectSlugMismatch = backfilledProjects
+      .map((v2Project) => {
+        const legacyProject = legacyProjectsById.get(v2Project.legacy_project_id);
+        if (!legacyProject || legacyProject.slug === v2Project.slug) {
+          return null;
+        }
+        return {
+          legacy_project_id: legacyProject.id,
+          legacy_slug: legacyProject.slug,
+          v2_project_id: v2Project.id,
+          v2_slug: v2Project.slug,
+        };
+      })
+      .filter((item) => item !== null);
+
+    const artistSlugMismatch = backfilledArtists
+      .map((v2Artist) => {
+        const legacyArtist = legacyArtistsById.get(v2Artist.legacy_artist_id);
+        if (!legacyArtist || legacyArtist.slug === v2Artist.slug) {
+          return null;
+        }
+        return {
+          legacy_artist_id: legacyArtist.id,
+          legacy_slug: legacyArtist.slug,
+          v2_artist_id: v2Artist.id,
+          v2_slug: v2Artist.slug,
+        };
+      })
+      .filter((item) => item !== null);
+
+    const productSlugMismatch = backfilledProducts
+      .map((v2Product) => {
+        const legacyProduct = legacyProductsById.get(v2Product.legacy_product_id);
+        if (!legacyProduct) {
+          return null;
+        }
+        const slugRank = this.extractSlugRank(v2Product.metadata);
+        const shouldCheckSlug = slugRank === null || slugRank <= 1;
+        if (!shouldCheckSlug || legacyProduct.slug === v2Product.slug) {
+          return null;
+        }
+        return {
+          legacy_product_id: legacyProduct.id,
+          legacy_slug: legacyProduct.slug,
+          v2_product_id: v2Product.id,
+          v2_slug: v2Product.slug,
+          slug_rank: slugRank,
+        };
+      })
+      .filter((item) => item !== null);
+
+    const productProjectMappingMismatch = backfilledProducts
+      .map((v2Product) => {
+        const legacyProduct = legacyProductsById.get(v2Product.legacy_product_id);
+        const mappedV2Project = v2ProjectsById.get(v2Product.project_id);
+        if (!legacyProduct || !mappedV2Project || !mappedV2Project.legacy_project_id) {
+          return null;
+        }
+        if (legacyProduct.project_id === mappedV2Project.legacy_project_id) {
+          return null;
+        }
+        return {
+          legacy_product_id: legacyProduct.id,
+          legacy_project_id: legacyProduct.project_id,
+          v2_product_id: v2Product.id,
+          v2_project_id: mappedV2Project.id,
+          v2_project_legacy_project_id: mappedV2Project.legacy_project_id,
+        };
+      })
+      .filter((item) => item !== null);
+
+    const projectArtistLegacyPairs = new Set(
+      v2ProjectArtists
+        .map((relation) => {
+          const v2Project = v2ProjectsById.get(relation.project_id);
+          const v2Artist = v2ArtistsById.get(relation.artist_id);
+          if (
+            !v2Project ||
+            !v2Artist ||
+            !v2Project.legacy_project_id ||
+            !v2Artist.legacy_artist_id
+          ) {
+            return null;
+          }
+          return `${v2Project.legacy_project_id}:${v2Artist.legacy_artist_id}`;
+        })
+        .filter((value) => value !== null),
+    );
+
+    const missingProjectArtistLinks = legacyArtists.filter(
+      (artist) => !projectArtistLegacyPairs.has(`${artist.project_id}:${artist.id}`),
+    );
+
+    const variantsByProductId = new Map<string, any[]>();
+    for (const variant of v2Variants) {
+      const current = variantsByProductId.get(variant.product_id) || [];
+      current.push(variant);
+      variantsByProductId.set(variant.product_id, current);
+    }
+
+    const productsWithoutVariants = v2Products.filter(
+      (product) => !variantsByProductId.has(product.id),
+    );
+
+    const digitalVariants = v2Variants.filter(
+      (variant) => variant.fulfillment_type === 'DIGITAL',
+    );
+    const activeDigitalVariants = digitalVariants.filter(
+      (variant) => variant.status === 'ACTIVE',
+    );
+    const activeProducts = v2Products.filter((product) => product.status === 'ACTIVE');
+
+    const primaryMediaProductIds = new Set(
+      v2ProductMedia
+        .filter((media) => media.is_primary && media.status === 'ACTIVE')
+        .map((media) => media.product_id),
+    );
+    const activeProductsWithoutPrimaryMedia = activeProducts.filter(
+      (product) => !primaryMediaProductIds.has(product.id),
+    );
+
+    const variantsWithAnyAsset = new Set(
+      v2DigitalAssets.map((asset) => asset.variant_id),
+    );
+    const variantsWithReadyAsset = new Set(
+      v2DigitalAssets
+        .filter((asset) => asset.status === 'READY')
+        .map((asset) => asset.variant_id),
+    );
+
+    const digitalVariantsWithoutAssets = digitalVariants.filter(
+      (variant) => !variantsWithAnyAsset.has(variant.id),
+    );
+    const activeDigitalVariantsWithoutReadyAsset = activeDigitalVariants.filter(
+      (variant) => !variantsWithReadyAsset.has(variant.id),
+    );
+
+    const checks: MigrationCheckResult[] = [
+      {
+        key: 'projects_backfill_complete',
+        passed: missingProjectMappings.length === 0,
+        expected: 'missing_project_mappings=0',
+        actual: `missing_project_mappings=${missingProjectMappings.length}`,
+        detail: 'legacy projects가 모두 v2_projects로 매핑되어야 함',
+      },
+      {
+        key: 'artists_backfill_complete',
+        passed: missingArtistMappings.length === 0,
+        expected: 'missing_artist_mappings=0',
+        actual: `missing_artist_mappings=${missingArtistMappings.length}`,
+        detail: 'legacy artists가 모두 v2_artists로 매핑되어야 함',
+      },
+      {
+        key: 'products_backfill_complete',
+        passed: missingProductMappings.length === 0,
+        expected: 'missing_product_mappings=0',
+        actual: `missing_product_mappings=${missingProductMappings.length}`,
+        detail: 'legacy products가 모두 v2_products로 매핑되어야 함',
+      },
+      {
+        key: 'project_artist_links_complete',
+        passed: missingProjectArtistLinks.length === 0,
+        expected: 'missing_project_artist_links=0',
+        actual: `missing_project_artist_links=${missingProjectArtistLinks.length}`,
+        detail: 'legacy artist.project_id 기준 링크가 v2_project_artists에 존재해야 함',
+      },
+      {
+        key: 'product_project_mapping_consistent',
+        passed: productProjectMappingMismatch.length === 0,
+        expected: 'product_project_mapping_mismatch=0',
+        actual: `product_project_mapping_mismatch=${productProjectMappingMismatch.length}`,
+        detail: 'v2_products.project_id가 legacy product.project_id 매핑과 일치해야 함',
+      },
+      {
+        key: 'v2_products_have_variants',
+        passed: productsWithoutVariants.length === 0,
+        expected: 'products_without_variants=0',
+        actual: `products_without_variants=${productsWithoutVariants.length}`,
+        detail: '모든 v2 product는 최소 1개의 variant를 가져야 함',
+      },
+      {
+        key: 'active_products_have_primary_media',
+        passed: activeProductsWithoutPrimaryMedia.length === 0,
+        expected: 'active_products_without_primary_media=0',
+        actual: `active_products_without_primary_media=${activeProductsWithoutPrimaryMedia.length}`,
+        detail: 'ACTIVE product는 ACTIVE primary media를 가져야 함',
+      },
+      {
+        key: 'digital_variants_have_assets',
+        passed: digitalVariantsWithoutAssets.length === 0,
+        expected: 'digital_variants_without_assets=0',
+        actual: `digital_variants_without_assets=${digitalVariantsWithoutAssets.length}`,
+        detail: 'DIGITAL variant는 최소 1개의 digital asset을 가져야 함',
+      },
+      {
+        key: 'active_digital_variants_have_ready_assets',
+        passed: activeDigitalVariantsWithoutReadyAsset.length === 0,
+        expected: 'active_digital_variants_without_ready_asset=0',
+        actual: `active_digital_variants_without_ready_asset=${activeDigitalVariantsWithoutReadyAsset.length}`,
+        detail: 'ACTIVE DIGITAL variant는 READY asset을 가져야 함',
+      },
+    ];
+
+    const blockingChecks = checks
+      .filter((check) => !check.passed)
+      .map((check) => check.key);
+
+    return {
+      generated_at: new Date().toISOString(),
+      sample_limit: safeSampleLimit,
+      counts: {
+        legacy: {
+          projects: legacyProjects.length,
+          artists: legacyArtists.length,
+          products: legacyProducts.length,
+          digital_products: legacyProducts.filter(
+            (product) => product.type === 'VOICE_PACK',
+          ).length,
+        },
+        v2: {
+          projects_total: v2Projects.length,
+          projects_mapped: backfilledProjects.length,
+          artists_total: v2Artists.length,
+          artists_mapped: backfilledArtists.length,
+          products_total: v2Products.length,
+          products_mapped: backfilledProducts.length,
+          variants_total: v2Variants.length,
+          product_media_total: v2ProductMedia.length,
+          digital_assets_total: v2DigitalAssets.length,
+        },
+      },
+      checks,
+      differences: {
+        missing_mappings: {
+          projects: this.buildMigrationSample(
+            missingProjectMappings,
+            safeSampleLimit,
+            (project) => ({
+              legacy_project_id: project.id,
+              name: project.name,
+              slug: project.slug,
+            }),
+          ),
+          artists: this.buildMigrationSample(
+            missingArtistMappings,
+            safeSampleLimit,
+            (artist) => ({
+              legacy_artist_id: artist.id,
+              project_id: artist.project_id,
+              name: artist.name,
+              slug: artist.slug,
+            }),
+          ),
+          products: this.buildMigrationSample(
+            missingProductMappings,
+            safeSampleLimit,
+            (product) => ({
+              legacy_product_id: product.id,
+              project_id: product.project_id,
+              title: product.name,
+              slug: product.slug,
+              type: product.type,
+            }),
+          ),
+        },
+        orphan_mappings: {
+          projects: this.buildMigrationSample(
+            orphanProjectMappings,
+            safeSampleLimit,
+            (project) => ({
+              v2_project_id: project.id,
+              legacy_project_id: project.legacy_project_id,
+              slug: project.slug,
+            }),
+          ),
+          artists: this.buildMigrationSample(
+            orphanArtistMappings,
+            safeSampleLimit,
+            (artist) => ({
+              v2_artist_id: artist.id,
+              legacy_artist_id: artist.legacy_artist_id,
+              slug: artist.slug,
+            }),
+          ),
+          products: this.buildMigrationSample(
+            orphanProductMappings,
+            safeSampleLimit,
+            (product) => ({
+              v2_product_id: product.id,
+              legacy_product_id: product.legacy_product_id,
+              slug: product.slug,
+            }),
+          ),
+        },
+        data_mismatch: {
+          project_slug: this.buildMigrationSample(
+            projectSlugMismatch,
+            safeSampleLimit,
+          ),
+          artist_slug: this.buildMigrationSample(
+            artistSlugMismatch,
+            safeSampleLimit,
+          ),
+          product_slug_rank1: this.buildMigrationSample(
+            productSlugMismatch,
+            safeSampleLimit,
+          ),
+          product_project_mapping: this.buildMigrationSample(
+            productProjectMappingMismatch,
+            safeSampleLimit,
+          ),
+        },
+        integrity: {
+          missing_project_artist_links: this.buildMigrationSample(
+            missingProjectArtistLinks,
+            safeSampleLimit,
+            (artist) => ({
+              legacy_artist_id: artist.id,
+              legacy_project_id: artist.project_id,
+              name: artist.name,
+              slug: artist.slug,
+            }),
+          ),
+          products_without_variants: this.buildMigrationSample(
+            productsWithoutVariants,
+            safeSampleLimit,
+            (product) => ({
+              v2_product_id: product.id,
+              legacy_product_id: product.legacy_product_id,
+              title: product.title,
+              slug: product.slug,
+            }),
+          ),
+          active_products_without_primary_media: this.buildMigrationSample(
+            activeProductsWithoutPrimaryMedia,
+            safeSampleLimit,
+            (product) => ({
+              v2_product_id: product.id,
+              legacy_product_id: product.legacy_product_id,
+              title: product.title,
+              slug: product.slug,
+            }),
+          ),
+          digital_variants_without_assets: this.buildMigrationSample(
+            digitalVariantsWithoutAssets,
+            safeSampleLimit,
+            (variant) => ({
+              v2_variant_id: variant.id,
+              v2_product_id: variant.product_id,
+              status: variant.status,
+            }),
+          ),
+          active_digital_variants_without_ready_asset: this.buildMigrationSample(
+            activeDigitalVariantsWithoutReadyAsset,
+            safeSampleLimit,
+            (variant) => ({
+              v2_variant_id: variant.id,
+              v2_product_id: variant.product_id,
+              status: variant.status,
+            }),
+          ),
+        },
+      },
+      read_switch: {
+        ready: blockingChecks.length === 0,
+        blocking_checks: blockingChecks,
+        recommended_order: [
+          'admin 비교 read',
+          '신규 생성 v2 write',
+          '전체 read 전환',
+        ],
+      },
+    };
+  }
+
+  async getReadSwitchChecklist(sampleLimit = 20): Promise<any> {
+    const compareReport = await this.getMigrationCompareReport(sampleLimit);
+    const checklist = (compareReport.checks as MigrationCheckResult[]).map(
+      (check) => ({
+        key: check.key,
+        passed: check.passed,
+        detail: check.detail,
+        action: this.resolveReadSwitchAction(check.key),
+      }),
+    );
+
+    const passedChecks = checklist.filter((item) => item.passed).length;
+
+    return {
+      generated_at: compareReport.generated_at,
+      ready: compareReport.read_switch.ready,
+      total_checks: checklist.length,
+      passed_checks: passedChecks,
+      failed_checks: checklist.length - passedChecks,
+      blocking_checks: compareReport.read_switch.blocking_checks,
+      checklist,
+      recommended_order: compareReport.read_switch.recommended_order,
+    };
+  }
+
+  private normalizeMigrationSampleLimit(sampleLimit: number): number {
+    if (!Number.isFinite(sampleLimit)) {
+      return 20;
+    }
+
+    const normalized = Math.floor(sampleLimit);
+    if (normalized < 5) {
+      return 5;
+    }
+    if (normalized > 200) {
+      return 200;
+    }
+    return normalized;
+  }
+
+  private async fetchLegacyRows(
+    table: string,
+    select: string,
+    errorMessage: string,
+    errorCode: string,
+  ): Promise<any[]> {
+    const { data, error } = await this.supabase.from(table).select(select);
+    if (error) {
+      throw new ApiException(errorMessage, 500, errorCode);
+    }
+    return data || [];
+  }
+
+  private async fetchV2Rows(
+    table: string,
+    select: string,
+    errorMessage: string,
+    errorCode: string,
+  ): Promise<any[]> {
+    const { data, error } = await this.supabase
+      .from(table)
+      .select(select)
+      .is('deleted_at', null);
+
+    if (error) {
+      throw new ApiException(errorMessage, 500, errorCode);
+    }
+    return data || [];
+  }
+
+  private buildMigrationSample(
+    rows: any[],
+    limit: number,
+    mapper?: (row: any) => any,
+  ): any[] {
+    const sampled = rows.slice(0, limit);
+    if (!mapper) {
+      return sampled;
+    }
+    return sampled.map(mapper);
+  }
+
+  private extractSlugRank(metadata: unknown): number | null {
+    if (!metadata || typeof metadata !== 'object') {
+      return null;
+    }
+
+    const raw = (metadata as Record<string, unknown>).slug_rank;
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      return raw;
+    }
+    if (typeof raw === 'string' && raw.length > 0) {
+      const parsed = Number.parseInt(raw, 10);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+    return null;
+  }
+
+  private resolveReadSwitchAction(checkKey: string): string {
+    const actions: Record<string, string> = {
+      projects_backfill_complete: 'legacy projects 누락 매핑을 백필 SQL로 보정',
+      artists_backfill_complete: 'legacy artists 누락 매핑을 백필 SQL로 보정',
+      products_backfill_complete: 'legacy products 누락 매핑을 백필 SQL로 보정',
+      project_artist_links_complete:
+        'legacy artist.project_id 기준으로 v2_project_artists 링크 보정',
+      product_project_mapping_consistent:
+        'v2_products.project_id와 legacy project 매핑 불일치 건 보정',
+      v2_products_have_variants: 'variant 없는 product에 기본 variant 생성',
+      active_products_have_primary_media:
+        'ACTIVE product에 ACTIVE primary media 추가 또는 상태 조정',
+      digital_variants_have_assets:
+        'DIGITAL variant에 최소 1개 digital asset 등록',
+      active_digital_variants_have_ready_assets:
+        'ACTIVE DIGITAL variant에 READY 상태 asset 준비',
+    };
+
+    return actions[checkKey] || '차이 리포트 샘플을 확인하고 데이터 정합성 보정';
+  }
+
   private async ensureProjectExists(projectId: string): Promise<void> {
     await this.getProjectById(projectId);
   }
@@ -1930,4 +2570,3 @@ export class V2CatalogService {
     return normalized.length > 0 ? normalized : null;
   }
 }
-
