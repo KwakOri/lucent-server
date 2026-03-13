@@ -2266,6 +2266,7 @@ export class V2CatalogService {
     input: UpdateV2BundleDefinitionInput,
   ): Promise<any> {
     const current = await this.getBundleDefinitionById(definitionId);
+    this.assertBundleDefinitionEditable(current.status);
     const updateData: Record<string, unknown> = {};
 
     if (input.mode !== undefined) {
@@ -2582,13 +2583,7 @@ export class V2CatalogService {
     input: CreateV2BundleComponentInput,
   ): Promise<any> {
     const definition = await this.getBundleDefinitionById(bundleDefinitionId);
-    if (definition.status === 'ARCHIVED') {
-      throw new ApiException(
-        'ARCHIVED bundle definition에는 component를 추가할 수 없습니다',
-        400,
-        'INVALID_STATUS_TRANSITION',
-      );
-    }
+    this.assertBundleDefinitionEditable(definition.status);
 
     const componentVariantId = this.normalizeRequiredText(
       input.component_variant_id,
@@ -2642,13 +2637,7 @@ export class V2CatalogService {
   ): Promise<any> {
     const current = await this.getBundleComponentById(componentId);
     const definition = await this.getBundleDefinitionById(current.bundle_definition_id);
-    if (definition.status === 'ARCHIVED') {
-      throw new ApiException(
-        'ARCHIVED bundle definition의 component는 수정할 수 없습니다',
-        400,
-        'INVALID_STATUS_TRANSITION',
-      );
-    }
+    this.assertBundleDefinitionEditable(definition.status);
 
     const updateData: Record<string, unknown> = {};
 
@@ -2719,13 +2708,7 @@ export class V2CatalogService {
   async deleteBundleComponent(componentId: string): Promise<void> {
     const component = await this.getBundleComponentById(componentId);
     const definition = await this.getBundleDefinitionById(component.bundle_definition_id);
-    if (definition.status === 'ARCHIVED') {
-      throw new ApiException(
-        'ARCHIVED bundle definition의 component는 삭제할 수 없습니다',
-        400,
-        'INVALID_STATUS_TRANSITION',
-      );
-    }
+    this.assertBundleDefinitionEditable(definition.status);
     const { error } = await this.supabase
       .from('v2_bundle_components')
       .update({
@@ -3475,6 +3458,23 @@ export class V2CatalogService {
     if (!allowed[current].includes(next)) {
       throw new ApiException(
         `허용되지 않는 bundle 상태 전이입니다: ${current} -> ${next}`,
+        400,
+        'INVALID_STATUS_TRANSITION',
+      );
+    }
+  }
+
+  private assertBundleDefinitionEditable(status: V2BundleStatus): void {
+    if (status === 'ACTIVE') {
+      throw new ApiException(
+        'ACTIVE bundle definition은 직접 수정할 수 없습니다. clone-version으로 신규 DRAFT 버전을 생성해 수정하세요',
+        400,
+        'INVALID_STATUS_TRANSITION',
+      );
+    }
+    if (status === 'ARCHIVED') {
+      throw new ApiException(
+        'ARCHIVED bundle definition은 수정할 수 없습니다',
         400,
         'INVALID_STATUS_TRANSITION',
       );
