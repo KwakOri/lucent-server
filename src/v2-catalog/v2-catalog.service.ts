@@ -2551,6 +2551,9 @@ export class V2CatalogService {
     }
 
     const componentIds = components.map((component) => component.id);
+    const componentVariantIds = components.map(
+      (component) => component.component_variant_id as string,
+    );
     const { data: optionRows, error: optionError } = await this.supabase
       .from('v2_bundle_component_options')
       .select('*')
@@ -2564,6 +2567,19 @@ export class V2CatalogService {
         'V2_BUNDLE_COMPONENT_OPTIONS_FETCH_FAILED',
       );
     }
+    const { data: variantRows, error: variantError } = await this.supabase
+      .from('v2_product_variants')
+      .select('id,sku,title,fulfillment_type,requires_shipping,track_inventory,status')
+      .in('id', componentVariantIds)
+      .is('deleted_at', null);
+
+    if (variantError) {
+      throw new ApiException(
+        'bundle component variant 조회 실패',
+        500,
+        'V2_VARIANTS_FETCH_FAILED',
+      );
+    }
 
     const optionsByComponentId = new Map<string, any[]>();
     for (const option of optionRows || []) {
@@ -2571,10 +2587,14 @@ export class V2CatalogService {
       current.push(option);
       optionsByComponentId.set(option.bundle_component_id, current);
     }
+    const variantById = new Map<string, any>(
+      ((variantRows || []) as any[]).map((variant) => [variant.id as string, variant]),
+    );
 
     return components.map((component) => ({
       ...component,
       options: optionsByComponentId.get(component.id) || [],
+      variant: variantById.get(component.component_variant_id as string) ?? null,
     }));
   }
 
