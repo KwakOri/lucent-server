@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Headers, Param, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { AuthSessionService } from '../auth/auth-session.service';
 import { successResponse } from '../common/api-response';
 import { ApiException } from '../common/errors/api.exception';
@@ -108,6 +116,16 @@ interface OrchestrateMixedOrderBody {
   metadata?: Record<string, unknown> | null;
 }
 
+interface OpsQuery {
+  limit?: string;
+}
+
+interface CutoverCheckBody {
+  order_id?: string;
+  reserve_inventory?: boolean;
+  grant_entitlement?: boolean;
+}
+
 @Controller('v2/fulfillment/admin')
 export class V2FulfillmentController {
   constructor(
@@ -192,6 +210,49 @@ export class V2FulfillmentController {
     await this.requireAdmin(authorization);
     const result = await this.v2FulfillmentService.orchestrateMixedOrder(body);
     return successResponse(result, 'mixed order orchestration이 완료되었습니다');
+  }
+
+  @Get('ops/queue-summary')
+  async getOpsQueueSummary(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: OpsQuery,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2FulfillmentService.getOpsQueueSummary({
+      limit: query.limit,
+    });
+    return successResponse(result);
+  }
+
+  @Get('ops/inventory-health')
+  async getInventoryHealth(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: OpsQuery,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2FulfillmentService.getInventoryHealth({
+      limit: query.limit,
+    });
+    return successResponse(result);
+  }
+
+  @Get('cutover-policy')
+  async getCutoverPolicy(
+    @Headers('authorization') authorization: string | undefined,
+  ) {
+    await this.requireAdmin(authorization);
+    const policy = await this.v2FulfillmentService.getCutoverPolicy();
+    return successResponse(policy);
+  }
+
+  @Post('cutover-policy/check')
+  async checkCutoverPolicy(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: CutoverCheckBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2FulfillmentService.checkCutoverPolicy(body);
+    return successResponse(result);
   }
 
   @Post('shipments')

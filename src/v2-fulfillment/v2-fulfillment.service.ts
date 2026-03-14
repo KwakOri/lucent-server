@@ -135,6 +135,16 @@ interface OrchestrateMixedOrderInput extends GenerateFulfillmentPlanInput {
   provider_type?: string | null;
 }
 
+interface OpsLimitInput {
+  limit?: string | number | null;
+}
+
+interface CutoverCheckInput {
+  order_id?: string;
+  reserve_inventory?: boolean;
+  grant_entitlement?: boolean;
+}
+
 @Injectable()
 export class V2FulfillmentService {
   private get supabase(): any {
@@ -143,6 +153,7 @@ export class V2FulfillmentService {
 
   async reserveInventory(input: ReserveInventoryInput): Promise<any> {
     const orderId = this.requireUuid(input.order_id, 'order_id는 필수입니다');
+    const order = await this.fetchOrderForCutover(orderId);
     const orderItemId = this.requireUuid(
       input.order_item_id,
       'order_item_id는 필수입니다',
@@ -163,6 +174,19 @@ export class V2FulfillmentService {
     const idempotencyKey = this.normalizeOptionalText(input.idempotency_key);
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
     const expiresAt = this.normalizeOptionalIsoDateTime(input.expires_at);
+
+    this.assertCutoverPolicyOrThrow({
+      order,
+      orderItems: [
+        {
+          variant_id: variantId,
+          requires_shipping_snapshot: true,
+          fulfillment_type_snapshot: 'PHYSICAL',
+        },
+      ],
+      reserveInventory: true,
+      grantEntitlement: false,
+    });
 
     if (idempotencyKey) {
       const existing =
@@ -299,6 +323,7 @@ export class V2FulfillmentService {
     input: GenerateFulfillmentPlanInput,
   ): Promise<any> {
     const orderId = this.requireUuid(input.order_id, 'order_id는 필수입니다');
+    const order = await this.fetchOrderForCutover(orderId);
     const stockLocationId = this.normalizeOptionalUuid(input.stock_location_id);
     const shippingProfileId = this.normalizeOptionalUuid(input.shipping_profile_id);
     const shippingMethodId = this.normalizeOptionalUuid(input.shipping_method_id);
@@ -409,6 +434,13 @@ export class V2FulfillmentService {
         hasShipment = true;
       }
     }
+
+    this.assertCutoverPolicyOrThrow({
+      order,
+      orderItems: targetItems,
+      reserveInventory: hasShipment,
+      grantEntitlement: hasDigital,
+    });
 
     if (hasDigital) {
       await ensureGroup('DIGITAL');
@@ -603,6 +635,251 @@ export class V2FulfillmentService {
     };
   }
 
+  async getOpsQueueSummary(input: OpsLimitInput): Promise<any> {
+    const limit = this.normalizeOpsLimit(input.limit);
+
+    const { data: groups, error: groupsError } = await this.supabase
+      .from('v2_fulfillment_groups')
+      .select('id, order_id, kind, status, planned_at, fulfilled_at, created_at')
+      .order('created_at', { ascending: false });
+
+    if (groupsError) {
+      throw new ApiException(
+        'fulfillment group queue 조회 실패',
+        500,
+        'FULFILLMENT_GROUP_QUEUE_FETCH_FAILED',
+      );
+    }
+
+    const { data: fulfillments, error: fulfillmentsError } = await this.supabase
+      .from('v2_fulfillments')
+      .select('id, fulfillment_group_id, kind, status, requested_at, completed_at')
+      .order('requested_at', { ascending: false });
+
+    if (fulfillmentsError) {
+      throw new ApiException(
+        'fulfillment queue 조회 실패',
+        500,
+        'FULFILLMENT_QUEUE_FETCH_FAILED',
+      );
+    }
+
+    const { data: shipments, error: shipmentsError } = await this.supabase
+      .from('v2_shipments')
+      .select(
+        'id, fulfillment_id, status, carrier, tracking_no, shipped_at, delivered_at, created_at',
+      )
+      .order('created_at', { ascending: false });
+
+    if (shipmentsError) {
+      throw new ApiException(
+        'shipment queue 조회 실패',
+        500,
+        'SHIPMENT_QUEUE_FETCH_FAILED',
+      );
+    }
+
+    const { data: entitlements, error: entitlementsError } = await this.supabase
+      .from('v2_digital_entitlements')
+      .select(
+        'id, order_id, order_item_id, status, access_type, download_count, max_downloads, expires_at, granted_at, revoked_at, created_at',
+      )
+      .order('created_at', { ascending: false });
+
+    if (entitlementsError) {
+      throw new ApiException(
+        'entitlement queue 조회 실패',
+        500,
+        'ENTITLEMENT_QUEUE_FETCH_FAILED',
+      );
+    }
+
+    const groupStatusCounts = this.countByCompositeKey(
+      groups || [],
+      (row) => `${row.kind}:${row.status}`,
+    );
+    const fulfillmentStatusCounts = this.countByCompositeKey(
+      fulfillments || [],
+      (row) => `${row.kind}:${row.status}`,
+    );
+    const shipmentStatusCounts = this.countByCompositeKey(
+      shipments || [],
+      (row) => `${row.status}`,
+    );
+    const entitlementStatusCounts = this.countByCompositeKey(
+      entitlements || [],
+      (row) => `${row.status}`,
+    );
+
+    const pendingGroups = (groups || []).filter(
+      (group) => group.status !== 'FULFILLED' && group.status !== 'CANCELED',
+    );
+    const shipmentQueue = (shipments || []).filter((shipment) =>
+      ['READY_TO_PACK', 'PACKING', 'SHIPPED', 'IN_TRANSIT'].includes(
+        shipment.status,
+      ),
+    );
+    const entitlementQueue = (entitlements || []).filter((entitlement) =>
+      ['PENDING', 'GRANTED'].includes(entitlement.status),
+    );
+
+    return {
+      generated_at: new Date().toISOString(),
+      summary: {
+        pending_group_count: pendingGroups.length,
+        shipment_queue_count: shipmentQueue.length,
+        entitlement_queue_count: entitlementQueue.length,
+      },
+      status_counts: {
+        group: groupStatusCounts,
+        fulfillment: fulfillmentStatusCounts,
+        shipment: shipmentStatusCounts,
+        entitlement: entitlementStatusCounts,
+      },
+      recent: {
+        groups: (groups || []).slice(0, limit),
+        shipments: shipmentQueue.slice(0, limit),
+        entitlements: entitlementQueue.slice(0, limit),
+      },
+    };
+  }
+
+  async getInventoryHealth(input: OpsLimitInput): Promise<any> {
+    const limit = this.normalizeOpsLimit(input.limit);
+    const { data: levels, error: levelsError } = await this.supabase
+      .from('v2_inventory_levels')
+      .select(
+        'id, variant_id, location_id, on_hand_quantity, reserved_quantity, available_quantity, safety_stock_quantity, updated_at',
+      );
+
+    if (levelsError) {
+      throw new ApiException(
+        'inventory level 조회 실패',
+        500,
+        'INVENTORY_LEVEL_FETCH_FAILED',
+      );
+    }
+
+    const { data: reservations, error: reservationsError } = await this.supabase
+      .from('v2_inventory_reservations')
+      .select('id, variant_id, location_id, quantity, status, created_at')
+      .eq('status', 'ACTIVE');
+
+    if (reservationsError) {
+      throw new ApiException(
+        'ACTIVE reservation 조회 실패',
+        500,
+        'INVENTORY_RESERVATION_FETCH_FAILED',
+      );
+    }
+
+    const activeReservationMap = new Map<string, number>();
+    for (const reservation of reservations || []) {
+      const key = `${reservation.variant_id}:${reservation.location_id}`;
+      const current = activeReservationMap.get(key) || 0;
+      activeReservationMap.set(
+        key,
+        current + this.normalizePositiveInteger(reservation.quantity, 'quantity'),
+      );
+    }
+
+    const mismatches: Array<Record<string, unknown>> = [];
+    const lowStocks: Array<Record<string, unknown>> = [];
+
+    for (const level of levels || []) {
+      const key = `${level.variant_id}:${level.location_id}`;
+      const activeReserved = activeReservationMap.get(key) || 0;
+      const reservedQuantity = this.normalizeNonNegativeInteger(
+        level.reserved_quantity,
+        'reserved_quantity',
+      );
+      if (reservedQuantity !== activeReserved) {
+        mismatches.push({
+          level_id: level.id,
+          variant_id: level.variant_id,
+          location_id: level.location_id,
+          reserved_quantity: reservedQuantity,
+          active_reservation_quantity: activeReserved,
+          delta: reservedQuantity - activeReserved,
+          updated_at: level.updated_at,
+        });
+      }
+
+      const availableQuantity = this.normalizeNonNegativeInteger(
+        level.available_quantity,
+        'available_quantity',
+      );
+      const safetyStock = this.normalizeNonNegativeInteger(
+        level.safety_stock_quantity,
+        'safety_stock_quantity',
+      );
+      if (availableQuantity <= safetyStock) {
+        lowStocks.push({
+          level_id: level.id,
+          variant_id: level.variant_id,
+          location_id: level.location_id,
+          available_quantity: availableQuantity,
+          safety_stock_quantity: safetyStock,
+          on_hand_quantity: level.on_hand_quantity,
+          reserved_quantity: level.reserved_quantity,
+          updated_at: level.updated_at,
+        });
+      }
+    }
+
+    const mismatchSorted = mismatches.sort((a, b) => {
+      const deltaA = Math.abs((a.delta as number) || 0);
+      const deltaB = Math.abs((b.delta as number) || 0);
+      return deltaB - deltaA;
+    });
+    const lowStockSorted = lowStocks.sort(
+      (a, b) =>
+        (a.available_quantity as number) - (b.available_quantity as number),
+    );
+
+    return {
+      generated_at: new Date().toISOString(),
+      summary: {
+        level_count: (levels || []).length,
+        active_reservation_count: (reservations || []).length,
+        mismatch_count: mismatches.length,
+        low_stock_count: lowStocks.length,
+      },
+      mismatches: mismatchSorted.slice(0, limit),
+      low_stocks: lowStockSorted.slice(0, limit),
+    };
+  }
+
+  async getCutoverPolicy(): Promise<any> {
+    return this.buildCutoverPolicy();
+  }
+
+  async checkCutoverPolicy(input: CutoverCheckInput): Promise<any> {
+    const orderId = this.requireUuid(input.order_id, 'order_id는 필수입니다');
+    const reserveInventory = input.reserve_inventory !== false;
+    const grantEntitlement = input.grant_entitlement !== false;
+    const order = await this.fetchOrderForCutover(orderId);
+    const orderItems = await this.fetchOrderItemsForCutover(orderId);
+    const evaluation = this.evaluateCutoverPolicy({
+      order,
+      orderItems,
+      reserveInventory,
+      grantEntitlement,
+    });
+
+    return {
+      order_id: orderId,
+      order_channel: order.sales_channel_id,
+      options: {
+        reserve_inventory: reserveInventory,
+        grant_entitlement: grantEntitlement,
+      },
+      policy: this.buildCutoverPolicy(),
+      eligible: evaluation.reasons.length === 0,
+      reasons: evaluation.reasons,
+    };
+  }
+
   async orchestrateMixedOrder(input: OrchestrateMixedOrderInput): Promise<any> {
     const orderId = this.requireUuid(input.order_id, 'order_id는 필수입니다');
     const reserveInventory = input.reserve_inventory !== false;
@@ -766,7 +1043,25 @@ export class V2FulfillmentService {
     const labelRef = this.normalizeOptionalText(input.label_ref);
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
 
-    await this.getFulfillmentByIdOrThrow(fulfillmentId);
+    const fulfillment = await this.getFulfillmentByIdOrThrow(fulfillmentId);
+    if (fulfillment.kind !== 'SHIPMENT') {
+      throw new ApiException(
+        'shipment는 SHIPMENT fulfillment에 대해서만 생성할 수 있습니다',
+        409,
+        'SHIPMENT_FULFILLMENT_KIND_INVALID',
+      );
+    }
+    const group = await this.getFulfillmentGroupByIdOrThrow(
+      fulfillment.fulfillment_group_id,
+    );
+    const order = await this.fetchOrderForCutover(group.order_id);
+    const orderItems = await this.fetchOrderItemsForCutover(order.id);
+    this.assertCutoverPolicyOrThrow({
+      order,
+      orderItems,
+      reserveInventory: true,
+      grantEntitlement: false,
+    });
 
     const { data: created, error: insertError } = await this.supabase
       .from('v2_shipments')
@@ -1072,6 +1367,7 @@ export class V2FulfillmentService {
 
   async grantEntitlement(input: GrantEntitlementInput): Promise<any> {
     const orderId = this.requireUuid(input.order_id, 'order_id는 필수입니다');
+    const order = await this.fetchOrderForCutover(orderId);
     const orderItemId = this.requireUuid(
       input.order_item_id,
       'order_item_id는 필수입니다',
@@ -1088,7 +1384,30 @@ export class V2FulfillmentService {
     );
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
 
-    await this.getOrderItemOrThrow(orderItemId, orderId);
+    const orderItem = await this.getOrderItemOrThrow(orderItemId, orderId);
+    if (!this.isOrderItemDigital(orderItem)) {
+      throw new ApiException(
+        'digital entitlement는 DIGITAL order_item에 대해서만 발급할 수 있습니다',
+        409,
+        'ENTITLEMENT_ORDER_ITEM_KIND_INVALID',
+      );
+    }
+    if (fulfillmentId) {
+      const fulfillment = await this.getFulfillmentByIdOrThrow(fulfillmentId);
+      if (fulfillment.kind !== 'DIGITAL') {
+        throw new ApiException(
+          'digital entitlement는 DIGITAL fulfillment에만 연결할 수 있습니다',
+          409,
+          'ENTITLEMENT_FULFILLMENT_KIND_INVALID',
+        );
+      }
+    }
+    this.assertCutoverPolicyOrThrow({
+      order,
+      orderItems: [orderItem],
+      reserveInventory: false,
+      grantEntitlement: true,
+    });
 
     if (tokenHash) {
       const existing = await this.findEntitlementByTokenHash(tokenHash);
@@ -1860,6 +2179,175 @@ export class V2FulfillmentService {
     return data[0];
   }
 
+  private async fetchOrderForCutover(orderId: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('v2_orders')
+      .select('id, order_no, sales_channel_id, order_status, payment_status, fulfillment_status')
+      .eq('id', orderId)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'v2 order 조회 실패',
+        500,
+        'V2_ORDER_FETCH_FAILED',
+      );
+    }
+    if (!data) {
+      throw new ApiException(
+        'v2 order를 찾을 수 없습니다',
+        404,
+        'V2_ORDER_NOT_FOUND',
+      );
+    }
+    return data;
+  }
+
+  private async fetchOrderItemsForCutover(orderId: string): Promise<any[]> {
+    const { data, error } = await this.supabase
+      .from('v2_order_items')
+      .select(
+        'id, variant_id, line_status, fulfillment_type_snapshot, requires_shipping_snapshot',
+      )
+      .eq('order_id', orderId);
+
+    if (error) {
+      throw new ApiException(
+        'order_item 조회 실패',
+        500,
+        'ORDER_ITEM_FETCH_FAILED',
+      );
+    }
+    return data || [];
+  }
+
+  private buildCutoverPolicy(): {
+    write_enabled: boolean;
+    shipment_write_enabled: boolean;
+    digital_write_enabled: boolean;
+    allowed_channels: string[];
+    allowed_variant_ids: string[];
+    default_write_enabled: boolean;
+  } {
+    const defaultWriteEnabled =
+      (process.env.NODE_ENV || '').toLowerCase() !== 'production';
+    const allowedChannels = this.readCsvEnv('V2_FULFILLMENT_ALLOWED_CHANNELS').map(
+      (channel) => channel.toUpperCase(),
+    );
+    const allowedVariantIds = this.readCsvEnv(
+      'V2_FULFILLMENT_ALLOWED_VARIANT_IDS',
+    ).filter((value) => this.isUuid(value));
+
+    return {
+      write_enabled: this.readBooleanEnv(
+        'V2_FULFILLMENT_WRITE_ENABLED',
+        defaultWriteEnabled,
+      ),
+      shipment_write_enabled: this.readBooleanEnv(
+        'V2_FULFILLMENT_ENABLE_SHIPMENT_WRITE',
+        true,
+      ),
+      digital_write_enabled: this.readBooleanEnv(
+        'V2_FULFILLMENT_ENABLE_DIGITAL_WRITE',
+        true,
+      ),
+      allowed_channels: allowedChannels,
+      allowed_variant_ids: allowedVariantIds,
+      default_write_enabled: defaultWriteEnabled,
+    };
+  }
+
+  private evaluateCutoverPolicy(input: {
+    order: any;
+    orderItems: any[];
+    reserveInventory: boolean;
+    grantEntitlement: boolean;
+  }): { reasons: string[] } {
+    const policy = this.buildCutoverPolicy();
+    const reasons: string[] = [];
+
+    if (!policy.write_enabled) {
+      reasons.push('V2_FULFILLMENT_WRITE_ENABLED=false');
+    }
+
+    if (input.reserveInventory && !policy.shipment_write_enabled) {
+      reasons.push('V2_FULFILLMENT_ENABLE_SHIPMENT_WRITE=false');
+    }
+    if (input.grantEntitlement && !policy.digital_write_enabled) {
+      reasons.push('V2_FULFILLMENT_ENABLE_DIGITAL_WRITE=false');
+    }
+
+    if (policy.allowed_channels.length > 0) {
+      const orderChannel = this.normalizeOptionalText(input.order.sales_channel_id);
+      const normalizedOrderChannel = (orderChannel || '').toUpperCase();
+      if (!policy.allowed_channels.includes(normalizedOrderChannel)) {
+        reasons.push(
+          `sales_channel_id(${input.order.sales_channel_id || '-'}) not in allowed_channels`,
+        );
+      }
+    }
+
+    if (policy.allowed_variant_ids.length > 0) {
+      const variantIds = Array.from(
+        new Set(
+          (input.orderItems || [])
+            .map((item) => this.normalizeOptionalText(item.variant_id))
+            .filter((value): value is string => Boolean(value)),
+        ),
+      );
+      const blocked = variantIds.filter(
+        (variantId) => !policy.allowed_variant_ids.includes(variantId),
+      );
+      if (blocked.length > 0) {
+        reasons.push(`variant_id not allowed: ${blocked.join(',')}`);
+      }
+    }
+
+    return { reasons };
+  }
+
+  private assertCutoverPolicyOrThrow(input: {
+    order: any;
+    orderItems: any[];
+    reserveInventory: boolean;
+    grantEntitlement: boolean;
+  }): void {
+    const evaluation = this.evaluateCutoverPolicy(input);
+    if (evaluation.reasons.length > 0) {
+      throw new ApiException(
+        `fulfillment write cutover 정책에 의해 차단되었습니다: ${evaluation.reasons.join(
+          '; ',
+        )}`,
+        409,
+        'V2_FULFILLMENT_CUTOVER_BLOCKED',
+      );
+    }
+  }
+
+  private async getFulfillmentGroupByIdOrThrow(groupId: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('v2_fulfillment_groups')
+      .select('*')
+      .eq('id', groupId)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'fulfillment group 조회 실패',
+        500,
+        'FULFILLMENT_GROUP_FETCH_FAILED',
+      );
+    }
+    if (!data) {
+      throw new ApiException(
+        'fulfillment group를 찾을 수 없습니다',
+        404,
+        'FULFILLMENT_GROUP_NOT_FOUND',
+      );
+    }
+    return data;
+  }
+
   private isOrderItemDigital(orderItem: any): boolean {
     if (orderItem.fulfillment_type_snapshot === 'DIGITAL') {
       return true;
@@ -1914,7 +2402,9 @@ export class V2FulfillmentService {
   ): Promise<any> {
     const { data, error } = await this.supabase
       .from('v2_order_items')
-      .select('id, order_id, variant_id, quantity')
+      .select(
+        'id, order_id, variant_id, quantity, line_status, fulfillment_type_snapshot, requires_shipping_snapshot',
+      )
       .eq('id', orderItemId)
       .eq('order_id', orderId)
       .maybeSingle();
@@ -2042,6 +2532,57 @@ export class V2FulfillmentService {
       );
     }
     return data;
+  }
+
+  private countByCompositeKey(
+    rows: any[],
+    keySelector: (row: any) => string,
+  ): Record<string, number> {
+    const counts: Record<string, number> = {};
+    for (const row of rows) {
+      const key = keySelector(row);
+      counts[key] = (counts[key] || 0) + 1;
+    }
+    return counts;
+  }
+
+  private normalizeOpsLimit(value?: string | number | null): number {
+    if (typeof value === 'number') {
+      return Math.max(1, Math.min(100, Math.floor(value)));
+    }
+    if (typeof value === 'string') {
+      const parsed = Number.parseInt(value, 10);
+      if (!Number.isNaN(parsed)) {
+        return Math.max(1, Math.min(100, parsed));
+      }
+    }
+    return 20;
+  }
+
+  private readBooleanEnv(key: string, fallback: boolean): boolean {
+    const raw = process.env[key];
+    if (!raw) {
+      return fallback;
+    }
+    const normalized = raw.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) {
+      return true;
+    }
+    if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) {
+      return false;
+    }
+    return fallback;
+  }
+
+  private readCsvEnv(key: string): string[] {
+    const raw = process.env[key];
+    if (!raw) {
+      return [];
+    }
+    return raw
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
   }
 
   private requireUuid(value: string | undefined, message: string): string {
