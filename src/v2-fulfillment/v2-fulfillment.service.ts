@@ -616,6 +616,14 @@ export class V2FulfillmentService {
     let createdShipmentCount = 0;
     let createdReservationCount = 0;
     let createdEntitlementCount = 0;
+    const groupResults: Array<{
+      group_id: string;
+      kind: string;
+      fulfillment_id: string;
+      shipment_id: string | null;
+      reservation_ids: string[];
+      entitlement_ids: string[];
+    }> = [];
 
     for (const group of groups) {
       const groupId = group.id as string;
@@ -629,6 +637,14 @@ export class V2FulfillmentService {
       }
 
       const groupItems = await this.fetchFulfillmentGroupItemsByGroupId(groupId);
+      const groupResult = {
+        group_id: groupId,
+        kind: group.kind as string,
+        fulfillment_id: fulfillment.record.id as string,
+        shipment_id: null as string | null,
+        reservation_ids: [] as string[],
+        entitlement_ids: [] as string[],
+      };
       if (group.kind === 'SHIPMENT') {
         const shipmentResult = await this.createShipment({
           fulfillment_id: fulfillment.record.id,
@@ -638,6 +654,7 @@ export class V2FulfillmentService {
             group_id: groupId,
           },
         });
+        groupResult.shipment_id = shipmentResult.shipment?.id || null;
         if (!shipmentResult.idempotent_replayed) {
           createdShipmentCount += 1;
         }
@@ -682,6 +699,9 @@ export class V2FulfillmentService {
             if (!reserveResult.idempotent_replayed) {
               createdReservationCount += 1;
             }
+            if (reserveResult.reservation?.id) {
+              groupResult.reservation_ids.push(reserveResult.reservation.id);
+            }
           }
         }
       } else if (group.kind === 'DIGITAL' && grantEntitlement) {
@@ -707,8 +727,13 @@ export class V2FulfillmentService {
           if (!grantResult.idempotent_replayed) {
             createdEntitlementCount += 1;
           }
+          if (grantResult.entitlement?.id) {
+            groupResult.entitlement_ids.push(grantResult.entitlement.id);
+          }
         }
       }
+
+      groupResults.push(groupResult);
     }
 
     return {
@@ -725,6 +750,7 @@ export class V2FulfillmentService {
         entitlements: createdEntitlementCount,
       },
       groups,
+      group_results: groupResults,
     };
   }
 
