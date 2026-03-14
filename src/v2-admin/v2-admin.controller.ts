@@ -53,6 +53,15 @@ export class V2AdminController {
     return successResponse(rbac);
   }
 
+  @Get('actions/catalog')
+  async getActionCatalog(
+    @Headers('authorization') authorization: string | undefined,
+  ) {
+    await this.requireAdmin(authorization);
+    const catalog = await this.v2AdminService.getActionCatalog();
+    return successResponse(catalog);
+  }
+
   @Get('audit/action-logs')
   async listActionLogs(
     @Headers('authorization') authorization: string | undefined,

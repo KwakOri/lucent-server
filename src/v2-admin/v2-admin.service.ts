@@ -8,6 +8,75 @@ export class V2AdminService {
     return getSupabaseClient() as any;
   }
 
+  async getActionCatalog(): Promise<any> {
+    return {
+      generated_at: new Date().toISOString(),
+      screens: [
+        {
+          screen_key: 'order-ops',
+          screen_name: 'Order Ops',
+          actions: [
+            {
+              action_key: 'ORDER_REFUND_EXECUTE',
+              domain: 'ORDER',
+              resource_type: 'ORDER',
+              required_permission_code: 'ORDER_REFUND_APPROVE',
+              requires_approval: true,
+              approval_role_code: 'FINANCE_MANAGER',
+              endpoint: 'POST /api/v2/checkout/orders/:orderId/refund',
+              transition_key: 'ORDER_REFUND',
+            },
+          ],
+        },
+        {
+          screen_key: 'fulfillment-ops',
+          screen_name: 'Fulfillment Ops',
+          actions: [
+            {
+              action_key: 'FULFILLMENT_SHIPMENT_DISPATCH',
+              domain: 'FULFILLMENT',
+              resource_type: 'SHIPMENT',
+              required_permission_code: 'FULFILLMENT_EXECUTE',
+              requires_approval: false,
+              approval_role_code: null,
+              endpoint:
+                'POST /api/v2/fulfillment/admin/shipments/:shipmentId/dispatch',
+              transition_key: 'SHIPMENT_DISPATCH',
+            },
+          ],
+        },
+        {
+          screen_key: 'digital-ops',
+          screen_name: 'Digital Ops',
+          actions: [
+            {
+              action_key: 'FULFILLMENT_ENTITLEMENT_REISSUE',
+              domain: 'FULFILLMENT',
+              resource_type: 'DIGITAL_ENTITLEMENT',
+              required_permission_code: 'ENTITLEMENT_REISSUE',
+              requires_approval: false,
+              approval_role_code: null,
+              endpoint:
+                'POST /api/v2/fulfillment/admin/entitlements/:entitlementId/reissue',
+              transition_key: 'ENTITLEMENT_REISSUE',
+            },
+            {
+              action_key: 'FULFILLMENT_ENTITLEMENT_REVOKE',
+              domain: 'FULFILLMENT',
+              resource_type: 'DIGITAL_ENTITLEMENT',
+              required_permission_code: 'ENTITLEMENT_REISSUE',
+              requires_approval: true,
+              approval_role_code: 'OPS_MANAGER',
+              endpoint:
+                'POST /api/v2/fulfillment/admin/entitlements/:entitlementId/revoke',
+              transition_key: 'ENTITLEMENT_REVOKE',
+            },
+          ],
+        },
+      ],
+    };
+  }
+
   async listRoles(): Promise<any[]> {
     const { data: roles, error: rolesError } = await this.supabase
       .from('v2_admin_roles')
