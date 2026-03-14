@@ -427,6 +427,261 @@ export class V2AdminService {
     };
   }
 
+  async getCutoverReopenReadiness(params: { domainKey?: string }): Promise<any> {
+    const checklist = await this.getCutoverGateChecklist(params);
+    const checklistDomains = Array.isArray(checklist?.domains)
+      ? checklist.domains
+      : [];
+
+    if (checklistDomains.length === 0) {
+      return {
+        generated_at: new Date().toISOString(),
+        required_gate_types: [...this.requiredCutoverGateTypes],
+        domains: [],
+        summary: {
+          total_domains: 0,
+          reopen_required_count: 0,
+          ready_count: 0,
+          blocked_count: 0,
+          not_required_count: 0,
+        },
+      };
+    }
+
+    const domainIds = checklistDomains
+      .map((item) => item?.domain?.id)
+      .filter(Boolean);
+    const severityRank: Record<string, number> = {
+      LOW: 1,
+      MEDIUM: 2,
+      HIGH: 3,
+      CRITICAL: 4,
+    };
+
+    const [{ data: issues, error: issuesError }, { data: stageRuns, error: stageRunsError }, { data: routingFlags, error: routingFlagsError }] =
+      await Promise.all([
+        this.supabase
+          .from('v2_cutover_stage_issues')
+          .select('id,domain_id,status,severity,occurred_at')
+          .in('domain_id', domainIds)
+          .neq('status', 'RESOLVED')
+          .order('occurred_at', { ascending: false }),
+        this.supabase
+          .from('v2_cutover_stage_runs')
+          .select(
+            'id,domain_id,stage_no,run_key,status,transition_mode,started_at,finished_at,updated_at,created_at',
+          )
+          .in('domain_id', domainIds)
+          .order('created_at', { ascending: false }),
+        this.supabase
+          .from('v2_cutover_routing_flags')
+          .select(
+            'id,domain_id,target,traffic_percent,enabled,priority,reason,updated_at,created_at',
+          )
+          .in('domain_id', domainIds)
+          .eq('enabled', true)
+          .order('priority', { ascending: true })
+          .order('created_at', { ascending: false }),
+      ]);
+
+    if (issuesError) {
+      throw new ApiException(
+        'cutover reopen readiness issue 조회 실패',
+        500,
+        'V2_CUTOVER_REOPEN_ISSUES_FETCH_FAILED',
+      );
+    }
+    if (stageRunsError) {
+      throw new ApiException(
+        'cutover reopen readiness stage run 조회 실패',
+        500,
+        'V2_CUTOVER_REOPEN_STAGE_RUNS_FETCH_FAILED',
+      );
+    }
+    if (routingFlagsError) {
+      throw new ApiException(
+        'cutover reopen readiness routing flag 조회 실패',
+        500,
+        'V2_CUTOVER_REOPEN_ROUTING_FLAGS_FETCH_FAILED',
+      );
+    }
+
+    const unresolvedIssuesByDomain = new Map<
+      string,
+      {
+        count: number;
+        highest_severity: string | null;
+        latest_occurred_at: string | null;
+      }
+    >();
+    for (const issue of issues || []) {
+      const domainId = issue.domain_id as string;
+      if (!domainId) {
+        continue;
+      }
+      const current = unresolvedIssuesByDomain.get(domainId) || {
+        count: 0,
+        highest_severity: null,
+        latest_occurred_at: null,
+      };
+      current.count += 1;
+      if (!current.latest_occurred_at) {
+        current.latest_occurred_at = issue.occurred_at || null;
+      }
+      const candidateSeverity = (issue.severity as string | null) || null;
+      if (
+        candidateSeverity &&
+        (current.highest_severity === null ||
+          severityRank[candidateSeverity] >
+            (severityRank[current.highest_severity] || 0))
+      ) {
+        current.highest_severity = candidateSeverity;
+      }
+      unresolvedIssuesByDomain.set(domainId, current);
+    }
+
+    const latestStageRunByDomain = new Map<string, any>();
+    const rollbackHistoryByDomain = new Set<string>();
+    for (const run of stageRuns || []) {
+      const domainId = run.domain_id as string;
+      if (!domainId) {
+        continue;
+      }
+      if (!latestStageRunByDomain.has(domainId)) {
+        latestStageRunByDomain.set(domainId, run);
+      }
+      if (run.status === 'ROLLED_BACK') {
+        rollbackHistoryByDomain.add(domainId);
+      }
+    }
+
+    const activeRoutingByDomain = new Map<string, any>();
+    for (const flag of routingFlags || []) {
+      const domainId = flag.domain_id as string;
+      if (!domainId) {
+        continue;
+      }
+      if (!activeRoutingByDomain.has(domainId)) {
+        activeRoutingByDomain.set(domainId, flag);
+      }
+    }
+
+    const readinessDomains = checklistDomains.map((item) => {
+      const domain = item.domain || {};
+      const domainId = domain.id as string;
+      const gateDecision = item.decision as 'READY' | 'REVIEW' | 'BLOCKED';
+      const unresolvedInfo = unresolvedIssuesByDomain.get(domainId) || {
+        count: 0,
+        highest_severity: null,
+        latest_occurred_at: null,
+      };
+      const latestStageRun = latestStageRunByDomain.get(domainId) || null;
+      const activeRouting = activeRoutingByDomain.get(domainId) || null;
+
+      const rollbackModeActive =
+        activeRouting?.target === 'LEGACY' &&
+        Number(activeRouting?.traffic_percent || 0) > 0;
+      const latestStatus = (latestStageRun?.status as string | null) || null;
+      const needsReopen =
+        rollbackModeActive ||
+        latestStatus === 'ROLLED_BACK' ||
+        latestStatus === 'BLOCKED' ||
+        latestStatus === 'CANCELED';
+      const checks = {
+        gate_ready: gateDecision === 'READY',
+        unresolved_issues_cleared: unresolvedInfo.count === 0,
+        latest_stage_run_completed: latestStatus === 'COMPLETED',
+      };
+
+      const blockers: string[] = [];
+      if (needsReopen && !checks.gate_ready) {
+        blockers.push('required gate checklist가 READY가 아님');
+      }
+      if (needsReopen && !checks.unresolved_issues_cleared) {
+        blockers.push(`미해결 이슈 ${unresolvedInfo.count}건 존재`);
+      }
+      if (needsReopen && !checks.latest_stage_run_completed) {
+        blockers.push('최신 stage run이 COMPLETED 상태가 아님');
+      }
+
+      const reopenDecision =
+        !needsReopen ? 'NOT_REQUIRED' : blockers.length > 0 ? 'BLOCKED' : 'READY';
+
+      return {
+        domain: {
+          id: domainId,
+          domain_key: domain.domain_key || null,
+          domain_name: domain.domain_name || null,
+          status: domain.status || null,
+          current_stage: domain.current_stage ?? null,
+          owner_role_code: domain.owner_role_code || null,
+          next_action: domain.next_action || null,
+        },
+        gate: {
+          decision: gateDecision,
+          summary: item.summary || null,
+        },
+        issues: {
+          unresolved_count: unresolvedInfo.count,
+          highest_severity: unresolvedInfo.highest_severity,
+          latest_occurred_at: unresolvedInfo.latest_occurred_at,
+        },
+        latest_stage_run: latestStageRun
+          ? {
+              id: latestStageRun.id,
+              stage_no: latestStageRun.stage_no,
+              run_key: latestStageRun.run_key,
+              status: latestStageRun.status,
+              transition_mode: latestStageRun.transition_mode,
+              started_at: latestStageRun.started_at,
+              finished_at: latestStageRun.finished_at,
+              updated_at: latestStageRun.updated_at || latestStageRun.created_at,
+            }
+          : null,
+        active_routing_flag: activeRouting
+          ? {
+              id: activeRouting.id,
+              target: activeRouting.target,
+              traffic_percent: activeRouting.traffic_percent,
+              priority: activeRouting.priority,
+              reason: activeRouting.reason,
+              updated_at: activeRouting.updated_at || activeRouting.created_at,
+            }
+          : null,
+        rollback: {
+          mode_active: rollbackModeActive,
+          has_rollback_history: rollbackHistoryByDomain.has(domainId),
+          needs_reopen: needsReopen,
+        },
+        approval_checks: checks,
+        reopen_decision: reopenDecision,
+        blockers,
+      };
+    });
+
+    return {
+      generated_at: new Date().toISOString(),
+      required_gate_types:
+        checklist.required_gate_types || [...this.requiredCutoverGateTypes],
+      domains: readinessDomains,
+      summary: {
+        total_domains: readinessDomains.length,
+        reopen_required_count: readinessDomains.filter(
+          (item) => item.rollback.needs_reopen,
+        ).length,
+        ready_count: readinessDomains.filter(
+          (item) => item.reopen_decision === 'READY',
+        ).length,
+        blocked_count: readinessDomains.filter(
+          (item) => item.reopen_decision === 'BLOCKED',
+        ).length,
+        not_required_count: readinessDomains.filter(
+          (item) => item.reopen_decision === 'NOT_REQUIRED',
+        ).length,
+      },
+    };
+  }
+
   async saveCutoverGateReport(input: {
     domainKey?: string;
     gateType?: string;
