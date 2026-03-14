@@ -555,6 +555,31 @@ interface BuildV2PriceQuoteInput {
   evaluated_at?: string | null;
 }
 
+type V2ShopSort = 'SORT_ORDER' | 'LATEST' | 'OLDEST' | 'TITLE_ASC' | 'TITLE_DESC';
+
+interface GetV2ShopProductsInput {
+  cursor?: string;
+  limit?: number;
+  sort?: string;
+  channel?: string | null;
+  campaign_id?: string | null;
+}
+
+interface GetV2ShopProductDetailInput {
+  channel?: string | null;
+  campaign_id?: string | null;
+}
+
+interface GetV2ShopPricePreviewInput {
+  variant_id?: string;
+  quantity?: number;
+  campaign_id?: string | null;
+  channel?: string | null;
+  coupon_code?: string | null;
+  user_id?: string | null;
+  shipping_amount?: number | null;
+}
+
 interface MigrationCheckResult {
   key: string;
   passed: boolean;
@@ -1086,6 +1111,245 @@ export class V2CatalogService {
     }
 
     return data || [];
+  }
+
+  async getShopProducts(input: GetV2ShopProductsInput = {}): Promise<any> {
+    const limit = this.normalizeShopLimit(input.limit);
+    const offset = this.normalizeShopOffset(input.cursor);
+    const sort = this.normalizeShopSort(input.sort);
+    const channel = this.normalizeOptionalText(input.channel);
+    const campaignId = this.normalizeOptionalText(input.campaign_id);
+    const evaluatedAt = new Date().toISOString();
+
+    let query = this.supabase
+      .from('v2_products')
+      .select('*', { count: 'exact' })
+      .eq('status', 'ACTIVE')
+      .is('deleted_at', null);
+
+    if (sort === 'LATEST') {
+      query = query
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false });
+    } else if (sort === 'OLDEST') {
+      query = query
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true });
+    } else if (sort === 'TITLE_ASC') {
+      query = query
+        .order('title', { ascending: true })
+        .order('id', { ascending: true });
+    } else if (sort === 'TITLE_DESC') {
+      query = query
+        .order('title', { ascending: false })
+        .order('id', { ascending: false });
+    } else {
+      query = query
+        .order('sort_order', { ascending: true })
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true });
+    }
+
+    const { data, error, count } = await query.range(offset, offset + limit - 1);
+    if (error) {
+      throw new ApiException(
+        'v2 shop 상품 목록 조회 실패',
+        500,
+        'V2_SHOP_PRODUCTS_FETCH_FAILED',
+      );
+    }
+
+    const products = data || [];
+    const items = await this.buildShopListItems(products, {
+      channel,
+      campaignId,
+      evaluatedAt,
+    });
+    const total = count ?? items.length;
+    const nextOffset = offset + limit;
+
+    return {
+      items,
+      next_cursor: nextOffset < total ? String(nextOffset) : null,
+      summary: {
+        total,
+      },
+    };
+  }
+
+  async getShopProductDetail(
+    productId: string,
+    input: GetV2ShopProductDetailInput = {},
+  ): Promise<any> {
+    const product = await this.getProductById(productId);
+    if (product.status !== 'ACTIVE') {
+      throw new ApiException(
+        'v2 shop 상품을 찾을 수 없습니다',
+        404,
+        'V2_SHOP_PRODUCT_NOT_FOUND',
+      );
+    }
+
+    const channel = this.normalizeOptionalText(input.channel);
+    const campaignId = this.normalizeOptionalText(input.campaign_id);
+    const evaluatedAt = new Date().toISOString();
+
+    const { variantsByProductId, mediaByProductId, inventoryByVariantId, priceItems } =
+      await this.loadShopContext([productId]);
+    const variants = variantsByProductId.get(productId) || [];
+    const media = mediaByProductId.get(productId) || [];
+
+    const variantViews = variants.map((variant: any, index: number) => {
+      const priceSelection = this.selectShopPriceItem({
+        productId,
+        variantId: variant.id as string,
+        priceItems,
+        evaluatedAt,
+        campaignId,
+        channel,
+      });
+      const inventoryQuantity = variant.track_inventory
+        ? (inventoryByVariantId.get(variant.id as string) ?? null)
+        : null;
+      const availability = this.buildShopAvailability({
+        productStatus: product.status as V2ProductStatus,
+        variant,
+        selectedPriceItem: priceSelection.selected,
+        inventoryQuantity,
+      });
+
+      return {
+        id: variant.id,
+        sku: variant.sku,
+        title: variant.title,
+        fulfillment_type: variant.fulfillment_type,
+        requires_shipping: variant.requires_shipping,
+        track_inventory: variant.track_inventory,
+        status: variant.status,
+        is_primary: index === 0,
+        availability,
+        display_price: priceSelection.selected
+          ? {
+              amount: priceSelection.selected.unit_amount,
+              compare_at_amount: priceSelection.selected.compare_at_amount,
+              currency_code: priceSelection.selected.price_list?.currency_code ?? 'KRW',
+              source:
+                priceSelection.selected.price_list?.scope_type === 'OVERRIDE'
+                  ? 'OVERRIDE'
+                  : 'BASE',
+            }
+          : null,
+        purchase_constraints: {
+          min_quantity: priceSelection.selected?.min_purchase_quantity ?? 1,
+          max_quantity: priceSelection.selected?.max_purchase_quantity ?? null,
+          channel_scope:
+            priceSelection.selected?.channel_scope_json ??
+            priceSelection.selected?.price_list?.channel_scope_json ??
+            [],
+        },
+      };
+    });
+
+    const defaultVariant =
+      variantViews.find((variant: any) => variant.availability.sellable) ||
+      variantViews[0] ||
+      null;
+
+    let preview: any = null;
+    if (defaultVariant) {
+      try {
+        const quote = await this.buildPriceQuote({
+          lines: [
+            {
+              variant_id: defaultVariant.id,
+              quantity: 1,
+            },
+          ],
+          campaign_id: campaignId,
+          channel,
+        });
+        preview = {
+          quote_reference: quote.quote_reference,
+          evaluated_at: quote.evaluated_at,
+          line: quote.lines?.[0] ?? null,
+          summary: quote.summary,
+          applied_promotions: quote.applied_promotions,
+          coupon: quote.coupon,
+        };
+      } catch {
+        preview = null;
+      }
+    }
+
+    const primaryMedia = this.pickPrimaryShopMedia(media);
+    const productAvailability = defaultVariant
+      ? defaultVariant.availability
+      : {
+          sellable: false,
+          reason: 'NO_ACTIVE_VARIANT',
+          available_quantity: null,
+        };
+
+    return {
+      product: {
+        ...product,
+        thumbnail_url: primaryMedia?.public_url ?? null,
+        primary_variant_id: defaultVariant?.id ?? null,
+        primary_variant_title: defaultVariant?.title ?? null,
+        availability: productAvailability,
+      },
+      variants: variantViews,
+      media,
+      pricing_context: {
+        campaign_id: campaignId,
+        channel,
+        evaluated_at: evaluatedAt,
+        preview,
+      },
+      purchase_constraints: defaultVariant
+        ? {
+            ...defaultVariant.purchase_constraints,
+            sold_out: !defaultVariant.availability.sellable,
+          }
+        : {
+            min_quantity: 1,
+            max_quantity: null,
+            channel_scope: [],
+            sold_out: true,
+          },
+    };
+  }
+
+  async getShopPricePreview(input: GetV2ShopPricePreviewInput): Promise<any> {
+    const variantId = this.normalizeRequiredText(
+      input.variant_id,
+      'variant_id는 필수입니다',
+    );
+    const quantity = input.quantity ?? 1;
+    this.assertPositiveInteger(quantity, 'quantity');
+
+    const quote = await this.buildPriceQuote({
+      lines: [{ variant_id: variantId, quantity }],
+      campaign_id: this.normalizeOptionalText(input.campaign_id),
+      channel: this.normalizeOptionalText(input.channel),
+      coupon_code: this.normalizeOptionalText(input.coupon_code),
+      user_id: this.normalizeOptionalText(input.user_id),
+      shipping_amount: this.normalizeOptionalInteger(
+        input.shipping_amount,
+        'shipping_amount',
+      ),
+    });
+
+    return {
+      quote_reference: quote.quote_reference,
+      evaluated_at: quote.evaluated_at,
+      variant_id: variantId,
+      quantity,
+      line: quote.lines?.[0] ?? null,
+      summary: quote.summary,
+      applied_promotions: quote.applied_promotions,
+      coupon: quote.coupon,
+    };
   }
 
   async getProductById(productId: string): Promise<any> {
@@ -7623,6 +7887,403 @@ export class V2CatalogService {
       return createdB - createdA;
     });
     return sorted[0];
+  }
+
+  private async buildShopListItems(
+    products: any[],
+    context: {
+      channel: string | null;
+      campaignId: string | null;
+      evaluatedAt: string;
+    },
+  ): Promise<any[]> {
+    if (!products || products.length === 0) {
+      return [];
+    }
+
+    const productIds = products.map((product) => product.id as string);
+    const { variantsByProductId, mediaByProductId, inventoryByVariantId, priceItems } =
+      await this.loadShopContext(productIds);
+
+    return products.map((product) => {
+      const productId = product.id as string;
+      const variants = variantsByProductId.get(productId) || [];
+      const primaryVariant = variants[0] || null;
+      const media = mediaByProductId.get(productId) || [];
+      const primaryMedia = this.pickPrimaryShopMedia(media);
+      const priceSelection = primaryVariant
+        ? this.selectShopPriceItem({
+            productId,
+            variantId: primaryVariant.id as string,
+            priceItems,
+            evaluatedAt: context.evaluatedAt,
+            campaignId: context.campaignId,
+            channel: context.channel,
+          })
+        : { selected: null };
+      const inventoryQuantity = primaryVariant?.track_inventory
+        ? (inventoryByVariantId.get(primaryVariant.id as string) ?? null)
+        : null;
+      const availability = this.buildShopAvailability({
+        productStatus: product.status as V2ProductStatus,
+        variant: primaryVariant,
+        selectedPriceItem: priceSelection.selected,
+        inventoryQuantity,
+      });
+
+      return {
+        product_id: product.id,
+        project_id: product.project_id,
+        product_kind: product.product_kind,
+        title: product.title,
+        slug: product.slug,
+        short_description: product.short_description,
+        thumbnail_url: primaryMedia?.public_url ?? null,
+        primary_variant_id: primaryVariant?.id ?? null,
+        primary_variant_title: primaryVariant?.title ?? null,
+        fulfillment_type: primaryVariant?.fulfillment_type ?? null,
+        display_price: priceSelection.selected
+          ? {
+              amount: priceSelection.selected.unit_amount,
+              compare_at_amount: priceSelection.selected.compare_at_amount,
+              currency_code: priceSelection.selected.price_list?.currency_code ?? 'KRW',
+              source:
+                priceSelection.selected.price_list?.scope_type === 'OVERRIDE'
+                  ? 'OVERRIDE'
+                  : 'BASE',
+            }
+          : null,
+        availability,
+      };
+    });
+  }
+
+  private async loadShopContext(productIds: string[]): Promise<{
+    variantsByProductId: Map<string, any[]>;
+    mediaByProductId: Map<string, any[]>;
+    inventoryByVariantId: Map<string, number>;
+    priceItems: any[];
+  }> {
+    const variantsByProductId = new Map<string, any[]>();
+    const mediaByProductId = new Map<string, any[]>();
+    const inventoryByVariantId = new Map<string, number>();
+
+    if (!productIds || productIds.length === 0) {
+      return {
+        variantsByProductId,
+        mediaByProductId,
+        inventoryByVariantId,
+        priceItems: [],
+      };
+    }
+
+    const { data: variantRows, error: variantsError } = await this.supabase
+      .from('v2_product_variants')
+      .select(
+        'id,product_id,sku,title,fulfillment_type,requires_shipping,track_inventory,status,created_at',
+      )
+      .in('product_id', productIds)
+      .eq('status', 'ACTIVE')
+      .is('deleted_at', null)
+      .order('created_at', { ascending: true });
+    if (variantsError) {
+      throw new ApiException(
+        'v2 shop variant 조회 실패',
+        500,
+        'V2_SHOP_VARIANTS_FETCH_FAILED',
+      );
+    }
+
+    for (const row of variantRows || []) {
+      const productId = row.product_id as string;
+      const list = variantsByProductId.get(productId) || [];
+      list.push(row);
+      variantsByProductId.set(productId, list);
+    }
+
+    const { data: mediaRows, error: mediaError } = await this.supabase
+      .from('v2_product_media')
+      .select(
+        'id,product_id,media_type,media_role,public_url,alt_text,sort_order,is_primary,status,created_at',
+      )
+      .in('product_id', productIds)
+      .eq('status', 'ACTIVE')
+      .is('deleted_at', null)
+      .order('is_primary', { ascending: false })
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true });
+    if (mediaError) {
+      throw new ApiException(
+        'v2 shop media 조회 실패',
+        500,
+        'V2_SHOP_MEDIA_FETCH_FAILED',
+      );
+    }
+
+    for (const row of mediaRows || []) {
+      const productId = row.product_id as string;
+      const list = mediaByProductId.get(productId) || [];
+      list.push(row);
+      mediaByProductId.set(productId, list);
+    }
+
+    const variantIds = (variantRows || []).map((row: any) => row.id as string);
+    if (variantIds.length > 0) {
+      const { data: inventoryRows, error: inventoryError } = await this.supabase
+        .from('v2_inventory_levels')
+        .select('variant_id,available_quantity')
+        .in('variant_id', variantIds);
+      if (inventoryError) {
+        throw new ApiException(
+          'v2 shop inventory 조회 실패',
+          500,
+          'V2_SHOP_INVENTORY_FETCH_FAILED',
+        );
+      }
+
+      for (const row of inventoryRows || []) {
+        const variantId = row.variant_id as string;
+        const current = inventoryByVariantId.get(variantId) ?? 0;
+        inventoryByVariantId.set(
+          variantId,
+          current + Number(row.available_quantity ?? 0),
+        );
+      }
+    }
+
+    const { data: priceItems, error: priceItemsError } = await this.supabase
+      .from('v2_price_list_items')
+      .select(
+        `
+        id,
+        price_list_id,
+        product_id,
+        variant_id,
+        status,
+        unit_amount,
+        compare_at_amount,
+        min_purchase_quantity,
+        max_purchase_quantity,
+        starts_at,
+        ends_at,
+        channel_scope_json,
+        created_at,
+        price_list:v2_price_lists(
+          id,
+          campaign_id,
+          name,
+          scope_type,
+          status,
+          currency_code,
+          priority,
+          published_at,
+          starts_at,
+          ends_at,
+          channel_scope_json,
+          deleted_at
+        )
+      `,
+      )
+      .in('product_id', productIds)
+      .eq('status', 'ACTIVE')
+      .is('deleted_at', null);
+
+    if (priceItemsError) {
+      throw new ApiException(
+        'v2 shop 가격 조회 실패',
+        500,
+        'V2_SHOP_PRICE_ITEMS_FETCH_FAILED',
+      );
+    }
+
+    return {
+      variantsByProductId,
+      mediaByProductId,
+      inventoryByVariantId,
+      priceItems: priceItems || [],
+    };
+  }
+
+  private pickPrimaryShopMedia(mediaItems: any[]): any | null {
+    if (!mediaItems || mediaItems.length === 0) {
+      return null;
+    }
+    const primaryByFlag = mediaItems.find((item) => item.is_primary);
+    if (primaryByFlag) {
+      return primaryByFlag;
+    }
+    const primaryByRole = mediaItems.find((item) => item.media_role === 'PRIMARY');
+    if (primaryByRole) {
+      return primaryByRole;
+    }
+    return mediaItems[0];
+  }
+
+  private buildShopAvailability(params: {
+    productStatus: V2ProductStatus;
+    variant: any | null;
+    selectedPriceItem: any | null;
+    inventoryQuantity: number | null;
+  }): {
+    sellable: boolean;
+    reason: string | null;
+    available_quantity: number | null;
+  } {
+    const availableQuantity = params.variant?.track_inventory
+      ? params.inventoryQuantity
+      : null;
+
+    if (params.productStatus !== 'ACTIVE') {
+      return {
+        sellable: false,
+        reason: 'PRODUCT_INACTIVE',
+        available_quantity: availableQuantity,
+      };
+    }
+    if (!params.variant) {
+      return {
+        sellable: false,
+        reason: 'NO_ACTIVE_VARIANT',
+        available_quantity: null,
+      };
+    }
+    if (!params.selectedPriceItem) {
+      return {
+        sellable: false,
+        reason: 'PRICE_NOT_AVAILABLE',
+        available_quantity: availableQuantity,
+      };
+    }
+    if (
+      params.variant.track_inventory &&
+      availableQuantity !== null &&
+      availableQuantity <= 0
+    ) {
+      return {
+        sellable: false,
+        reason: 'OUT_OF_STOCK',
+        available_quantity: availableQuantity,
+      };
+    }
+
+    return {
+      sellable: true,
+      reason: null,
+      available_quantity: availableQuantity,
+    };
+  }
+
+  private selectShopPriceItem(params: {
+    productId: string;
+    variantId: string;
+    priceItems: any[];
+    evaluatedAt: string;
+    campaignId: string | null;
+    channel: string | null;
+  }): { selected: any | null; base: any | null; override: any | null } {
+    const candidates = (params.priceItems || [])
+      .filter((item) => item.product_id === params.productId)
+      .filter(
+        (item) => item.variant_id === params.variantId || item.variant_id === null,
+      )
+      .filter((item) =>
+        this.isTimestampInRange(item.starts_at, item.ends_at, params.evaluatedAt),
+      )
+      .filter((item) => {
+        const priceList = item.price_list;
+        if (!priceList || priceList.deleted_at) {
+          return false;
+        }
+        if (priceList.status !== 'PUBLISHED') {
+          return false;
+        }
+        if (
+          !this.isTimestampInRange(
+            priceList.starts_at,
+            priceList.ends_at,
+            params.evaluatedAt,
+          )
+        ) {
+          return false;
+        }
+        if (!this.matchesChannelScope(priceList.channel_scope_json, params.channel)) {
+          return false;
+        }
+        if (!this.matchesChannelScope(item.channel_scope_json, params.channel)) {
+          return false;
+        }
+        return true;
+      });
+
+    const base = this.pickBestPriceItem(
+      candidates.filter((item) => item.price_list?.scope_type === 'BASE'),
+    );
+    const override = this.pickBestPriceItem(
+      candidates.filter(
+        (item) =>
+          item.price_list?.scope_type === 'OVERRIDE' &&
+          (!item.price_list?.campaign_id ||
+            item.price_list?.campaign_id === params.campaignId),
+      ),
+    );
+
+    return {
+      selected: override || base,
+      base,
+      override,
+    };
+  }
+
+  private normalizeShopLimit(value?: number): number {
+    if (value === undefined || value === null) {
+      return 20;
+    }
+    if (!Number.isInteger(value) || value <= 0 || value > 100) {
+      throw new ApiException(
+        'limit은 1~100 사이 정수여야 합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    return value;
+  }
+
+  private normalizeShopOffset(value?: string): number {
+    if (!value) {
+      return 0;
+    }
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      throw new ApiException(
+        'cursor는 0 이상의 정수여야 합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    return parsed;
+  }
+
+  private normalizeShopSort(value?: string): V2ShopSort {
+    if (!value) {
+      return 'SORT_ORDER';
+    }
+
+    const normalized = value.trim().toUpperCase();
+    if (
+      normalized !== 'SORT_ORDER' &&
+      normalized !== 'LATEST' &&
+      normalized !== 'OLDEST' &&
+      normalized !== 'TITLE_ASC' &&
+      normalized !== 'TITLE_DESC'
+    ) {
+      throw new ApiException(
+        'sort는 SORT_ORDER, LATEST, OLDEST, TITLE_ASC, TITLE_DESC 중 하나여야 합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    return normalized as V2ShopSort;
   }
 
   private resolvePromotionPhase(
