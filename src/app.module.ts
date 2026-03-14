@@ -14,6 +14,7 @@ import { ProfilesModule } from './profiles/profiles.module';
 import { ProductsModule } from './products/products.module';
 import { ProjectsModule } from './projects/projects.module';
 import { SendonModule } from './sendon/sendon.module';
+import { V2AdminModule } from './v2-admin/v2-admin.module';
 import { V2CatalogModule } from './v2-catalog/v2-catalog.module';
 import { V2CheckoutModule } from './v2-checkout/v2-checkout.module';
 import { V2FulfillmentModule } from './v2-fulfillment/v2-fulfillment.module';
@@ -33,6 +34,7 @@ import { V2FulfillmentModule } from './v2-fulfillment/v2-fulfillment.module';
     AuthModule,
     CartModule,
     ProfilesModule,
+    V2AdminModule,
     V2CatalogModule,
     V2CheckoutModule,
     V2FulfillmentModule,
