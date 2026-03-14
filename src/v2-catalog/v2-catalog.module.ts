@@ -2,10 +2,11 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { V2CatalogController } from './v2-catalog.controller';
 import { V2CatalogService } from './v2-catalog.service';
+import { V2ShopController } from './v2-shop.controller';
 
 @Module({
   imports: [AuthModule],
-  controllers: [V2CatalogController],
+  controllers: [V2CatalogController, V2ShopController],
   providers: [V2CatalogService],
   exports: [V2CatalogService],
 })
