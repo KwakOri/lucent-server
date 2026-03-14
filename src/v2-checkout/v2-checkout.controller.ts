@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
 } from '@nestjs/common';
 import { AuthSessionService } from '../auth/auth-session.service';
 import { successResponse } from '../common/api-response';
@@ -76,6 +77,11 @@ interface RefundV2OrderBody {
   reason?: string | null;
   external_reference?: string | null;
   metadata?: Record<string, unknown> | null;
+}
+
+interface ListV2OrdersQuery {
+  limit?: string;
+  order_status?: string;
 }
 
 @Controller('v2/checkout')
@@ -155,6 +161,19 @@ export class V2CheckoutController {
         ? '중복 요청으로 기존 주문을 반환했습니다'
         : 'v2 주문이 생성되었습니다',
     );
+  }
+
+  @Get('orders')
+  async listOrders(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: ListV2OrdersQuery,
+  ) {
+    const user = await this.authSessionService.requireUser(authorization);
+    const result = await this.v2CheckoutService.listOrders(user.id, {
+      limit: query.limit,
+      orderStatus: query.order_status,
+    });
+    return successResponse(result);
   }
 
   @Get('orders/:orderId')
