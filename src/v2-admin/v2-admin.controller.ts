@@ -67,6 +67,10 @@ interface CutoverGateReportsQuery {
   gate_result?: string;
 }
 
+interface CutoverGateChecklistQuery {
+  domain_key?: string;
+}
+
 interface SaveCutoverGateReportBody {
   domain_key?: string;
   gate_type?: string;
@@ -215,6 +219,18 @@ export class V2AdminController {
       domainKey: query.domain_key,
       gateType: query.gate_type,
       gateResult: query.gate_result,
+    });
+    return successResponse(result);
+  }
+
+  @Get('cutover/gates/checklist')
+  async getCutoverGateChecklist(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: CutoverGateChecklistQuery,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminService.getCutoverGateChecklist({
+      domainKey: query.domain_key,
     });
     return successResponse(result);
   }
