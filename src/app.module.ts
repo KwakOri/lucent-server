@@ -15,6 +15,7 @@ import { ProductsModule } from './products/products.module';
 import { ProjectsModule } from './projects/projects.module';
 import { SendonModule } from './sendon/sendon.module';
 import { V2CatalogModule } from './v2-catalog/v2-catalog.module';
+import { V2CheckoutModule } from './v2-checkout/v2-checkout.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { V2CatalogModule } from './v2-catalog/v2-catalog.module';
     CartModule,
     ProfilesModule,
     V2CatalogModule,
+    V2CheckoutModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -7,6 +7,6 @@ import { V2CatalogService } from './v2-catalog.service';
   imports: [AuthModule],
   controllers: [V2CatalogController],
   providers: [V2CatalogService],
+  exports: [V2CatalogService],
 })
 export class V2CatalogModule {}
-
