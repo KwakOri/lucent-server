@@ -749,6 +749,320 @@ export class V2AdminService {
     return data;
   }
 
+  async listCutoverStageRuns(params: {
+    limit?: string;
+    domainKey?: string;
+    stageNo?: string;
+    status?: string;
+  }): Promise<any> {
+    const limit = this.normalizeLimit(params.limit);
+    let query = this.supabase
+      .from('v2_cutover_stage_runs')
+      .select(
+        '*, domain:v2_cutover_domains(domain_key,domain_name,status,current_stage)',
+      )
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    const domainKey = this.normalizeOptionalText(params.domainKey);
+    if (domainKey) {
+      const domain = await this.requireCutoverDomain(domainKey);
+      query = query.eq('domain_id', domain.id);
+    }
+
+    const stageNo = this.normalizeOptionalText(params.stageNo);
+    if (stageNo) {
+      query = query.eq('stage_no', this.parseRequiredStageNo(stageNo));
+    }
+
+    const status = this.normalizeOptionalText(params.status);
+    if (status) {
+      query = query.eq('status', status);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw new ApiException(
+        'cutover stage run 조회 실패',
+        500,
+        'V2_CUTOVER_STAGE_RUNS_FETCH_FAILED',
+      );
+    }
+
+    return {
+      items: data || [],
+      limit,
+    };
+  }
+
+  async saveCutoverStageRun(input: {
+    domainKey?: string;
+    stageNo?: string | number;
+    runKey?: string;
+    status?: string;
+    transitionMode?: string;
+    startedAt?: string | null;
+    finishedAt?: string | null;
+    limitedTargets?: unknown[] | null;
+    summary?: Record<string, unknown> | null;
+    approvalNote?: string | null;
+    metadata?: Record<string, unknown> | null;
+  }): Promise<any> {
+    const domainKey = this.normalizeRequiredText(
+      input.domainKey,
+      'domain_key가 필요합니다',
+    );
+    const domain = await this.requireCutoverDomain(domainKey);
+    const stageNo = this.parseRequiredStageNo(input.stageNo);
+    const runKey = this.normalizeRequiredText(input.runKey, 'run_key가 필요합니다');
+    const status = this.normalizeOptionalText(input.status) || 'PLANNED';
+    const transitionMode =
+      this.normalizeOptionalText(input.transitionMode) || 'LIMITED';
+
+    const limitedTargets =
+      input.limitedTargets === undefined || input.limitedTargets === null
+        ? []
+        : Array.isArray(input.limitedTargets)
+        ? input.limitedTargets
+        : null;
+    if (limitedTargets === null) {
+      throw new ApiException(
+        'limited_targets는 배열이어야 합니다',
+        400,
+        'V2_CUTOVER_STAGE_RUN_TARGETS_INVALID',
+      );
+    }
+
+    const payload = {
+      domain_id: domain.id,
+      stage_no: stageNo,
+      run_key: runKey,
+      status,
+      transition_mode: transitionMode,
+      started_at: this.normalizeOptionalIsoDateTime(input.startedAt),
+      finished_at: this.normalizeOptionalIsoDateTime(input.finishedAt),
+      limited_targets: limitedTargets,
+      summary: this.normalizeOptionalJsonObject(input.summary) || {},
+      approval_note: this.normalizeOptionalText(input.approvalNote),
+      metadata: this.normalizeOptionalJsonObject(input.metadata) || {},
+    };
+
+    const { data: existing, error: existingError } = await this.supabase
+      .from('v2_cutover_stage_runs')
+      .select('id')
+      .eq('run_key', runKey)
+      .maybeSingle();
+
+    if (existingError) {
+      throw new ApiException(
+        'cutover stage run 기존 데이터 조회 실패',
+        500,
+        'V2_CUTOVER_STAGE_RUN_FETCH_FAILED',
+      );
+    }
+
+    if (existing?.id) {
+      const { data, error } = await this.supabase
+        .from('v2_cutover_stage_runs')
+        .update(payload)
+        .eq('id', existing.id)
+        .select(
+          '*, domain:v2_cutover_domains(domain_key,domain_name,status,current_stage)',
+        )
+        .maybeSingle();
+
+      if (error || !data) {
+        throw new ApiException(
+          'cutover stage run 업데이트 실패',
+          500,
+          'V2_CUTOVER_STAGE_RUN_UPDATE_FAILED',
+        );
+      }
+      return data;
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_cutover_stage_runs')
+      .insert(payload)
+      .select(
+        '*, domain:v2_cutover_domains(domain_key,domain_name,status,current_stage)',
+      )
+      .maybeSingle();
+
+    if (error || !data) {
+      throw new ApiException(
+        'cutover stage run 생성 실패',
+        500,
+        'V2_CUTOVER_STAGE_RUN_CREATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async listCutoverStageIssues(params: {
+    limit?: string;
+    domainKey?: string;
+    stageNo?: string;
+    status?: string;
+    severity?: string;
+  }): Promise<any> {
+    const limit = this.normalizeLimit(params.limit);
+    let query = this.supabase
+      .from('v2_cutover_stage_issues')
+      .select(
+        '*, domain:v2_cutover_domains(domain_key,domain_name,status,current_stage), stage_run:v2_cutover_stage_runs(id,run_key,status,stage_no)',
+      )
+      .order('occurred_at', { ascending: false })
+      .limit(limit);
+
+    const domainKey = this.normalizeOptionalText(params.domainKey);
+    if (domainKey) {
+      const domain = await this.requireCutoverDomain(domainKey);
+      query = query.eq('domain_id', domain.id);
+    }
+
+    const stageNo = this.normalizeOptionalText(params.stageNo);
+    if (stageNo) {
+      query = query.eq('stage_no', this.parseRequiredStageNo(stageNo));
+    }
+
+    const status = this.normalizeOptionalText(params.status);
+    if (status) {
+      query = query.eq('status', status);
+    }
+
+    const severity = this.normalizeOptionalText(params.severity);
+    if (severity) {
+      query = query.eq('severity', severity);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw new ApiException(
+        'cutover stage issue 조회 실패',
+        500,
+        'V2_CUTOVER_STAGE_ISSUES_FETCH_FAILED',
+      );
+    }
+
+    return {
+      items: data || [],
+      limit,
+    };
+  }
+
+  async saveCutoverStageIssue(input: {
+    id?: string | null;
+    stageRunId?: string | null;
+    domainKey?: string;
+    stageNo?: string | number;
+    status?: string;
+    severity?: string;
+    issueType?: string;
+    title?: string;
+    detail?: string | null;
+    recoveryAction?: string | null;
+    ownerRoleCode?: string | null;
+    occurredAt?: string | null;
+    resolvedAt?: string | null;
+    metadata?: Record<string, unknown> | null;
+  }): Promise<any> {
+    const domainKey = this.normalizeRequiredText(
+      input.domainKey,
+      'domain_key가 필요합니다',
+    );
+    const domain = await this.requireCutoverDomain(domainKey);
+    const stageNo = this.parseRequiredStageNo(input.stageNo);
+    const stageRunId = this.normalizeOptionalUuid(input.stageRunId);
+    const issueId = this.normalizeOptionalUuid(input.id);
+
+    if (stageRunId) {
+      const { data: stageRun, error: stageRunError } = await this.supabase
+        .from('v2_cutover_stage_runs')
+        .select('id,domain_id,stage_no')
+        .eq('id', stageRunId)
+        .maybeSingle();
+
+      if (stageRunError) {
+        throw new ApiException(
+          'stage run 조회 실패',
+          500,
+          'V2_CUTOVER_STAGE_RUN_REF_FETCH_FAILED',
+        );
+      }
+      if (!stageRun) {
+        throw new ApiException(
+          '존재하지 않는 stage_run_id 입니다',
+          404,
+          'V2_CUTOVER_STAGE_RUN_NOT_FOUND',
+        );
+      }
+      if (stageRun.domain_id !== domain.id || Number(stageRun.stage_no) !== stageNo) {
+        throw new ApiException(
+          'stage_run_id의 domain/stage 정보가 일치하지 않습니다',
+          400,
+          'V2_CUTOVER_STAGE_RUN_MISMATCH',
+        );
+      }
+    }
+
+    const payload = {
+      stage_run_id: stageRunId,
+      domain_id: domain.id,
+      stage_no: stageNo,
+      status: this.normalizeOptionalText(input.status) || 'OPEN',
+      severity: this.normalizeOptionalText(input.severity) || 'MEDIUM',
+      issue_type: this.normalizeOptionalText(input.issueType) || 'INCIDENT',
+      title: this.normalizeRequiredText(input.title, 'title이 필요합니다'),
+      detail: this.normalizeOptionalText(input.detail),
+      recovery_action: this.normalizeOptionalText(input.recoveryAction),
+      owner_role_code: this.normalizeOptionalText(input.ownerRoleCode),
+      occurred_at:
+        this.normalizeOptionalIsoDateTime(input.occurredAt) || new Date().toISOString(),
+      resolved_at: this.normalizeOptionalIsoDateTime(input.resolvedAt),
+      metadata: this.normalizeOptionalJsonObject(input.metadata) || {},
+    };
+
+    if (issueId) {
+      const { data, error } = await this.supabase
+        .from('v2_cutover_stage_issues')
+        .update(payload)
+        .eq('id', issueId)
+        .select(
+          '*, domain:v2_cutover_domains(domain_key,domain_name,status,current_stage), stage_run:v2_cutover_stage_runs(id,run_key,status,stage_no)',
+        )
+        .maybeSingle();
+
+      if (error || !data) {
+        throw new ApiException(
+          'cutover stage issue 업데이트 실패',
+          500,
+          'V2_CUTOVER_STAGE_ISSUE_UPDATE_FAILED',
+        );
+      }
+      return data;
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_cutover_stage_issues')
+      .insert(payload)
+      .select(
+        '*, domain:v2_cutover_domains(domain_key,domain_name,status,current_stage), stage_run:v2_cutover_stage_runs(id,run_key,status,stage_no)',
+      )
+      .maybeSingle();
+
+    if (error || !data) {
+      throw new ApiException(
+        'cutover stage issue 생성 실패',
+        500,
+        'V2_CUTOVER_STAGE_ISSUE_CREATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
   async listRoles(): Promise<any[]> {
     const { data: roles, error: rolesError } = await this.supabase
       .from('v2_admin_roles')
@@ -1125,6 +1439,30 @@ export class V2AdminService {
       );
     }
     return value;
+  }
+
+  private parseRequiredStageNo(value: string | number | null | undefined): number {
+    const raw =
+      typeof value === 'number'
+        ? String(value)
+        : this.normalizeOptionalText(value as string | null);
+    if (!raw) {
+      throw new ApiException(
+        'stage_no가 필요합니다',
+        400,
+        'V2_CUTOVER_STAGE_NO_REQUIRED',
+      );
+    }
+
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isInteger(parsed) || parsed < 0 || parsed > 8) {
+      throw new ApiException(
+        'stage_no는 0~8 범위의 정수여야 합니다',
+        400,
+        'V2_CUTOVER_STAGE_NO_INVALID',
+      );
+    }
+    return parsed;
   }
 
   private normalizeLimit(raw?: string): number {
