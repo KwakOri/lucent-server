@@ -23,6 +23,59 @@ interface TransitionReservationBody {
   metadata?: Record<string, unknown> | null;
 }
 
+interface CreateShipmentBody {
+  fulfillment_id?: string;
+  carrier?: string | null;
+  service_level?: string | null;
+  tracking_no?: string | null;
+  tracking_url?: string | null;
+  label_ref?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface ShipmentTransitionBody {
+  metadata?: Record<string, unknown> | null;
+}
+
+interface RegisterShipmentTrackingBody {
+  carrier?: string | null;
+  service_level?: string | null;
+  tracking_no?: string;
+  tracking_url?: string | null;
+  label_ref?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface GrantEntitlementBody {
+  order_id?: string;
+  order_item_id?: string;
+  digital_asset_id?: string | null;
+  fulfillment_id?: string | null;
+  access_type?: 'DOWNLOAD' | 'STREAM' | 'LICENSE';
+  token_hash?: string | null;
+  token_reference?: string | null;
+  expires_at?: string | null;
+  max_downloads?: number | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface ReissueEntitlementBody {
+  token_hash?: string | null;
+  token_reference?: string | null;
+  expires_at?: string | null;
+  max_downloads?: number | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface RevokeEntitlementBody {
+  reason?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface LogEntitlementDownloadBody {
+  metadata?: Record<string, unknown> | null;
+}
+
 @Controller('v2/fulfillment/admin')
 export class V2FulfillmentController {
   constructor(
@@ -77,6 +130,155 @@ export class V2FulfillmentController {
     const reservation =
       await this.v2FulfillmentService.getReservationById(reservationId);
     return successResponse(reservation);
+  }
+
+  @Post('shipments')
+  async createShipment(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: CreateShipmentBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2FulfillmentService.createShipment(body);
+    return successResponse(
+      result,
+      result.idempotent_replayed
+        ? '기존 shipment를 반환했습니다'
+        : 'shipment가 생성되었습니다',
+    );
+  }
+
+  @Post('shipments/:shipmentId/pack')
+  async packShipment(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('shipmentId') shipmentId: string,
+    @Body() body: ShipmentTransitionBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2FulfillmentService.packShipment(
+      shipmentId,
+      body,
+    );
+    return successResponse(result, 'shipment가 포장 단계로 전환되었습니다');
+  }
+
+  @Post('shipments/:shipmentId/register-tracking')
+  async registerShipmentTracking(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('shipmentId') shipmentId: string,
+    @Body() body: RegisterShipmentTrackingBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2FulfillmentService.registerShipmentTracking(
+      shipmentId,
+      body,
+    );
+    return successResponse(result, '송장 정보가 등록되었습니다');
+  }
+
+  @Post('shipments/:shipmentId/dispatch')
+  async dispatchShipment(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('shipmentId') shipmentId: string,
+    @Body() body: ShipmentTransitionBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2FulfillmentService.dispatchShipment(
+      shipmentId,
+      body,
+    );
+    return successResponse(result, 'shipment가 출고되었습니다');
+  }
+
+  @Post('shipments/:shipmentId/deliver')
+  async deliverShipment(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('shipmentId') shipmentId: string,
+    @Body() body: ShipmentTransitionBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2FulfillmentService.deliverShipment(
+      shipmentId,
+      body,
+    );
+    return successResponse(result, 'shipment가 배송 완료 처리되었습니다');
+  }
+
+  @Get('shipments/:shipmentId')
+  async getShipmentById(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('shipmentId') shipmentId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const shipment = await this.v2FulfillmentService.getShipmentById(shipmentId);
+    return successResponse(shipment);
+  }
+
+  @Post('entitlements/grant')
+  async grantEntitlement(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: GrantEntitlementBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2FulfillmentService.grantEntitlement(body);
+    return successResponse(
+      result,
+      result.idempotent_replayed
+        ? '기존 entitlement를 반환했습니다'
+        : 'entitlement가 발급되었습니다',
+    );
+  }
+
+  @Post('entitlements/:entitlementId/reissue')
+  async reissueEntitlement(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('entitlementId') entitlementId: string,
+    @Body() body: ReissueEntitlementBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2FulfillmentService.reissueEntitlement(
+      entitlementId,
+      body,
+    );
+    return successResponse(result, 'entitlement가 재발급되었습니다');
+  }
+
+  @Post('entitlements/:entitlementId/revoke')
+  async revokeEntitlement(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('entitlementId') entitlementId: string,
+    @Body() body: RevokeEntitlementBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2FulfillmentService.revokeEntitlement(
+      entitlementId,
+      body,
+    );
+    return successResponse(result, 'entitlement가 회수되었습니다');
+  }
+
+  @Post('entitlements/:entitlementId/download-log')
+  async logEntitlementDownload(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('entitlementId') entitlementId: string,
+    @Body() body: LogEntitlementDownloadBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2FulfillmentService.logEntitlementDownload(
+      entitlementId,
+      body,
+    );
+    return successResponse(result, 'entitlement 다운로드 이력이 기록되었습니다');
+  }
+
+  @Get('entitlements/:entitlementId')
+  async getEntitlementById(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('entitlementId') entitlementId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const entitlement =
+      await this.v2FulfillmentService.getEntitlementById(entitlementId);
+    return successResponse(entitlement);
   }
 
   private async requireAdmin(authorization: string | undefined): Promise<void> {
