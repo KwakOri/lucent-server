@@ -1521,6 +1521,153 @@ export class V2AdminService {
     };
   }
 
+  async getOrderDetail(orderId: string): Promise<any> {
+    const normalizedOrderId = this.normalizeRequiredText(
+      orderId,
+      'order_id가 필요합니다',
+    );
+
+    const { data: order, error: orderError } = await this.supabase
+      .from('v2_orders')
+      .select('*')
+      .eq('id', normalizedOrderId)
+      .maybeSingle();
+
+    if (orderError) {
+      throw new ApiException(
+        '주문 상세 조회 실패',
+        500,
+        'V2_ADMIN_ORDER_DETAIL_FETCH_FAILED',
+      );
+    }
+    if (!order) {
+      throw new ApiException(
+        '주문을 찾을 수 없습니다',
+        404,
+        'V2_ADMIN_ORDER_NOT_FOUND',
+      );
+    }
+
+    const [
+      queueResult,
+      itemsResult,
+      adjustmentsResult,
+      paymentsResult,
+      fulfillmentQueueResult,
+      actionLogsResult,
+    ] = await Promise.all([
+      this.supabase
+        .from('v2_admin_order_queue_view')
+        .select('*')
+        .eq('order_id', normalizedOrderId)
+        .maybeSingle(),
+      this.supabase
+        .from('v2_order_items')
+        .select('*')
+        .eq('order_id', normalizedOrderId)
+        .order('created_at', { ascending: true }),
+      this.supabase
+        .from('v2_order_adjustments')
+        .select('*')
+        .eq('order_id', normalizedOrderId)
+        .order('created_at', { ascending: true }),
+      this.supabase
+        .from('v2_payments')
+        .select('*')
+        .eq('order_id', normalizedOrderId)
+        .order('created_at', { ascending: true }),
+      this.supabase
+        .from('v2_admin_fulfillment_queue_view')
+        .select('*')
+        .eq('order_id', normalizedOrderId)
+        .order('updated_at', { ascending: false }),
+      this.supabase
+        .from('v2_admin_action_logs')
+        .select('*')
+        .eq('resource_type', 'ORDER')
+        .eq('resource_id', normalizedOrderId)
+        .order('created_at', { ascending: false })
+        .limit(50),
+    ]);
+
+    if (queueResult.error) {
+      throw new ApiException(
+        'order queue 상세 조회 실패',
+        500,
+        'V2_ADMIN_ORDER_QUEUE_DETAIL_FETCH_FAILED',
+      );
+    }
+    if (itemsResult.error) {
+      throw new ApiException(
+        'order item 상세 조회 실패',
+        500,
+        'V2_ADMIN_ORDER_ITEMS_FETCH_FAILED',
+      );
+    }
+    if (adjustmentsResult.error) {
+      throw new ApiException(
+        'order adjustment 상세 조회 실패',
+        500,
+        'V2_ADMIN_ORDER_ADJUSTMENTS_FETCH_FAILED',
+      );
+    }
+    if (paymentsResult.error) {
+      throw new ApiException(
+        'order payment 상세 조회 실패',
+        500,
+        'V2_ADMIN_ORDER_PAYMENTS_FETCH_FAILED',
+      );
+    }
+    if (fulfillmentQueueResult.error) {
+      throw new ApiException(
+        'fulfillment queue 상세 조회 실패',
+        500,
+        'V2_ADMIN_FULFILLMENT_DETAIL_FETCH_FAILED',
+      );
+    }
+    if (actionLogsResult.error) {
+      throw new ApiException(
+        'action log 상세 조회 실패',
+        500,
+        'V2_ADMIN_ACTION_LOG_DETAIL_FETCH_FAILED',
+      );
+    }
+
+    const actionLogs = actionLogsResult.data || [];
+    const actionLogIds = actionLogs
+      .map((log: any) => log.id as string)
+      .filter(Boolean);
+
+    let approvals: any[] = [];
+    if (actionLogIds.length > 0) {
+      const { data: approvalRows, error: approvalsError } = await this.supabase
+        .from('v2_admin_approval_requests')
+        .select('*')
+        .in('action_log_id', actionLogIds)
+        .order('requested_at', { ascending: false });
+
+      if (approvalsError) {
+        throw new ApiException(
+          'approval 상세 조회 실패',
+          500,
+          'V2_ADMIN_APPROVAL_DETAIL_FETCH_FAILED',
+        );
+      }
+      approvals = approvalRows || [];
+    }
+
+    return {
+      order,
+      queue_row: queueResult.data || null,
+      items: itemsResult.data || [],
+      adjustments: adjustmentsResult.data || [],
+      payments: paymentsResult.data || [],
+      fulfillment_queue: fulfillmentQueueResult.data || [],
+      action_logs: actionLogs,
+      approvals,
+    };
+  }
+
   async listFulfillmentQueue(params: {
     limit?: string;
     kind?: string;

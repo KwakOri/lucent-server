@@ -508,6 +508,16 @@ export class V2AdminController {
     return successResponse(queue);
   }
 
+  @Get('ops/orders/:orderId/detail')
+  async getOrderDetail(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('orderId') orderId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const detail = await this.v2AdminService.getOrderDetail(orderId);
+    return successResponse(detail);
+  }
+
   @Get('ops/fulfillment-queue')
   async listFulfillmentQueue(
     @Headers('authorization') authorization: string | undefined,
