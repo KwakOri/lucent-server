@@ -124,6 +124,52 @@ interface SaveCutoverRoutingFlagBody {
   metadata?: Record<string, unknown> | null;
 }
 
+interface CutoverStageRunsQuery {
+  limit?: string;
+  domain_key?: string;
+  stage_no?: string;
+  status?: string;
+}
+
+interface SaveCutoverStageRunBody {
+  domain_key?: string;
+  stage_no?: string | number;
+  run_key?: string;
+  status?: string;
+  transition_mode?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  limited_targets?: unknown[] | null;
+  summary?: Record<string, unknown> | null;
+  approval_note?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface CutoverStageIssuesQuery {
+  limit?: string;
+  domain_key?: string;
+  stage_no?: string;
+  status?: string;
+  severity?: string;
+}
+
+interface SaveCutoverStageIssueBody {
+  id?: string | null;
+  stage_run_id?: string | null;
+  domain_key?: string;
+  stage_no?: string | number;
+  status?: string;
+  severity?: string;
+  issue_type?: string;
+  title?: string;
+  detail?: string | null;
+  recovery_action?: string | null;
+  owner_role_code?: string | null;
+  occurred_at?: string | null;
+  resolved_at?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
 @Controller('v2/admin')
 export class V2AdminController {
   constructor(
@@ -323,6 +369,84 @@ export class V2AdminController {
       enabled: body.enabled,
       priority: body.priority,
       reason: body.reason,
+      metadata: body.metadata,
+    });
+    return successResponse(result);
+  }
+
+  @Get('cutover/stage-runs')
+  async listCutoverStageRuns(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: CutoverStageRunsQuery,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminService.listCutoverStageRuns({
+      limit: query.limit,
+      domainKey: query.domain_key,
+      stageNo: query.stage_no,
+      status: query.status,
+    });
+    return successResponse(result);
+  }
+
+  @Post('cutover/stage-runs')
+  async saveCutoverStageRun(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: SaveCutoverStageRunBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminService.saveCutoverStageRun({
+      domainKey: body.domain_key,
+      stageNo: body.stage_no,
+      runKey: body.run_key,
+      status: body.status,
+      transitionMode: body.transition_mode,
+      startedAt: body.started_at,
+      finishedAt: body.finished_at,
+      limitedTargets: body.limited_targets,
+      summary: body.summary,
+      approvalNote: body.approval_note,
+      metadata: body.metadata,
+    });
+    return successResponse(result);
+  }
+
+  @Get('cutover/stage-issues')
+  async listCutoverStageIssues(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: CutoverStageIssuesQuery,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminService.listCutoverStageIssues({
+      limit: query.limit,
+      domainKey: query.domain_key,
+      stageNo: query.stage_no,
+      status: query.status,
+      severity: query.severity,
+    });
+    return successResponse(result);
+  }
+
+  @Post('cutover/stage-issues')
+  async saveCutoverStageIssue(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: SaveCutoverStageIssueBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminService.saveCutoverStageIssue({
+      id: body.id,
+      stageRunId: body.stage_run_id,
+      domainKey: body.domain_key,
+      stageNo: body.stage_no,
+      status: body.status,
+      severity: body.severity,
+      issueType: body.issue_type,
+      title: body.title,
+      detail: body.detail,
+      recoveryAction: body.recovery_action,
+      ownerRoleCode: body.owner_role_code,
+      occurredAt: body.occurred_at,
+      resolvedAt: body.resolved_at,
       metadata: body.metadata,
     });
     return successResponse(result);
