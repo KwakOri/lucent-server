@@ -4,6 +4,13 @@ import { getSupabaseClient } from '../supabase/supabase.client';
 
 @Injectable()
 export class V2AdminService {
+  private readonly requiredCutoverGateTypes = [
+    'DATA_CONSISTENCY',
+    'BEHAVIORAL',
+    'OPERATIONS',
+    'ROLLBACK_READY',
+  ] as const;
+
   private get supabase(): any {
     return getSupabaseClient() as any;
   }
@@ -276,6 +283,147 @@ export class V2AdminService {
     return {
       items: data || [],
       limit,
+    };
+  }
+
+  async getCutoverGateChecklist(params: { domainKey?: string }): Promise<any> {
+    const domainKey = this.normalizeOptionalText(params.domainKey);
+    let domains: any[] = [];
+
+    if (domainKey) {
+      const domain = await this.requireCutoverDomain(domainKey);
+      domains = [domain];
+    } else {
+      const { data, error } = await this.supabase
+        .from('v2_cutover_domains')
+        .select('*')
+        .order('current_stage', { ascending: true })
+        .order('domain_key', { ascending: true });
+
+      if (error) {
+        throw new ApiException(
+          'cutover domain checklist 조회 실패',
+          500,
+          'V2_CUTOVER_CHECKLIST_DOMAINS_FETCH_FAILED',
+        );
+      }
+      domains = data || [];
+    }
+
+    if (domains.length === 0) {
+      return {
+        generated_at: new Date().toISOString(),
+        required_gate_types: [...this.requiredCutoverGateTypes],
+        domains: [],
+        summary: {
+          total_domains: 0,
+          ready_count: 0,
+          review_count: 0,
+          blocked_count: 0,
+        },
+      };
+    }
+
+    const domainIds = domains.map((domain) => domain.id).filter(Boolean);
+    const { data: reports, error: reportsError } = await this.supabase
+      .from('v2_cutover_gate_reports')
+      .select(
+        'id,domain_id,gate_type,gate_key,gate_result,measured_at,detail,threshold_json,metrics_json,metadata',
+      )
+      .in('domain_id', domainIds)
+      .order('measured_at', { ascending: false })
+      .order('created_at', { ascending: false });
+
+    if (reportsError) {
+      throw new ApiException(
+        'cutover gate checklist report 조회 실패',
+        500,
+        'V2_CUTOVER_CHECKLIST_REPORTS_FETCH_FAILED',
+      );
+    }
+
+    const latestReportByDomainGate = new Map<string, any>();
+    for (const report of reports || []) {
+      const gateType = report.gate_type as string;
+      if (!this.requiredCutoverGateTypes.includes(gateType as any)) {
+        continue;
+      }
+      const key = `${report.domain_id}:${gateType}`;
+      if (!latestReportByDomainGate.has(key)) {
+        latestReportByDomainGate.set(key, report);
+      }
+    }
+
+    const checklistDomains = domains.map((domain) => {
+      const gateChecks = this.requiredCutoverGateTypes.map((gateType) => {
+        const report =
+          latestReportByDomainGate.get(`${domain.id}:${gateType}`) || null;
+        const gateResult = (report?.gate_result as string | null) || null;
+        const isPassed = gateResult === 'PASS';
+        const isWarn = gateResult === 'WARN';
+        const isFailed = gateResult === 'FAIL';
+        const isMissing = !gateResult || gateResult === 'SKIP';
+
+        return {
+          gate_type: gateType,
+          latest_result: gateResult,
+          latest_at: report?.measured_at || null,
+          detail: report?.detail || null,
+          report_id: report?.id || null,
+          passed: isPassed,
+          warn: isWarn,
+          failed: isFailed,
+          missing: isMissing,
+          blocking: isFailed || isMissing,
+        };
+      });
+
+      const summary = {
+        required_total: gateChecks.length,
+        passed: gateChecks.filter((item) => item.passed).length,
+        warn: gateChecks.filter((item) => item.warn).length,
+        failed: gateChecks.filter((item) => item.failed).length,
+        missing: gateChecks.filter((item) => item.missing).length,
+      };
+
+      const decision =
+        summary.failed > 0 || summary.missing > 0
+          ? 'BLOCKED'
+          : summary.warn > 0
+          ? 'REVIEW'
+          : 'READY';
+
+      return {
+        domain: {
+          id: domain.id,
+          domain_key: domain.domain_key,
+          domain_name: domain.domain_name,
+          status: domain.status,
+          current_stage: domain.current_stage,
+          next_action: domain.next_action,
+          owner_role_code: domain.owner_role_code,
+          last_gate_result: domain.last_gate_result,
+          updated_at: domain.updated_at,
+        },
+        gate_checks: gateChecks,
+        summary,
+        decision,
+      };
+    });
+
+    return {
+      generated_at: new Date().toISOString(),
+      required_gate_types: [...this.requiredCutoverGateTypes],
+      domains: checklistDomains,
+      summary: {
+        total_domains: checklistDomains.length,
+        ready_count: checklistDomains.filter((item) => item.decision === 'READY')
+          .length,
+        review_count: checklistDomains.filter((item) => item.decision === 'REVIEW')
+          .length,
+        blocked_count: checklistDomains.filter((item) => item.decision === 'BLOCKED')
+          .length,
+      },
     };
   }
 
