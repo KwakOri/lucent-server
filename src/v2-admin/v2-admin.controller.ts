@@ -71,6 +71,10 @@ interface CutoverGateChecklistQuery {
   domain_key?: string;
 }
 
+interface CutoverReopenReadinessQuery {
+  domain_key?: string;
+}
+
 interface SaveCutoverGateReportBody {
   domain_key?: string;
   gate_type?: string;
@@ -276,6 +280,18 @@ export class V2AdminController {
   ) {
     await this.requireAdmin(authorization);
     const result = await this.v2AdminService.getCutoverGateChecklist({
+      domainKey: query.domain_key,
+    });
+    return successResponse(result);
+  }
+
+  @Get('cutover/reopen-readiness')
+  async getCutoverReopenReadiness(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: CutoverReopenReadinessQuery,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminService.getCutoverReopenReadiness({
       domainKey: query.domain_key,
     });
     return successResponse(result);
