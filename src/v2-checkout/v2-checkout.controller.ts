@@ -11,6 +11,10 @@ import {
 import { AuthSessionService } from '../auth/auth-session.service';
 import { successResponse } from '../common/api-response';
 import { ApiException } from '../common/errors/api.exception';
+import {
+  V2AdminActionActor,
+  V2AdminActionExecutorService,
+} from '../v2-admin/v2-admin-action-executor.service';
 import { V2CheckoutService } from './v2-checkout.service';
 
 interface AddV2CartItemBody {
@@ -79,6 +83,7 @@ export class V2CheckoutController {
   constructor(
     private readonly v2CheckoutService: V2CheckoutService,
     private readonly authSessionService: AuthSessionService,
+    private readonly v2AdminActionExecutorService: V2AdminActionExecutorService,
   ) {}
 
   @Get('cart')
@@ -197,9 +202,24 @@ export class V2CheckoutController {
     @Param('orderId') orderId: string,
     @Body() body: RefundV2OrderBody,
   ) {
-    await this.requireAdmin(authorization);
-    const result = await this.v2CheckoutService.refundOrder(orderId, body);
-    return successResponse(result, 'v2 환불이 반영되었습니다');
+    const actor = await this.requireAdmin(authorization);
+    const execution = await this.v2AdminActionExecutorService.execute({
+      actionKey: 'ORDER_REFUND_EXECUTE',
+      domain: 'ORDER',
+      actor,
+      requiredPermissionCode: 'ORDER_REFUND_APPROVE',
+      resourceType: 'ORDER',
+      resourceId: orderId,
+      inputPayload: {
+        order_id: orderId,
+        ...body,
+      },
+      transition: () => ({
+        transitionKey: 'ORDER_REFUND',
+      }),
+      execute: () => this.v2CheckoutService.refundOrder(orderId, body),
+    });
+    return successResponse(execution.result, 'v2 환불이 반영되었습니다');
   }
 
   @Get('orders/:orderId/debug')
@@ -212,14 +232,26 @@ export class V2CheckoutController {
     return successResponse(result);
   }
 
-  private async requireAdmin(authorization: string | undefined): Promise<void> {
+  private async requireAdmin(
+    authorization: string | undefined,
+  ): Promise<V2AdminActionActor> {
     if (this.authSessionService.isLocalAdminBypassEnabled()) {
-      return;
+      return {
+        id: null,
+        email: 'local-admin-bypass@local.dev',
+        isLocalBypass: true,
+      };
     }
 
     const user = await this.authSessionService.requireUser(authorization);
     if (!this.authSessionService.isAdmin(user.email)) {
       throw new ApiException('관리자 권한이 필요합니다', 403, 'ADMIN_REQUIRED');
     }
+
+    return {
+      id: user.id,
+      email: user.email || null,
+      isLocalBypass: false,
+    };
   }
 }

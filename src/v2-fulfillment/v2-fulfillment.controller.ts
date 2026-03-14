@@ -10,6 +10,10 @@ import {
 import { AuthSessionService } from '../auth/auth-session.service';
 import { successResponse } from '../common/api-response';
 import { ApiException } from '../common/errors/api.exception';
+import {
+  V2AdminActionActor,
+  V2AdminActionExecutorService,
+} from '../v2-admin/v2-admin-action-executor.service';
 import { V2FulfillmentService } from './v2-fulfillment.service';
 
 interface ReserveInventoryBody {
@@ -131,6 +135,7 @@ export class V2FulfillmentController {
   constructor(
     private readonly v2FulfillmentService: V2FulfillmentService,
     private readonly authSessionService: AuthSessionService,
+    private readonly v2AdminActionExecutorService: V2AdminActionExecutorService,
   ) {}
 
   @Post('inventory/reservations/reserve')
@@ -304,12 +309,25 @@ export class V2FulfillmentController {
     @Param('shipmentId') shipmentId: string,
     @Body() body: ShipmentTransitionBody,
   ) {
-    await this.requireAdmin(authorization);
-    const result = await this.v2FulfillmentService.dispatchShipment(
-      shipmentId,
-      body,
-    );
-    return successResponse(result, 'shipment가 출고되었습니다');
+    const actor = await this.requireAdmin(authorization);
+    const execution = await this.v2AdminActionExecutorService.execute({
+      actionKey: 'FULFILLMENT_SHIPMENT_DISPATCH',
+      domain: 'FULFILLMENT',
+      actor,
+      requiredPermissionCode: 'FULFILLMENT_EXECUTE',
+      resourceType: 'SHIPMENT',
+      resourceId: shipmentId,
+      inputPayload: {
+        shipment_id: shipmentId,
+        ...body,
+      },
+      transition: () => ({
+        transitionKey: 'SHIPMENT_DISPATCH',
+        toState: 'SHIPPED',
+      }),
+      execute: () => this.v2FulfillmentService.dispatchShipment(shipmentId, body),
+    });
+    return successResponse(execution.result, 'shipment가 출고되었습니다');
   }
 
   @Post('shipments/:shipmentId/deliver')
@@ -357,12 +375,26 @@ export class V2FulfillmentController {
     @Param('entitlementId') entitlementId: string,
     @Body() body: ReissueEntitlementBody,
   ) {
-    await this.requireAdmin(authorization);
-    const result = await this.v2FulfillmentService.reissueEntitlement(
-      entitlementId,
-      body,
-    );
-    return successResponse(result, 'entitlement가 재발급되었습니다');
+    const actor = await this.requireAdmin(authorization);
+    const execution = await this.v2AdminActionExecutorService.execute({
+      actionKey: 'FULFILLMENT_ENTITLEMENT_REISSUE',
+      domain: 'FULFILLMENT',
+      actor,
+      requiredPermissionCode: 'ENTITLEMENT_REISSUE',
+      resourceType: 'DIGITAL_ENTITLEMENT',
+      resourceId: entitlementId,
+      inputPayload: {
+        entitlement_id: entitlementId,
+        ...body,
+      },
+      transition: () => ({
+        transitionKey: 'ENTITLEMENT_REISSUE',
+        toState: 'GRANTED',
+      }),
+      execute: () =>
+        this.v2FulfillmentService.reissueEntitlement(entitlementId, body),
+    });
+    return successResponse(execution.result, 'entitlement가 재발급되었습니다');
   }
 
   @Post('entitlements/:entitlementId/revoke')
@@ -371,12 +403,26 @@ export class V2FulfillmentController {
     @Param('entitlementId') entitlementId: string,
     @Body() body: RevokeEntitlementBody,
   ) {
-    await this.requireAdmin(authorization);
-    const result = await this.v2FulfillmentService.revokeEntitlement(
-      entitlementId,
-      body,
-    );
-    return successResponse(result, 'entitlement가 회수되었습니다');
+    const actor = await this.requireAdmin(authorization);
+    const execution = await this.v2AdminActionExecutorService.execute({
+      actionKey: 'FULFILLMENT_ENTITLEMENT_REVOKE',
+      domain: 'FULFILLMENT',
+      actor,
+      requiredPermissionCode: 'ENTITLEMENT_REISSUE',
+      resourceType: 'DIGITAL_ENTITLEMENT',
+      resourceId: entitlementId,
+      inputPayload: {
+        entitlement_id: entitlementId,
+        ...body,
+      },
+      transition: () => ({
+        transitionKey: 'ENTITLEMENT_REVOKE',
+        toState: 'REVOKED',
+      }),
+      execute: () =>
+        this.v2FulfillmentService.revokeEntitlement(entitlementId, body),
+    });
+    return successResponse(execution.result, 'entitlement가 회수되었습니다');
   }
 
   @Post('entitlements/:entitlementId/download-log')
@@ -404,14 +450,26 @@ export class V2FulfillmentController {
     return successResponse(entitlement);
   }
 
-  private async requireAdmin(authorization: string | undefined): Promise<void> {
+  private async requireAdmin(
+    authorization: string | undefined,
+  ): Promise<V2AdminActionActor> {
     if (this.authSessionService.isLocalAdminBypassEnabled()) {
-      return;
+      return {
+        id: null,
+        email: 'local-admin-bypass@local.dev',
+        isLocalBypass: true,
+      };
     }
 
     const user = await this.authSessionService.requireUser(authorization);
     if (!this.authSessionService.isAdmin(user.email)) {
       throw new ApiException('관리자 권한이 필요합니다', 403, 'ADMIN_REQUIRED');
     }
+
+    return {
+      id: user.id,
+      email: user.email || null,
+      isLocalBypass: false,
+    };
   }
 }
