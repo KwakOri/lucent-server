@@ -96,6 +96,18 @@ interface EvaluateShippingFeeBody {
   at?: string | null;
 }
 
+interface OrchestrateMixedOrderBody {
+  order_id?: string;
+  stock_location_id?: string | null;
+  shipping_profile_id?: string | null;
+  shipping_method_id?: string | null;
+  shipping_zone_id?: string | null;
+  reserve_inventory?: boolean;
+  grant_entitlement?: boolean;
+  provider_type?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
 @Controller('v2/fulfillment/admin')
 export class V2FulfillmentController {
   constructor(
@@ -170,6 +182,16 @@ export class V2FulfillmentController {
     await this.requireAdmin(authorization);
     const result = await this.v2FulfillmentService.evaluateShippingFee(body);
     return successResponse(result);
+  }
+
+  @Post('orchestrate')
+  async orchestrateMixedOrder(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: OrchestrateMixedOrderBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2FulfillmentService.orchestrateMixedOrder(body);
+    return successResponse(result, 'mixed order orchestration이 완료되었습니다');
   }
 
   @Post('shipments')

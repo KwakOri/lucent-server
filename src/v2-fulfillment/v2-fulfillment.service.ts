@@ -129,6 +129,12 @@ interface EvaluateShippingFeeInput {
   at?: string | null;
 }
 
+interface OrchestrateMixedOrderInput extends GenerateFulfillmentPlanInput {
+  reserve_inventory?: boolean;
+  grant_entitlement?: boolean;
+  provider_type?: string | null;
+}
+
 @Injectable()
 export class V2FulfillmentService {
   private get supabase(): any {
@@ -594,6 +600,131 @@ export class V2FulfillmentService {
           }
         : null,
       evaluated_at: at,
+    };
+  }
+
+  async orchestrateMixedOrder(input: OrchestrateMixedOrderInput): Promise<any> {
+    const orderId = this.requireUuid(input.order_id, 'order_id는 필수입니다');
+    const reserveInventory = input.reserve_inventory !== false;
+    const grantEntitlement = input.grant_entitlement !== false;
+    const providerType = this.normalizeOptionalText(input.provider_type) || 'MANUAL';
+
+    const plan = await this.generateFulfillmentPlan(input);
+    const groups = plan.groups as any[];
+
+    let createdFulfillmentCount = 0;
+    let createdShipmentCount = 0;
+    let createdReservationCount = 0;
+    let createdEntitlementCount = 0;
+
+    for (const group of groups) {
+      const groupId = group.id as string;
+      const fulfillment = await this.findOrCreateFulfillmentForGroup(
+        groupId,
+        group.kind,
+        providerType,
+      );
+      if (fulfillment.created_now) {
+        createdFulfillmentCount += 1;
+      }
+
+      const groupItems = await this.fetchFulfillmentGroupItemsByGroupId(groupId);
+      if (group.kind === 'SHIPMENT') {
+        const shipmentResult = await this.createShipment({
+          fulfillment_id: fulfillment.record.id,
+          metadata: {
+            orchestrated: true,
+            order_id: orderId,
+            group_id: groupId,
+          },
+        });
+        if (!shipmentResult.idempotent_replayed) {
+          createdShipmentCount += 1;
+        }
+
+        if (reserveInventory) {
+          const stockLocationId = group.stock_location_id as string | null;
+          if (!stockLocationId) {
+            throw new ApiException(
+              `SHIPMENT group(${groupId})의 stock_location_id가 비어 있습니다`,
+              409,
+              'FULFILLMENT_GROUP_STOCK_LOCATION_REQUIRED',
+            );
+          }
+
+          for (const groupItem of groupItems) {
+            const orderItemId = groupItem.order_item_id as string;
+            const orderItem = await this.getOrderItemOrThrow(orderItemId, orderId);
+            if (!orderItem.variant_id) {
+              throw new ApiException(
+                `order_item(${orderItemId})에 variant_id가 없습니다`,
+                409,
+                'ORDER_ITEM_VARIANT_REQUIRED',
+              );
+            }
+
+            const reserveResult = await this.reserveInventory({
+              order_id: orderId,
+              order_item_id: orderItemId,
+              variant_id: orderItem.variant_id,
+              location_id: stockLocationId,
+              fulfillment_group_id: groupId,
+              quantity: this.normalizePositiveInteger(
+                groupItem.quantity_planned,
+                'quantity_planned',
+              ),
+              reason: 'ORCHESTRATOR',
+              idempotency_key: `ORCH-RESERVE:${groupId}:${orderItemId}`,
+              metadata: {
+                orchestrated: true,
+              },
+            });
+            if (!reserveResult.idempotent_replayed) {
+              createdReservationCount += 1;
+            }
+          }
+        }
+      } else if (group.kind === 'DIGITAL' && grantEntitlement) {
+        for (const groupItem of groupItems) {
+          const orderItemId = groupItem.order_item_id as string;
+          const existingEntitlement =
+            await this.findActiveEntitlementByOrderItem(orderItemId);
+          if (existingEntitlement) {
+            continue;
+          }
+
+          const grantResult = await this.grantEntitlement({
+            order_id: orderId,
+            order_item_id: orderItemId,
+            fulfillment_id: fulfillment.record.id,
+            access_type: 'DOWNLOAD',
+            token_reference: `AUTO:${orderItemId}`,
+            metadata: {
+              orchestrated: true,
+              group_id: groupId,
+            },
+          });
+          if (!grantResult.idempotent_replayed) {
+            createdEntitlementCount += 1;
+          }
+        }
+      }
+    }
+
+    return {
+      order_id: orderId,
+      plan_summary: plan.summary,
+      options: {
+        reserve_inventory: reserveInventory,
+        grant_entitlement: grantEntitlement,
+      },
+      created: {
+        fulfillments: createdFulfillmentCount,
+        shipments: createdShipmentCount,
+        reservations: createdReservationCount,
+        entitlements: createdEntitlementCount,
+      },
+      groups,
     };
   }
 
@@ -1608,6 +1739,99 @@ export class V2FulfillmentService {
       );
     }
     return data || [];
+  }
+
+  private async fetchFulfillmentGroupItemsByGroupId(groupId: string): Promise<any[]> {
+    const { data, error } = await this.supabase
+      .from('v2_fulfillment_group_items')
+      .select('*')
+      .eq('fulfillment_group_id', groupId)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        'fulfillment group item 조회 실패',
+        500,
+        'FULFILLMENT_GROUP_ITEM_FETCH_FAILED',
+      );
+    }
+    return data || [];
+  }
+
+  private async findOrCreateFulfillmentForGroup(
+    groupId: string,
+    kind: 'DIGITAL' | 'SHIPMENT' | 'PICKUP',
+    providerType: string,
+  ): Promise<{ record: any; created_now: boolean }> {
+    const { data: existingList, error: existingError } = await this.supabase
+      .from('v2_fulfillments')
+      .select('*')
+      .eq('fulfillment_group_id', groupId)
+      .order('requested_at', { ascending: false })
+      .limit(1);
+
+    if (existingError) {
+      throw new ApiException(
+        'fulfillment 조회 실패',
+        500,
+        'FULFILLMENT_FETCH_FAILED',
+      );
+    }
+    const existing = Array.isArray(existingList) ? existingList[0] : null;
+    if (existing && existing.status !== 'CANCELED') {
+      return { record: existing, created_now: false };
+    }
+
+    const { data: created, error: createError } = await this.supabase
+      .from('v2_fulfillments')
+      .insert({
+        fulfillment_group_id: groupId,
+        kind,
+        status: 'REQUESTED' as FulfillmentExecutionStatus,
+        provider_type: providerType,
+      })
+      .select('*')
+      .maybeSingle();
+
+    if (createError) {
+      throw new ApiException(
+        'fulfillment 생성 실패',
+        500,
+        'FULFILLMENT_CREATE_FAILED',
+      );
+    }
+    if (!created) {
+      throw new ApiException(
+        'fulfillment 생성 결과가 비어 있습니다',
+        500,
+        'FULFILLMENT_CREATE_FAILED',
+      );
+    }
+    return { record: created, created_now: true };
+  }
+
+  private async findActiveEntitlementByOrderItem(
+    orderItemId: string,
+  ): Promise<any | null> {
+    const { data, error } = await this.supabase
+      .from('v2_digital_entitlements')
+      .select('*')
+      .eq('order_item_id', orderItemId)
+      .in('status', ['PENDING', 'GRANTED', 'EXPIRED'])
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (error) {
+      throw new ApiException(
+        'entitlement 중복 조회 실패',
+        500,
+        'ENTITLEMENT_FETCH_FAILED',
+      );
+    }
+    if (!Array.isArray(data) || data.length === 0) {
+      return null;
+    }
+    return data[0];
   }
 
   private isOrderItemDigital(orderItem: any): boolean {
