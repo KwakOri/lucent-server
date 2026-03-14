@@ -109,6 +109,26 @@ interface LogEntitlementDownloadInput {
   metadata?: Record<string, unknown> | null;
 }
 
+interface GenerateFulfillmentPlanInput {
+  order_id?: string;
+  stock_location_id?: string | null;
+  shipping_profile_id?: string | null;
+  shipping_method_id?: string | null;
+  shipping_zone_id?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface EvaluateShippingFeeInput {
+  shipping_profile_id?: string | null;
+  shipping_method_id?: string;
+  shipping_zone_id?: string;
+  order_amount?: number | null;
+  total_weight?: number | null;
+  item_count?: number | null;
+  currency_code?: string | null;
+  at?: string | null;
+}
+
 @Injectable()
 export class V2FulfillmentService {
   private get supabase(): any {
@@ -267,6 +287,314 @@ export class V2FulfillmentService {
       'reservation_id가 올바르지 않습니다',
     );
     return this.fetchReservationById(normalized);
+  }
+
+  async generateFulfillmentPlan(
+    input: GenerateFulfillmentPlanInput,
+  ): Promise<any> {
+    const orderId = this.requireUuid(input.order_id, 'order_id는 필수입니다');
+    const stockLocationId = this.normalizeOptionalUuid(input.stock_location_id);
+    const shippingProfileId = this.normalizeOptionalUuid(input.shipping_profile_id);
+    const shippingMethodId = this.normalizeOptionalUuid(input.shipping_method_id);
+    const shippingZoneId = this.normalizeOptionalUuid(input.shipping_zone_id);
+    const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
+
+    const { data: orderItems, error: orderItemsError } = await this.supabase
+      .from('v2_order_items')
+      .select(
+        'id, quantity, line_status, fulfillment_type_snapshot, requires_shipping_snapshot',
+      )
+      .eq('order_id', orderId)
+      .order('created_at', { ascending: true });
+
+    if (orderItemsError) {
+      throw new ApiException(
+        'order_item 조회 실패',
+        500,
+        'FULFILLMENT_PLAN_ORDER_ITEMS_FETCH_FAILED',
+      );
+    }
+    if (!orderItems || orderItems.length === 0) {
+      throw new ApiException(
+        'fulfillment plan 대상 order_item이 없습니다',
+        404,
+        'FULFILLMENT_PLAN_ORDER_ITEMS_NOT_FOUND',
+      );
+    }
+
+    const targetItems = orderItems.filter((item: any) => {
+      const status = item.line_status as string | null;
+      return status !== 'CANCELED' && status !== 'REFUNDED';
+    });
+    if (targetItems.length === 0) {
+      throw new ApiException(
+        'plan 생성 대상 line이 없습니다',
+        409,
+        'FULFILLMENT_PLAN_EMPTY',
+      );
+    }
+
+    const { data: existingGroups, error: existingGroupsError } = await this.supabase
+      .from('v2_fulfillment_groups')
+      .select('*')
+      .eq('order_id', orderId);
+
+    if (existingGroupsError) {
+      throw new ApiException(
+        '기존 fulfillment group 조회 실패',
+        500,
+        'FULFILLMENT_GROUP_FETCH_FAILED',
+      );
+    }
+
+    const groupByKind = new Map<string, any>();
+    (existingGroups || []).forEach((group: any) => {
+      if (group.status !== 'CANCELED' && !groupByKind.has(group.kind)) {
+        groupByKind.set(group.kind, group);
+      }
+    });
+
+    const ensureGroup = async (kind: 'DIGITAL' | 'SHIPMENT'): Promise<any> => {
+      const existing = groupByKind.get(kind);
+      if (existing) {
+        return existing;
+      }
+
+      const { data: created, error: createError } = await this.supabase
+        .from('v2_fulfillment_groups')
+        .insert({
+          order_id: orderId,
+          kind,
+          status: 'PLANNED',
+          stock_location_id: kind === 'SHIPMENT' ? stockLocationId : null,
+          shipping_profile_id: kind === 'SHIPMENT' ? shippingProfileId : null,
+          shipping_method_id: kind === 'SHIPMENT' ? shippingMethodId : null,
+          shipping_zone_id: kind === 'SHIPMENT' ? shippingZoneId : null,
+          metadata,
+        })
+        .select('*')
+        .maybeSingle();
+
+      if (createError) {
+        throw new ApiException(
+          `${kind} fulfillment group 생성 실패`,
+          500,
+          'FULFILLMENT_GROUP_CREATE_FAILED',
+        );
+      }
+      if (!created) {
+        throw new ApiException(
+          `${kind} fulfillment group 생성 결과가 비어 있습니다`,
+          500,
+          'FULFILLMENT_GROUP_CREATE_FAILED',
+        );
+      }
+
+      groupByKind.set(kind, created);
+      return created;
+    };
+
+    let hasDigital = false;
+    let hasShipment = false;
+    for (const item of targetItems) {
+      if (this.isOrderItemDigital(item)) {
+        hasDigital = true;
+      } else {
+        hasShipment = true;
+      }
+    }
+
+    if (hasDigital) {
+      await ensureGroup('DIGITAL');
+    }
+    if (hasShipment) {
+      await ensureGroup('SHIPMENT');
+    }
+
+    const groups = Array.from(groupByKind.values());
+    const groupIds = groups.map((group) => group.id);
+    const { data: existingGroupItems, error: existingGroupItemsError } =
+      await this.supabase
+        .from('v2_fulfillment_group_items')
+        .select('fulfillment_group_id, order_item_id')
+        .in('fulfillment_group_id', groupIds);
+
+    if (existingGroupItemsError) {
+      throw new ApiException(
+        '기존 fulfillment group item 조회 실패',
+        500,
+        'FULFILLMENT_GROUP_ITEM_FETCH_FAILED',
+      );
+    }
+
+    const existingKeys = new Set<string>();
+    (existingGroupItems || []).forEach((item: any) => {
+      existingKeys.add(`${item.fulfillment_group_id}:${item.order_item_id}`);
+    });
+
+    const rowsToInsert: Array<Record<string, unknown>> = [];
+    for (const item of targetItems) {
+      const kind = this.isOrderItemDigital(item) ? 'DIGITAL' : 'SHIPMENT';
+      const group = groupByKind.get(kind);
+      if (!group) {
+        continue;
+      }
+      const key = `${group.id}:${item.id}`;
+      if (existingKeys.has(key)) {
+        continue;
+      }
+      rowsToInsert.push({
+        fulfillment_group_id: group.id,
+        order_item_id: item.id,
+        quantity_planned: this.normalizePositiveInteger(item.quantity, 'quantity'),
+        quantity_fulfilled: 0,
+        status: 'PLANNED',
+        metadata: {},
+      });
+    }
+
+    if (rowsToInsert.length > 0) {
+      const { error: insertGroupItemsError } = await this.supabase
+        .from('v2_fulfillment_group_items')
+        .insert(rowsToInsert);
+
+      if (insertGroupItemsError) {
+        throw new ApiException(
+          'fulfillment group item 생성 실패',
+          500,
+          'FULFILLMENT_GROUP_ITEM_CREATE_FAILED',
+        );
+      }
+    }
+
+    const refreshedGroups = await this.fetchFulfillmentGroupsByOrderId(orderId);
+    return {
+      order_id: orderId,
+      groups: refreshedGroups,
+      summary: {
+        group_count: refreshedGroups.length,
+        linked_item_count: rowsToInsert.length,
+        has_digital: hasDigital,
+        has_shipment: hasShipment,
+      },
+    };
+  }
+
+  async evaluateShippingFee(input: EvaluateShippingFeeInput): Promise<any> {
+    const shippingMethodId = this.requireUuid(
+      input.shipping_method_id,
+      'shipping_method_id는 필수입니다',
+    );
+    const shippingZoneId = this.requireUuid(
+      input.shipping_zone_id,
+      'shipping_zone_id는 필수입니다',
+    );
+    const shippingProfileId = this.normalizeOptionalUuid(input.shipping_profile_id);
+
+    const orderAmount = this.normalizeOptionalNonNegativeInteger(
+      input.order_amount,
+      'order_amount',
+    );
+    const totalWeight = this.normalizeOptionalNonNegativeInteger(
+      input.total_weight,
+      'total_weight',
+    );
+    const itemCount = this.normalizeOptionalNonNegativeInteger(
+      input.item_count,
+      'item_count',
+    );
+    const currencyCode = this.normalizeCurrencyCode(input.currency_code || 'KRW');
+    const at = this.normalizeOptionalIsoDateTime(input.at) || new Date().toISOString();
+
+    const { data: rules, error: rulesError } = await this.supabase
+      .from('v2_shipping_rate_rules')
+      .select('*')
+      .eq('shipping_method_id', shippingMethodId)
+      .eq('shipping_zone_id', shippingZoneId)
+      .eq('is_active', true)
+      .eq('currency_code', currencyCode);
+
+    if (rulesError) {
+      throw new ApiException(
+        'shipping rule 조회 실패',
+        500,
+        'SHIPPING_RATE_RULE_FETCH_FAILED',
+      );
+    }
+
+    const baseTime = new Date(at).getTime();
+    const filtered = (rules || []).filter((rule: any) => {
+      if (
+        shippingProfileId &&
+        rule.shipping_profile_id &&
+        rule.shipping_profile_id !== shippingProfileId
+      ) {
+        return false;
+      }
+      if (!shippingProfileId && rule.shipping_profile_id) {
+        return false;
+      }
+
+      const startsAt = rule.starts_at ? new Date(rule.starts_at).getTime() : null;
+      const endsAt = rule.ends_at ? new Date(rule.ends_at).getTime() : null;
+      if (startsAt !== null && startsAt > baseTime) {
+        return false;
+      }
+      if (endsAt !== null && endsAt < baseTime) {
+        return false;
+      }
+
+      return this.isShippingRuleConditionMatched(rule, {
+        orderAmount,
+        totalWeight,
+        itemCount,
+      });
+    });
+
+    const sorted = filtered.sort((a: any, b: any) => {
+      const profilePriorityA =
+        shippingProfileId && a.shipping_profile_id === shippingProfileId ? 0 : 1;
+      const profilePriorityB =
+        shippingProfileId && b.shipping_profile_id === shippingProfileId ? 0 : 1;
+      if (profilePriorityA !== profilePriorityB) {
+        return profilePriorityA - profilePriorityB;
+      }
+
+      const priorityA = typeof a.priority === 'number' ? a.priority : 999_999;
+      const priorityB = typeof b.priority === 'number' ? b.priority : 999_999;
+      if (priorityA !== priorityB) {
+        return priorityA - priorityB;
+      }
+
+      const createdAtA = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const createdAtB = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return createdAtA - createdAtB;
+    });
+
+    const matchedRule = sorted[0] || null;
+    const amount =
+      matchedRule && typeof matchedRule.amount === 'number'
+        ? matchedRule.amount
+        : 0;
+
+    return {
+      shipping_method_id: shippingMethodId,
+      shipping_zone_id: shippingZoneId,
+      shipping_profile_id: shippingProfileId,
+      currency_code: currencyCode,
+      amount,
+      matched_rule: matchedRule
+        ? {
+            id: matchedRule.id,
+            condition_type: matchedRule.condition_type,
+            min_value: matchedRule.min_value,
+            max_value: matchedRule.max_value,
+            amount: matchedRule.amount,
+            priority: matchedRule.priority,
+          }
+        : null,
+      evaluated_at: at,
+    };
   }
 
   async createShipment(input: CreateShipmentInput): Promise<any> {
@@ -1263,6 +1591,73 @@ export class V2FulfillmentService {
     }
   }
 
+  private async fetchFulfillmentGroupsByOrderId(orderId: string): Promise<any[]> {
+    const { data, error } = await this.supabase
+      .from('v2_fulfillment_groups')
+      .select(
+        '*, v2_fulfillment_group_items(*)',
+      )
+      .eq('order_id', orderId)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        'fulfillment group 조회 실패',
+        500,
+        'FULFILLMENT_GROUP_FETCH_FAILED',
+      );
+    }
+    return data || [];
+  }
+
+  private isOrderItemDigital(orderItem: any): boolean {
+    if (orderItem.fulfillment_type_snapshot === 'DIGITAL') {
+      return true;
+    }
+    if (orderItem.requires_shipping_snapshot === false) {
+      return true;
+    }
+    return false;
+  }
+
+  private isShippingRuleConditionMatched(
+    rule: any,
+    metrics: {
+      orderAmount: number;
+      totalWeight: number;
+      itemCount: number;
+    },
+  ): boolean {
+    const conditionType = rule.condition_type as string | null;
+    const minValue =
+      typeof rule.min_value === 'number' ? (rule.min_value as number) : null;
+    const maxValue =
+      typeof rule.max_value === 'number' ? (rule.max_value as number) : null;
+
+    if (conditionType === 'FLAT' || !conditionType) {
+      return true;
+    }
+
+    let targetValue = 0;
+    if (conditionType === 'ORDER_AMOUNT') {
+      targetValue = metrics.orderAmount;
+    } else if (conditionType === 'WEIGHT') {
+      targetValue = metrics.totalWeight;
+    } else if (conditionType === 'ITEM_COUNT') {
+      targetValue = metrics.itemCount;
+    } else {
+      return false;
+    }
+
+    if (minValue !== null && targetValue < minValue) {
+      return false;
+    }
+    if (maxValue !== null && targetValue > maxValue) {
+      return false;
+    }
+    return true;
+  }
+
   private async getOrderItemOrThrow(
     orderItemId: string,
     orderId: string,
@@ -1447,6 +1842,39 @@ export class V2FulfillmentService {
       );
     }
     return value;
+  }
+
+  private normalizeOptionalNonNegativeInteger(
+    value: number | null | undefined,
+    fieldName: string,
+  ): number {
+    if (value === null || value === undefined) {
+      return 0;
+    }
+    if (!Number.isInteger(value) || value < 0) {
+      throw new ApiException(
+        `${fieldName}는 0 이상의 정수여야 합니다`,
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    return value;
+  }
+
+  private normalizeCurrencyCode(value?: string | null): string {
+    const code = this.normalizeOptionalText(value);
+    if (!code) {
+      return 'KRW';
+    }
+    const normalized = code.toUpperCase();
+    if (!/^[A-Z]{3}$/.test(normalized)) {
+      throw new ApiException(
+        'currency_code는 ISO-4217 3자리 코드여야 합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    return normalized;
   }
 
   private normalizeNonNegativeInteger(

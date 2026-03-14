@@ -76,6 +76,26 @@ interface LogEntitlementDownloadBody {
   metadata?: Record<string, unknown> | null;
 }
 
+interface GenerateFulfillmentPlanBody {
+  order_id?: string;
+  stock_location_id?: string | null;
+  shipping_profile_id?: string | null;
+  shipping_method_id?: string | null;
+  shipping_zone_id?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface EvaluateShippingFeeBody {
+  shipping_profile_id?: string | null;
+  shipping_method_id?: string;
+  shipping_zone_id?: string;
+  order_amount?: number | null;
+  total_weight?: number | null;
+  item_count?: number | null;
+  currency_code?: string | null;
+  at?: string | null;
+}
+
 @Controller('v2/fulfillment/admin')
 export class V2FulfillmentController {
   constructor(
@@ -130,6 +150,26 @@ export class V2FulfillmentController {
     const reservation =
       await this.v2FulfillmentService.getReservationById(reservationId);
     return successResponse(reservation);
+  }
+
+  @Post('plans/generate')
+  async generateFulfillmentPlan(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: GenerateFulfillmentPlanBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2FulfillmentService.generateFulfillmentPlan(body);
+    return successResponse(result, 'fulfillment plan이 생성/갱신되었습니다');
+  }
+
+  @Post('shipping/quote')
+  async evaluateShippingFee(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: EvaluateShippingFeeBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2FulfillmentService.evaluateShippingFee(body);
+    return successResponse(result);
   }
 
   @Post('shipments')
