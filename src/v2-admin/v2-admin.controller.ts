@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Headers, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { AuthSessionService } from '../auth/auth-session.service';
 import { successResponse } from '../common/api-response';
 import { ApiException } from '../common/errors/api.exception';
@@ -35,6 +44,80 @@ interface InventoryHealthQuery {
 interface CutoverPolicyCheckBody {
   action_key?: string;
   requires_approval?: boolean;
+}
+
+interface CutoverDomainsQuery {
+  limit?: string;
+  status?: string;
+}
+
+interface UpdateCutoverDomainBody {
+  status?: string;
+  current_stage?: string | number;
+  next_action?: string | null;
+  owner_role_code?: string | null;
+  last_gate_result?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface CutoverGateReportsQuery {
+  limit?: string;
+  domain_key?: string;
+  gate_type?: string;
+  gate_result?: string;
+}
+
+interface SaveCutoverGateReportBody {
+  domain_key?: string;
+  gate_type?: string;
+  gate_key?: string;
+  gate_result?: string;
+  measured_at?: string | null;
+  threshold_json?: Record<string, unknown> | null;
+  metrics_json?: Record<string, unknown> | null;
+  detail?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface CutoverBatchesQuery {
+  limit?: string;
+  domain_key?: string;
+  status?: string;
+  run_type?: string;
+}
+
+interface SaveCutoverBatchBody {
+  domain_key?: string;
+  batch_key?: string;
+  run_type?: string;
+  status?: string;
+  idempotency_key?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  source_snapshot?: Record<string, unknown> | null;
+  result_summary?: Record<string, unknown> | null;
+  error_message?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface CutoverRoutingFlagsQuery {
+  limit?: string;
+  domain_key?: string;
+  channel?: string;
+  enabled?: string;
+}
+
+interface SaveCutoverRoutingFlagBody {
+  id?: string | null;
+  domain_key?: string;
+  channel?: string | null;
+  campaign_id?: string | null;
+  target?: string;
+  traffic_percent?: number;
+  enabled?: boolean;
+  priority?: number;
+  reason?: string | null;
+  metadata?: Record<string, unknown> | null;
 }
 
 @Controller('v2/admin')
@@ -85,6 +168,146 @@ export class V2AdminController {
     const result = await this.v2AdminService.checkCutoverPolicy({
       actionKey: body.action_key,
       requiresApproval: body.requires_approval,
+    });
+    return successResponse(result);
+  }
+
+  @Get('cutover/domains')
+  async listCutoverDomains(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: CutoverDomainsQuery,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminService.listCutoverDomains({
+      limit: query.limit,
+      status: query.status,
+    });
+    return successResponse(result);
+  }
+
+  @Patch('cutover/domains/:domainKey')
+  async updateCutoverDomain(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('domainKey') domainKey: string,
+    @Body() body: UpdateCutoverDomainBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminService.updateCutoverDomain(domainKey, {
+      status: body.status,
+      currentStage:
+        body.current_stage !== undefined ? String(body.current_stage) : undefined,
+      nextAction: body.next_action,
+      ownerRoleCode: body.owner_role_code,
+      lastGateResult: body.last_gate_result,
+      metadata: body.metadata,
+    });
+    return successResponse(result);
+  }
+
+  @Get('cutover/gates')
+  async listCutoverGateReports(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: CutoverGateReportsQuery,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminService.listCutoverGateReports({
+      limit: query.limit,
+      domainKey: query.domain_key,
+      gateType: query.gate_type,
+      gateResult: query.gate_result,
+    });
+    return successResponse(result);
+  }
+
+  @Post('cutover/gates')
+  async saveCutoverGateReport(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: SaveCutoverGateReportBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminService.saveCutoverGateReport({
+      domainKey: body.domain_key,
+      gateType: body.gate_type,
+      gateKey: body.gate_key,
+      gateResult: body.gate_result,
+      measuredAt: body.measured_at,
+      thresholdJson: body.threshold_json,
+      metricsJson: body.metrics_json,
+      detail: body.detail,
+      metadata: body.metadata,
+    });
+    return successResponse(result);
+  }
+
+  @Get('cutover/batches')
+  async listCutoverBatches(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: CutoverBatchesQuery,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminService.listCutoverBatches({
+      limit: query.limit,
+      domainKey: query.domain_key,
+      status: query.status,
+      runType: query.run_type,
+    });
+    return successResponse(result);
+  }
+
+  @Post('cutover/batches')
+  async saveCutoverBatch(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: SaveCutoverBatchBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminService.saveCutoverBatch({
+      domainKey: body.domain_key,
+      batchKey: body.batch_key,
+      runType: body.run_type,
+      status: body.status,
+      idempotencyKey: body.idempotency_key,
+      startedAt: body.started_at,
+      finishedAt: body.finished_at,
+      sourceSnapshot: body.source_snapshot,
+      resultSummary: body.result_summary,
+      errorMessage: body.error_message,
+      metadata: body.metadata,
+    });
+    return successResponse(result);
+  }
+
+  @Get('cutover/routing-flags')
+  async listCutoverRoutingFlags(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: CutoverRoutingFlagsQuery,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminService.listCutoverRoutingFlags({
+      limit: query.limit,
+      domainKey: query.domain_key,
+      channel: query.channel,
+      enabled: query.enabled,
+    });
+    return successResponse(result);
+  }
+
+  @Post('cutover/routing-flags')
+  async saveCutoverRoutingFlag(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: SaveCutoverRoutingFlagBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminService.saveCutoverRoutingFlag({
+      id: body.id,
+      domainKey: body.domain_key,
+      channel: body.channel,
+      campaignId: body.campaign_id,
+      target: body.target,
+      trafficPercent: body.traffic_percent,
+      enabled: body.enabled,
+      priority: body.priority,
+      reason: body.reason,
+      metadata: body.metadata,
     });
     return successResponse(result);
   }
