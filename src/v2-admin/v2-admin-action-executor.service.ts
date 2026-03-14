@@ -19,6 +19,13 @@ export interface V2AdminTransitionInput {
   payload?: Record<string, unknown> | null;
 }
 
+export interface V2AdminApprovalInput {
+  required: boolean;
+  assigneeRoleCode?: string | null;
+  reason?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
 interface ExecuteV2AdminActionInput<T> {
   actionKey: string;
   domain: string;
@@ -32,6 +39,7 @@ interface ExecuteV2AdminActionInput<T> {
   transition?:
     | (() => Promise<V2AdminTransitionInput[] | V2AdminTransitionInput | null>)
     | (() => V2AdminTransitionInput[] | V2AdminTransitionInput | null);
+  approval?: V2AdminApprovalInput | null;
   execute: () => Promise<T>;
   mapExecutionResult?: (result: T) => Record<string, unknown>;
   mapResourceId?: (result: T) => string | null | undefined;
@@ -67,6 +75,8 @@ export class V2AdminActionExecutorService {
     const resourceId = this.normalizeOptionalUuid(input.resourceId);
     const requestId = this.normalizeOptionalText(input.requestId);
     const inputPayload = this.normalizeOptionalJsonObject(input.inputPayload) || {};
+    const approval = this.normalizeApproval(input.approval);
+    const approvalEnforced = this.isApprovalEnforced(actionKey, approval.required);
 
     const { data: createdLog, error: createLogError } = await this.supabase
       .from('v2_admin_action_logs')
@@ -79,6 +89,7 @@ export class V2AdminActionExecutorService {
         actor_email_snapshot: this.normalizeOptionalText(input.actor.email),
         request_id: requestId,
         action_status: 'PENDING',
+        requires_approval: approval.required,
         input_payload: inputPayload,
       })
       .select('id')
@@ -116,6 +127,8 @@ export class V2AdminActionExecutorService {
         granted: evaluatedPermission.granted,
         reason: evaluatedPermission.reason,
         role_codes: evaluatedPermission.role_codes,
+        approval_required: approval.required,
+        approval_enforced: approvalEnforced,
       };
 
       if (!evaluatedPermission.granted) {
@@ -146,6 +159,24 @@ export class V2AdminActionExecutorService {
           reason: transition.reason,
         })),
       };
+
+      if (approval.required && approvalEnforced && !input.actor.isLocalBypass) {
+        await this.createApprovalRequest({
+          actionLogId,
+          actionKey,
+          domain,
+          actorId: this.normalizeActorId(input.actor),
+          assigneeRoleCode: approval.assigneeRoleCode,
+          reason: approval.reason,
+          metadata: approval.metadata,
+        });
+
+        throw new ApiException(
+          '승인이 필요한 액션입니다',
+          409,
+          'V2_ADMIN_APPROVAL_REQUIRED',
+        );
+      }
 
       const result = await input.execute();
 
@@ -180,6 +211,11 @@ export class V2AdminActionExecutorService {
       const executionResult = input.mapExecutionResult
         ? input.mapExecutionResult(result)
         : this.normalizeOptionalJsonObject(result) || { ok: true };
+      executionResult.approval = {
+        required: approval.required,
+        enforced: approvalEnforced,
+        assignee_role_code: approval.assigneeRoleCode,
+      };
 
       await this.updateActionLog(actionLogId, {
         action_status: 'SUCCEEDED',
@@ -199,17 +235,89 @@ export class V2AdminActionExecutorService {
       };
     } catch (error) {
       const parsed = this.parseError(error);
+      const isApprovalPending = parsed.errorCode === 'V2_ADMIN_APPROVAL_REQUIRED';
       await this.updateActionLog(actionLogId, {
-        action_status: 'FAILED',
+        action_status: isApprovalPending ? 'PENDING' : 'FAILED',
+        requires_approval: approval.required,
         precheck_result: precheckResult,
         permission_result: permissionResult,
         transition_result: transitionResult,
         execution_result: {},
         error_code: parsed.errorCode,
         error_message: parsed.message,
-        finished_at: new Date().toISOString(),
+        finished_at: isApprovalPending ? null : new Date().toISOString(),
       });
       throw error;
+    }
+  }
+
+  private normalizeApproval(input?: V2AdminApprovalInput | null): {
+    required: boolean;
+    assigneeRoleCode: string | null;
+    reason: string | null;
+    metadata: Record<string, unknown>;
+  } {
+    if (!input?.required) {
+      return {
+        required: false,
+        assigneeRoleCode: null,
+        reason: null,
+        metadata: {},
+      };
+    }
+
+    return {
+      required: true,
+      assigneeRoleCode: this.normalizeOptionalText(input.assigneeRoleCode),
+      reason: this.normalizeOptionalText(input.reason),
+      metadata: this.normalizeOptionalJsonObject(input.metadata) || {},
+    };
+  }
+
+  private isApprovalEnforced(actionKey: string, approvalRequired: boolean): boolean {
+    if (!approvalRequired) {
+      return false;
+    }
+    if (!this.readBooleanEnv('V2_ADMIN_APPROVAL_ENFORCED', false)) {
+      return false;
+    }
+
+    const allowlist = this.readCsvEnv('V2_ADMIN_APPROVAL_ENFORCED_ACTIONS');
+    if (allowlist.length === 0) {
+      return true;
+    }
+
+    return allowlist.includes(actionKey);
+  }
+
+  private async createApprovalRequest(input: {
+    actionLogId: string;
+    actionKey: string;
+    domain: string;
+    actorId: string | null;
+    assigneeRoleCode: string | null;
+    reason: string | null;
+    metadata: Record<string, unknown>;
+  }): Promise<void> {
+    const { error } = await this.supabase
+      .from('v2_admin_approval_requests')
+      .insert({
+        action_log_id: input.actionLogId,
+        domain: input.domain,
+        action_key: input.actionKey,
+        requester_id: input.actorId,
+        assignee_role_code: input.assigneeRoleCode,
+        status: 'PENDING',
+        decision_note: input.reason,
+        metadata: input.metadata,
+      });
+
+    if (error) {
+      throw new ApiException(
+        'approval request 생성 실패',
+        500,
+        'V2_ADMIN_APPROVAL_REQUEST_CREATE_FAILED',
+      );
     }
   }
 
@@ -491,5 +599,31 @@ export class V2AdminActionExecutorService {
 
   private normalizeActorId(actor: V2AdminActionActor): string | null {
     return this.normalizeOptionalUuid(actor.id);
+  }
+
+  private readBooleanEnv(key: string, fallback: boolean): boolean {
+    const value = process.env[key];
+    if (!value) {
+      return fallback;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) {
+      return true;
+    }
+    if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) {
+      return false;
+    }
+    return fallback;
+  }
+
+  private readCsvEnv(key: string): string[] {
+    const value = process.env[key];
+    if (!value) {
+      return [];
+    }
+    return value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
   }
 }

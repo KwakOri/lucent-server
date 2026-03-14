@@ -8,6 +8,59 @@ export class V2AdminService {
     return getSupabaseClient() as any;
   }
 
+  async getCutoverPolicy(): Promise<any> {
+    const stage = this.readRolloutStage();
+    const approvalEnforced = this.readBooleanEnv(
+      'V2_ADMIN_APPROVAL_ENFORCED',
+      false,
+    );
+    const enforcedActions = this.readCsvEnv('V2_ADMIN_APPROVAL_ENFORCED_ACTIONS');
+
+    return {
+      rollout_stage: stage,
+      approval_enforced: approvalEnforced,
+      approval_enforced_actions: enforcedActions,
+      legacy_write_mode: this.readLegacyWriteMode(stage),
+      description: this.describeStage(stage),
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  async checkCutoverPolicy(input: {
+    actionKey?: string;
+    requiresApproval?: boolean;
+  }): Promise<any> {
+    const policy = await this.getCutoverPolicy();
+    const actionKey = this.normalizeOptionalText(input.actionKey);
+    const requiresApproval = Boolean(input.requiresApproval);
+
+    let approvalEnforcedForAction = false;
+    if (policy.approval_enforced && requiresApproval) {
+      if (!actionKey) {
+        approvalEnforcedForAction = true;
+      } else if (
+        !Array.isArray(policy.approval_enforced_actions) ||
+        policy.approval_enforced_actions.length === 0
+      ) {
+        approvalEnforcedForAction = true;
+      } else {
+        approvalEnforcedForAction = policy.approval_enforced_actions.includes(
+          actionKey,
+        );
+      }
+    }
+
+    return {
+      policy,
+      action: {
+        action_key: actionKey,
+        requires_approval: requiresApproval,
+        approval_enforced_for_action: approvalEnforcedForAction,
+      },
+      decision: approvalEnforcedForAction ? 'APPROVAL_REQUIRED' : 'DIRECT_EXECUTE',
+    };
+  }
+
   async getActionCatalog(): Promise<any> {
     return {
       generated_at: new Date().toISOString(),
@@ -392,5 +445,62 @@ export class V2AdminService {
     }
     const normalized = value.trim();
     return normalized.length > 0 ? normalized : null;
+  }
+
+  private readBooleanEnv(key: string, fallback: boolean): boolean {
+    const value = process.env[key];
+    if (!value) {
+      return fallback;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) {
+      return true;
+    }
+    if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) {
+      return false;
+    }
+    return fallback;
+  }
+
+  private readCsvEnv(key: string): string[] {
+    const value = process.env[key];
+    if (!value) {
+      return [];
+    }
+    return value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  private readRolloutStage(): 'STAGE_1' | 'STAGE_2' | 'STAGE_3' {
+    const value = (process.env.V2_ADMIN_ROLLOUT_STAGE || 'STAGE_1')
+      .trim()
+      .toUpperCase();
+    if (value === 'STAGE_2' || value === 'STAGE_3') {
+      return value;
+    }
+    return 'STAGE_1';
+  }
+
+  private readLegacyWriteMode(stage: 'STAGE_1' | 'STAGE_2' | 'STAGE_3'): string {
+    const explicit = this.normalizeOptionalText(process.env.V2_ADMIN_LEGACY_WRITE_MODE);
+    if (explicit) {
+      return explicit;
+    }
+    if (stage === 'STAGE_3') {
+      return 'READ_ONLY';
+    }
+    return 'LIMITED_WRITE';
+  }
+
+  private describeStage(stage: 'STAGE_1' | 'STAGE_2' | 'STAGE_3'): string {
+    if (stage === 'STAGE_1') {
+      return '권한/로그 오픈 + 민감 액션은 로그 중심으로 관찰';
+    }
+    if (stage === 'STAGE_2') {
+      return 'v2 신규 도메인 액션 전환 + 승인 대상 액션 점진 강제';
+    }
+    return 'legacy write 제한 + v2 action executor 중심 운영';
   }
 }

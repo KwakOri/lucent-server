@@ -1,4 +1,4 @@
-import { Controller, Get, Headers, Query } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Post, Query } from '@nestjs/common';
 import { AuthSessionService } from '../auth/auth-session.service';
 import { successResponse } from '../common/api-response';
 import { ApiException } from '../common/errors/api.exception';
@@ -32,6 +32,11 @@ interface InventoryHealthQuery {
   only_low_stock?: string;
 }
 
+interface CutoverPolicyCheckBody {
+  action_key?: string;
+  requires_approval?: boolean;
+}
+
 @Controller('v2/admin')
 export class V2AdminController {
   constructor(
@@ -60,6 +65,28 @@ export class V2AdminController {
     await this.requireAdmin(authorization);
     const catalog = await this.v2AdminService.getActionCatalog();
     return successResponse(catalog);
+  }
+
+  @Get('cutover-policy')
+  async getCutoverPolicy(
+    @Headers('authorization') authorization: string | undefined,
+  ) {
+    await this.requireAdmin(authorization);
+    const policy = await this.v2AdminService.getCutoverPolicy();
+    return successResponse(policy);
+  }
+
+  @Post('cutover-policy/check')
+  async checkCutoverPolicy(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: CutoverPolicyCheckBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminService.checkCutoverPolicy({
+      actionKey: body.action_key,
+      requiresApproval: body.requires_approval,
+    });
+    return successResponse(result);
   }
 
   @Get('audit/action-logs')

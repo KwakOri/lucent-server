@@ -208,6 +208,11 @@ export class V2CheckoutController {
       domain: 'ORDER',
       actor,
       requiredPermissionCode: 'ORDER_REFUND_APPROVE',
+      approval: {
+        required: true,
+        assigneeRoleCode: 'FINANCE_MANAGER',
+        reason: body.reason || null,
+      },
       resourceType: 'ORDER',
       resourceId: orderId,
       inputPayload: {
