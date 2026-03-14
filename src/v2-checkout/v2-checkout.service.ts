@@ -515,6 +515,64 @@ export class V2CheckoutService {
     };
   }
 
+  async listOrders(
+    profileId: string,
+    input: {
+      limit?: string;
+      orderStatus?: string;
+    } = {},
+  ): Promise<{
+    items: any[];
+    total: number;
+    limit: number;
+  }> {
+    const parsedLimit = Number.parseInt(input.limit || '20', 10);
+    const limit = Number.isInteger(parsedLimit)
+      ? Math.min(Math.max(parsedLimit, 1), 100)
+      : 20;
+    const orderStatus = this.normalizeOptionalText(input.orderStatus);
+
+    let query = this.supabase
+      .from('v2_orders')
+      .select('id', { count: 'exact' })
+      .eq('profile_id', profileId)
+      .order('placed_at', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (orderStatus) {
+      query = query.eq('order_status', orderStatus);
+    }
+
+    const { data, error, count } = await query;
+    if (error) {
+      throw new ApiException(
+        'v2 orders 목록 조회 실패',
+        500,
+        'V2_ORDERS_FETCH_FAILED',
+      );
+    }
+
+    const orderIds = (data || []).map((row: any) => row.id).filter(Boolean);
+    if (orderIds.length === 0) {
+      return {
+        items: [],
+        total: count || 0,
+        limit,
+      };
+    }
+
+    const items = await Promise.all(
+      orderIds.map((orderId: string) => this.fetchOrderAggregate(orderId)),
+    );
+
+    return {
+      items,
+      total: count || items.length,
+      limit,
+    };
+  }
+
   async getOrderById(orderId: string, profileId: string): Promise<any> {
     const order = await this.fetchOrderAggregate(orderId);
     if (order.profile_id !== profileId) {
