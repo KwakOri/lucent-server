@@ -630,6 +630,468 @@ export class V2CatalogController {
     return successResponse(readiness);
   }
 
+  @Get('campaigns')
+  async getCampaigns(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('status') status?: 'DRAFT' | 'ACTIVE' | 'SUSPENDED' | 'CLOSED' | 'ARCHIVED',
+    @Query('campaignType') campaignType?: 'POPUP' | 'EVENT' | 'SALE' | 'DROP' | 'ALWAYS_ON',
+  ) {
+    await this.requireAdmin(authorization);
+    const campaigns = await this.v2CatalogService.getCampaigns({
+      status,
+      campaignType,
+    });
+    return successResponse(campaigns);
+  }
+
+  @Get('campaigns/:id')
+  async getCampaignById(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') campaignId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const campaign = await this.v2CatalogService.getCampaignById(campaignId);
+    return successResponse(campaign);
+  }
+
+  @Post('campaigns')
+  async createCampaign(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const campaign = await this.v2CatalogService.createCampaign(body);
+    return successResponse(campaign);
+  }
+
+  @Patch('campaigns/:id')
+  async updateCampaign(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') campaignId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const campaign = await this.v2CatalogService.updateCampaign(campaignId, body);
+    return successResponse(campaign);
+  }
+
+  @Post('campaigns/:id/activate')
+  async activateCampaign(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') campaignId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const campaign = await this.v2CatalogService.activateCampaign(campaignId);
+    return successResponse(campaign, 'campaign이 ACTIVE 상태로 전환되었습니다');
+  }
+
+  @Post('campaigns/:id/suspend')
+  async suspendCampaign(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') campaignId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const campaign = await this.v2CatalogService.suspendCampaign(campaignId);
+    return successResponse(campaign, 'campaign이 SUSPENDED 상태로 전환되었습니다');
+  }
+
+  @Post('campaigns/:id/close')
+  async closeCampaign(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') campaignId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const campaign = await this.v2CatalogService.closeCampaign(campaignId);
+    return successResponse(campaign, 'campaign이 CLOSED 상태로 전환되었습니다');
+  }
+
+  @Get('campaigns/:id/targets')
+  async getCampaignTargets(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') campaignId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const targets = await this.v2CatalogService.getCampaignTargets(campaignId);
+    return successResponse(targets);
+  }
+
+  @Post('campaigns/:id/targets')
+  async createCampaignTarget(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') campaignId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const target = await this.v2CatalogService.createCampaignTarget(campaignId, body);
+    return successResponse(target);
+  }
+
+  @Patch('campaign-targets/:id')
+  async updateCampaignTarget(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') targetId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const target = await this.v2CatalogService.updateCampaignTarget(targetId, body);
+    return successResponse(target);
+  }
+
+  @Delete('campaign-targets/:id')
+  async deleteCampaignTarget(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') targetId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    await this.v2CatalogService.deleteCampaignTarget(targetId);
+    return successResponse({ message: 'campaign target이 삭제되었습니다' });
+  }
+
+  @Get('price-lists')
+  async getPriceLists(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('campaignId') campaignId?: string,
+    @Query('scopeType') scopeType?: 'BASE' | 'OVERRIDE',
+    @Query('status') status?: 'DRAFT' | 'PUBLISHED' | 'ROLLED_BACK' | 'ARCHIVED',
+  ) {
+    await this.requireAdmin(authorization);
+    const priceLists = await this.v2CatalogService.getPriceLists({
+      campaignId,
+      scopeType,
+      status,
+    });
+    return successResponse(priceLists);
+  }
+
+  @Get('price-lists/:id')
+  async getPriceListById(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') priceListId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const priceList = await this.v2CatalogService.getPriceListById(priceListId);
+    return successResponse(priceList);
+  }
+
+  @Post('price-lists')
+  async createPriceList(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const priceList = await this.v2CatalogService.createPriceList(body);
+    return successResponse(priceList);
+  }
+
+  @Patch('price-lists/:id')
+  async updatePriceList(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') priceListId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const priceList = await this.v2CatalogService.updatePriceList(priceListId, body);
+    return successResponse(priceList);
+  }
+
+  @Post('price-lists/:id/publish')
+  async publishPriceList(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') priceListId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const priceList = await this.v2CatalogService.publishPriceList(priceListId);
+    return successResponse(priceList, 'price list가 PUBLISHED 상태로 전환되었습니다');
+  }
+
+  @Post('price-lists/:id/rollback')
+  async rollbackPriceList(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') priceListId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const rollback = await this.v2CatalogService.rollbackPriceList(priceListId);
+    return successResponse(rollback, 'price list rollback이 적용되었습니다');
+  }
+
+  @Get('price-lists/:id/items')
+  async getPriceListItems(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') priceListId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const items = await this.v2CatalogService.getPriceListItems(priceListId);
+    return successResponse(items);
+  }
+
+  @Post('price-lists/:id/items')
+  async createPriceListItem(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') priceListId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const item = await this.v2CatalogService.createPriceListItem(priceListId, body);
+    return successResponse(item);
+  }
+
+  @Patch('price-list-items/:id')
+  async updatePriceListItem(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') itemId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const item = await this.v2CatalogService.updatePriceListItem(itemId, body);
+    return successResponse(item);
+  }
+
+  @Post('price-list-items/:id/deactivate')
+  async deactivatePriceListItem(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') itemId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const item = await this.v2CatalogService.deactivatePriceListItem(itemId);
+    return successResponse(item, 'price list item이 INACTIVE 상태로 전환되었습니다');
+  }
+
+  @Get('promotions')
+  async getPromotions(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('campaignId') campaignId?: string,
+    @Query('status') status?: 'DRAFT' | 'ACTIVE' | 'SUSPENDED' | 'ARCHIVED',
+    @Query('couponRequired') couponRequired?: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const promotions = await this.v2CatalogService.getPromotions({
+      campaignId,
+      status,
+      couponRequired: this.parseBoolean(couponRequired),
+    });
+    return successResponse(promotions);
+  }
+
+  @Get('promotions/:id')
+  async getPromotionById(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') promotionId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const promotion = await this.v2CatalogService.getPromotionById(promotionId);
+    return successResponse(promotion);
+  }
+
+  @Post('promotions')
+  async createPromotion(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const promotion = await this.v2CatalogService.createPromotion(body);
+    return successResponse(promotion);
+  }
+
+  @Patch('promotions/:id')
+  async updatePromotion(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') promotionId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const promotion = await this.v2CatalogService.updatePromotion(promotionId, body);
+    return successResponse(promotion);
+  }
+
+  @Get('promotions/:id/rules')
+  async getPromotionRules(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') promotionId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const rules = await this.v2CatalogService.getPromotionRules(promotionId);
+    return successResponse(rules);
+  }
+
+  @Post('promotions/:id/rules')
+  async createPromotionRule(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') promotionId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const rule = await this.v2CatalogService.createPromotionRule(promotionId, body);
+    return successResponse(rule);
+  }
+
+  @Patch('promotion-rules/:id')
+  async updatePromotionRule(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') ruleId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const rule = await this.v2CatalogService.updatePromotionRule(ruleId, body);
+    return successResponse(rule);
+  }
+
+  @Get('coupons')
+  async getCoupons(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('promotionId') promotionId?: string,
+    @Query('status') status?:
+      | 'DRAFT'
+      | 'ACTIVE'
+      | 'PAUSED'
+      | 'EXHAUSTED'
+      | 'EXPIRED'
+      | 'ARCHIVED',
+  ) {
+    await this.requireAdmin(authorization);
+    const coupons = await this.v2CatalogService.getCoupons({
+      promotionId,
+      status,
+    });
+    return successResponse(coupons);
+  }
+
+  @Get('coupons/:id')
+  async getCouponById(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') couponId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const coupon = await this.v2CatalogService.getCouponById(couponId);
+    return successResponse(coupon);
+  }
+
+  @Get('coupon-redemptions')
+  async getCouponRedemptions(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('couponId') couponId?: string,
+    @Query('userId') userId?: string,
+    @Query('status') status?: 'RESERVED' | 'APPLIED' | 'RELEASED' | 'CANCELED' | 'EXPIRED',
+    @Query('quoteReference') quoteReference?: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const redemptions = await this.v2CatalogService.getCouponRedemptions({
+      couponId,
+      userId,
+      status,
+      quoteReference,
+    });
+    return successResponse(redemptions);
+  }
+
+  @Post('coupons')
+  async createCoupon(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const coupon = await this.v2CatalogService.createCoupon(body);
+    return successResponse(coupon);
+  }
+
+  @Patch('coupons/:id')
+  async updateCoupon(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') couponId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const coupon = await this.v2CatalogService.updateCoupon(couponId, body);
+    return successResponse(coupon);
+  }
+
+  @Post('coupons/validate')
+  async validateCoupon(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2CatalogService.validateCoupon(body);
+    return successResponse(result);
+  }
+
+  @Post('coupons/:id/reserve')
+  async reserveCoupon(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') couponId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2CatalogService.reserveCoupon(couponId, body);
+    return successResponse(result);
+  }
+
+  @Post('coupon-redemptions/:id/release')
+  async releaseCouponRedemption(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') redemptionId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2CatalogService.releaseCouponRedemption(
+      redemptionId,
+      body,
+    );
+    return successResponse(result);
+  }
+
+  @Post('coupon-redemptions/:id/redeem')
+  async redeemCouponRedemption(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') redemptionId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2CatalogService.redeemCouponRedemption(
+      redemptionId,
+      body,
+    );
+    return successResponse(result);
+  }
+
+  @Post('pricing/quote')
+  async buildPriceQuote(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const quote = await this.v2CatalogService.buildPriceQuote(body);
+    return successResponse(quote);
+  }
+
+  @Post('pricing/promotions/evaluate')
+  async evaluatePromotions(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2CatalogService.evaluatePromotions(body);
+    return successResponse(result);
+  }
+
+  @Post('pricing/debug')
+  async getPricingDebugTrace(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const debugTrace = await this.v2CatalogService.getPricingDebugTrace(body);
+    return successResponse(debugTrace);
+  }
+
+  @Get('pricing/order-snapshot-contract')
+  async getOrderSnapshotContract(
+    @Headers('authorization') authorization: string | undefined,
+  ) {
+    await this.requireAdmin(authorization);
+    const contract = this.v2CatalogService.getOrderSnapshotContract();
+    return successResponse(contract);
+  }
+
   private async requireAdmin(authorization: string | undefined): Promise<void> {
     if (this.authSessionService.isLocalAdminBypassEnabled()) {
       return;
@@ -650,5 +1112,19 @@ export class V2CatalogController {
       return 20;
     }
     return parsed;
+  }
+
+  private parseBoolean(value?: string): boolean | undefined {
+    if (value === undefined) {
+      return undefined;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true' || normalized === '1') {
+      return true;
+    }
+    if (normalized === 'false' || normalized === '0') {
+      return false;
+    }
+    return undefined;
   }
 }

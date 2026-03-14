@@ -16,6 +16,47 @@ type V2DigitalAssetStatus = 'DRAFT' | 'READY' | 'RETIRED';
 type V2BundleMode = 'FIXED' | 'CUSTOMIZABLE';
 type V2BundleStatus = 'DRAFT' | 'ACTIVE' | 'ARCHIVED';
 type V2BundlePricingStrategy = 'WEIGHTED' | 'FIXED_AMOUNT';
+type V2CampaignType = 'POPUP' | 'EVENT' | 'SALE' | 'DROP' | 'ALWAYS_ON';
+type V2CampaignStatus = 'DRAFT' | 'ACTIVE' | 'SUSPENDED' | 'CLOSED' | 'ARCHIVED';
+type V2CampaignTargetType =
+  | 'PROJECT'
+  | 'PRODUCT'
+  | 'VARIANT'
+  | 'BUNDLE_DEFINITION';
+type V2PriceListScope = 'BASE' | 'OVERRIDE';
+type V2PriceListStatus = 'DRAFT' | 'PUBLISHED' | 'ROLLED_BACK' | 'ARCHIVED';
+type V2PriceItemStatus = 'ACTIVE' | 'INACTIVE';
+type V2PromotionType =
+  | 'ITEM_PERCENT'
+  | 'ITEM_FIXED'
+  | 'ORDER_PERCENT'
+  | 'ORDER_FIXED'
+  | 'SHIPPING_PERCENT'
+  | 'SHIPPING_FIXED';
+type V2PromotionStatus = 'DRAFT' | 'ACTIVE' | 'SUSPENDED' | 'ARCHIVED';
+type V2CombinabilityMode = 'STACKABLE' | 'EXCLUSIVE';
+type V2PromotionRuleType =
+  | 'MIN_ORDER_AMOUNT'
+  | 'MIN_ITEM_QUANTITY'
+  | 'TARGET_PROJECT'
+  | 'TARGET_PRODUCT'
+  | 'TARGET_VARIANT'
+  | 'TARGET_BUNDLE'
+  | 'CHANNEL'
+  | 'USER_SEGMENT';
+type V2CouponStatus =
+  | 'DRAFT'
+  | 'ACTIVE'
+  | 'PAUSED'
+  | 'EXHAUSTED'
+  | 'EXPIRED'
+  | 'ARCHIVED';
+type V2CouponRedemptionStatus =
+  | 'RESERVED'
+  | 'APPLIED'
+  | 'RELEASED'
+  | 'CANCELED'
+  | 'EXPIRED';
 
 interface CreateV2ProjectInput {
   name?: string;
@@ -251,6 +292,267 @@ interface PreviewV2BundleInput {
   bundle_definition_id?: string;
   parent_quantity?: number;
   selected_components?: BundleComponentSelectionInput[];
+}
+
+interface CreateV2CampaignInput {
+  code?: string;
+  name?: string;
+  description?: string | null;
+  campaign_type?: V2CampaignType;
+  status?: V2CampaignStatus;
+  starts_at?: string | null;
+  ends_at?: string | null;
+  channel_scope_json?: unknown;
+  purchase_limit_json?: unknown;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_snapshot_json?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+interface UpdateV2CampaignInput {
+  code?: string;
+  name?: string;
+  description?: string | null;
+  campaign_type?: V2CampaignType;
+  status?: V2CampaignStatus;
+  starts_at?: string | null;
+  ends_at?: string | null;
+  channel_scope_json?: unknown;
+  purchase_limit_json?: unknown;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_snapshot_json?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+interface CreateV2CampaignTargetInput {
+  target_type?: V2CampaignTargetType;
+  target_id?: string;
+  sort_order?: number;
+  is_excluded?: boolean;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_snapshot_json?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+interface UpdateV2CampaignTargetInput {
+  target_type?: V2CampaignTargetType;
+  target_id?: string;
+  sort_order?: number;
+  is_excluded?: boolean;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_snapshot_json?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+interface CreateV2PriceListInput {
+  campaign_id?: string | null;
+  name?: string;
+  scope_type?: V2PriceListScope;
+  status?: V2PriceListStatus;
+  currency_code?: string;
+  priority?: number;
+  starts_at?: string | null;
+  ends_at?: string | null;
+  channel_scope_json?: unknown;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_snapshot_json?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+interface UpdateV2PriceListInput {
+  campaign_id?: string | null;
+  rollback_of_price_list_id?: string | null;
+  name?: string;
+  scope_type?: V2PriceListScope;
+  status?: V2PriceListStatus;
+  currency_code?: string;
+  priority?: number;
+  published_at?: string | null;
+  starts_at?: string | null;
+  ends_at?: string | null;
+  channel_scope_json?: unknown;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_snapshot_json?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+interface CreateV2PriceListItemInput {
+  product_id?: string;
+  variant_id?: string | null;
+  status?: V2PriceItemStatus;
+  unit_amount?: number;
+  compare_at_amount?: number | null;
+  min_purchase_quantity?: number;
+  max_purchase_quantity?: number | null;
+  starts_at?: string | null;
+  ends_at?: string | null;
+  channel_scope_json?: unknown;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_snapshot_json?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+interface UpdateV2PriceListItemInput {
+  product_id?: string;
+  variant_id?: string | null;
+  status?: V2PriceItemStatus;
+  unit_amount?: number;
+  compare_at_amount?: number | null;
+  min_purchase_quantity?: number;
+  max_purchase_quantity?: number | null;
+  starts_at?: string | null;
+  ends_at?: string | null;
+  channel_scope_json?: unknown;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_snapshot_json?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+interface CreateV2PromotionInput {
+  campaign_id?: string | null;
+  name?: string;
+  description?: string | null;
+  promotion_type?: V2PromotionType;
+  status?: V2PromotionStatus;
+  combinability_mode?: V2CombinabilityMode;
+  coupon_required?: boolean;
+  priority?: number;
+  discount_value?: number;
+  max_discount_amount?: number | null;
+  starts_at?: string | null;
+  ends_at?: string | null;
+  channel_scope_json?: unknown;
+  purchase_limit_json?: unknown;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_snapshot_json?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+interface UpdateV2PromotionInput {
+  campaign_id?: string | null;
+  name?: string;
+  description?: string | null;
+  promotion_type?: V2PromotionType;
+  status?: V2PromotionStatus;
+  combinability_mode?: V2CombinabilityMode;
+  coupon_required?: boolean;
+  priority?: number;
+  discount_value?: number;
+  max_discount_amount?: number | null;
+  starts_at?: string | null;
+  ends_at?: string | null;
+  channel_scope_json?: unknown;
+  purchase_limit_json?: unknown;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_snapshot_json?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+interface CreateV2PromotionRuleInput {
+  rule_type?: V2PromotionRuleType;
+  status?: V2PriceItemStatus;
+  sort_order?: number;
+  rule_payload?: unknown;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_snapshot_json?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+interface UpdateV2PromotionRuleInput {
+  rule_type?: V2PromotionRuleType;
+  status?: V2PriceItemStatus;
+  sort_order?: number;
+  rule_payload?: unknown;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_snapshot_json?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+interface CreateV2CouponInput {
+  promotion_id?: string | null;
+  code?: string;
+  status?: V2CouponStatus;
+  starts_at?: string | null;
+  ends_at?: string | null;
+  max_issuance?: number | null;
+  max_redemptions_per_user?: number;
+  channel_scope_json?: unknown;
+  purchase_limit_json?: unknown;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_snapshot_json?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+interface UpdateV2CouponInput {
+  promotion_id?: string | null;
+  code?: string;
+  status?: V2CouponStatus;
+  starts_at?: string | null;
+  ends_at?: string | null;
+  max_issuance?: number | null;
+  max_redemptions_per_user?: number;
+  channel_scope_json?: unknown;
+  purchase_limit_json?: unknown;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_snapshot_json?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+interface ValidateV2CouponInput {
+  code?: string;
+  user_id?: string | null;
+  campaign_id?: string | null;
+  channel?: string | null;
+  evaluated_at?: string | null;
+}
+
+interface ReserveV2CouponInput {
+  user_id?: string;
+  quote_reference?: string | null;
+  expires_at?: string | null;
+  source_type?: string | null;
+  source_id?: string | null;
+  source_snapshot_json?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+interface ReleaseV2CouponRedemptionInput {
+  reason?: string | null;
+}
+
+interface RedeemV2CouponRedemptionInput {
+  order_id?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+interface PriceQuoteLineInput {
+  variant_id?: string;
+  quantity?: number;
+}
+
+interface BuildV2PriceQuoteInput {
+  lines?: PriceQuoteLineInput[];
+  campaign_id?: string | null;
+  channel?: string | null;
+  coupon_code?: string | null;
+  user_id?: string | null;
+  shipping_amount?: number | null;
+  quote_reference?: string | null;
+  evaluated_at?: string | null;
 }
 
 interface MigrationCheckResult {
@@ -1549,6 +1851,2615 @@ export class V2CatalogService {
       product_id: productId,
       ready: checks.every((check) => check.passed),
       checks,
+    };
+  }
+
+  async getCampaigns(filters: {
+    status?: V2CampaignStatus;
+    campaignType?: V2CampaignType;
+  }): Promise<any[]> {
+    let query = this.supabase
+      .from('v2_campaigns')
+      .select('*')
+      .is('deleted_at', null)
+      .order('created_at', { ascending: false });
+
+    if (filters.status) {
+      this.assertCampaignStatus(filters.status);
+      query = query.eq('status', filters.status);
+    }
+    if (filters.campaignType) {
+      this.assertCampaignType(filters.campaignType);
+      query = query.eq('campaign_type', filters.campaignType);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw new ApiException(
+        'campaign 목록 조회 실패',
+        500,
+        'V2_CAMPAIGNS_FETCH_FAILED',
+      );
+    }
+
+    return data || [];
+  }
+
+  async getCampaignById(campaignId: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('v2_campaigns')
+      .select('*')
+      .eq('id', campaignId)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException('campaign 조회 실패', 500, 'V2_CAMPAIGN_FETCH_FAILED');
+    }
+    if (!data) {
+      throw new ApiException(
+        'campaign을 찾을 수 없습니다',
+        404,
+        'V2_CAMPAIGN_NOT_FOUND',
+      );
+    }
+
+    return data;
+  }
+
+  async createCampaign(input: CreateV2CampaignInput): Promise<any> {
+    const code = this.normalizeRequiredText(input.code, 'campaign code는 필수입니다');
+    const name = this.normalizeRequiredText(input.name, 'campaign name은 필수입니다');
+    const campaignType = input.campaign_type ?? 'EVENT';
+    const status = input.status ?? 'DRAFT';
+    this.assertCampaignType(campaignType);
+    this.assertCampaignStatus(status);
+
+    const startsAt = this.normalizeOptionalTimestamp(input.starts_at, 'starts_at');
+    const endsAt = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
+    this.assertDateRange(startsAt, endsAt, 'campaign 기간');
+
+    await this.assertCampaignCodeAvailable(code);
+
+    const { data, error } = await this.supabase
+      .from('v2_campaigns')
+      .insert({
+        code,
+        name,
+        description: this.normalizeOptionalText(input.description),
+        campaign_type: campaignType,
+        status,
+        starts_at: startsAt,
+        ends_at: endsAt,
+        channel_scope_json: this.normalizeOptionalArrayJson(input.channel_scope_json),
+        purchase_limit_json: this.normalizeOptionalObjectJson(
+          input.purchase_limit_json,
+        ),
+        source_type: this.normalizeOptionalText(input.source_type),
+        source_id: this.normalizeOptionalText(input.source_id),
+        source_snapshot_json: this.normalizeOptionalObjectJson(
+          input.source_snapshot_json,
+        ),
+        metadata: input.metadata ?? {},
+      })
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'campaign 생성 실패',
+        500,
+        'V2_CAMPAIGN_CREATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async updateCampaign(campaignId: string, input: UpdateV2CampaignInput): Promise<any> {
+    const current = await this.getCampaignById(campaignId);
+    const updateData: Record<string, unknown> = {};
+
+    if (input.code !== undefined) {
+      const code = this.normalizeRequiredText(input.code, 'campaign code는 필수입니다');
+      await this.assertCampaignCodeAvailable(code, campaignId);
+      updateData.code = code;
+    }
+    if (input.name !== undefined) {
+      updateData.name = this.normalizeRequiredText(
+        input.name,
+        'campaign name은 필수입니다',
+      );
+    }
+    if (input.description !== undefined) {
+      updateData.description = this.normalizeOptionalText(input.description);
+    }
+    if (input.campaign_type !== undefined) {
+      this.assertCampaignType(input.campaign_type);
+      updateData.campaign_type = input.campaign_type;
+    }
+    if (input.status !== undefined) {
+      this.assertCampaignStatus(input.status);
+      this.assertCampaignStatusTransition(
+        current.status as V2CampaignStatus,
+        input.status,
+      );
+      updateData.status = input.status;
+    }
+    if (input.starts_at !== undefined) {
+      updateData.starts_at = this.normalizeOptionalTimestamp(
+        input.starts_at,
+        'starts_at',
+      );
+    }
+    if (input.ends_at !== undefined) {
+      updateData.ends_at = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
+    }
+    if (input.channel_scope_json !== undefined) {
+      updateData.channel_scope_json = this.normalizeOptionalArrayJson(
+        input.channel_scope_json,
+      );
+    }
+    if (input.purchase_limit_json !== undefined) {
+      updateData.purchase_limit_json = this.normalizeOptionalObjectJson(
+        input.purchase_limit_json,
+      );
+    }
+    if (input.source_type !== undefined) {
+      updateData.source_type = this.normalizeOptionalText(input.source_type);
+    }
+    if (input.source_id !== undefined) {
+      updateData.source_id = this.normalizeOptionalText(input.source_id);
+    }
+    if (input.source_snapshot_json !== undefined) {
+      updateData.source_snapshot_json = this.normalizeOptionalObjectJson(
+        input.source_snapshot_json,
+      );
+    }
+    if (input.metadata !== undefined) {
+      updateData.metadata = input.metadata ?? {};
+    }
+
+    const nextStartsAt =
+      (updateData.starts_at as string | null | undefined) ??
+      (current.starts_at as string | null);
+    const nextEndsAt =
+      (updateData.ends_at as string | null | undefined) ??
+      (current.ends_at as string | null);
+    this.assertDateRange(nextStartsAt, nextEndsAt, 'campaign 기간');
+
+    if (Object.keys(updateData).length === 0) {
+      return current;
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_campaigns')
+      .update(updateData)
+      .eq('id', campaignId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'campaign 수정 실패',
+        500,
+        'V2_CAMPAIGN_UPDATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async activateCampaign(campaignId: string): Promise<any> {
+    const current = await this.getCampaignById(campaignId);
+    this.assertCampaignStatusTransition(current.status as V2CampaignStatus, 'ACTIVE');
+
+    const { data, error } = await this.supabase
+      .from('v2_campaigns')
+      .update({
+        status: 'ACTIVE',
+        starts_at: current.starts_at ?? new Date().toISOString(),
+      })
+      .eq('id', campaignId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'campaign activate 실패',
+        500,
+        'V2_CAMPAIGN_ACTIVATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async suspendCampaign(campaignId: string): Promise<any> {
+    const current = await this.getCampaignById(campaignId);
+    this.assertCampaignStatusTransition(
+      current.status as V2CampaignStatus,
+      'SUSPENDED',
+    );
+
+    const { data, error } = await this.supabase
+      .from('v2_campaigns')
+      .update({
+        status: 'SUSPENDED',
+      })
+      .eq('id', campaignId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'campaign suspend 실패',
+        500,
+        'V2_CAMPAIGN_SUSPEND_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async closeCampaign(campaignId: string): Promise<any> {
+    const current = await this.getCampaignById(campaignId);
+    this.assertCampaignStatusTransition(current.status as V2CampaignStatus, 'CLOSED');
+
+    const now = new Date().toISOString();
+    const { data, error } = await this.supabase
+      .from('v2_campaigns')
+      .update({
+        status: 'CLOSED',
+        ends_at: current.ends_at ?? now,
+      })
+      .eq('id', campaignId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException('campaign close 실패', 500, 'V2_CAMPAIGN_CLOSE_FAILED');
+    }
+
+    return data;
+  }
+
+  async getCampaignTargets(campaignId: string): Promise<any[]> {
+    await this.getCampaignById(campaignId);
+    const { data, error } = await this.supabase
+      .from('v2_campaign_targets')
+      .select('*')
+      .eq('campaign_id', campaignId)
+      .is('deleted_at', null)
+      .order('sort_order', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        'campaign target 목록 조회 실패',
+        500,
+        'V2_CAMPAIGN_TARGETS_FETCH_FAILED',
+      );
+    }
+
+    return data || [];
+  }
+
+  async createCampaignTarget(
+    campaignId: string,
+    input: CreateV2CampaignTargetInput,
+  ): Promise<any> {
+    await this.getCampaignById(campaignId);
+    const targetType = input.target_type;
+    if (!targetType) {
+      throw new ApiException(
+        'target_type은 필수입니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    this.assertCampaignTargetType(targetType);
+
+    const targetId = this.normalizeRequiredText(
+      input.target_id,
+      'target_id는 필수입니다',
+    );
+    await this.ensureCampaignTargetEntityExists(targetType, targetId);
+
+    if (input.sort_order !== undefined) {
+      this.assertSortOrder(input.sort_order);
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_campaign_targets')
+      .insert({
+        campaign_id: campaignId,
+        target_type: targetType,
+        target_id: targetId,
+        sort_order: input.sort_order ?? 0,
+        is_excluded: input.is_excluded ?? false,
+        source_type: this.normalizeOptionalText(input.source_type),
+        source_id: this.normalizeOptionalText(input.source_id),
+        source_snapshot_json: this.normalizeOptionalObjectJson(
+          input.source_snapshot_json,
+        ),
+        metadata: input.metadata ?? {},
+      })
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'campaign target 생성 실패',
+        500,
+        'V2_CAMPAIGN_TARGET_CREATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async updateCampaignTarget(
+    targetId: string,
+    input: UpdateV2CampaignTargetInput,
+  ): Promise<any> {
+    const current = await this.getCampaignTargetById(targetId);
+    const updateData: Record<string, unknown> = {};
+
+    if (input.target_type !== undefined) {
+      this.assertCampaignTargetType(input.target_type);
+      updateData.target_type = input.target_type;
+    }
+    if (input.target_id !== undefined) {
+      const normalizedTargetId = this.normalizeRequiredText(
+        input.target_id,
+        'target_id는 필수입니다',
+      );
+      const nextTargetType =
+        (updateData.target_type as V2CampaignTargetType | undefined) ??
+        (current.target_type as V2CampaignTargetType);
+      await this.ensureCampaignTargetEntityExists(nextTargetType, normalizedTargetId);
+      updateData.target_id = normalizedTargetId;
+    }
+    if (input.sort_order !== undefined) {
+      this.assertSortOrder(input.sort_order);
+      updateData.sort_order = input.sort_order;
+    }
+    if (input.is_excluded !== undefined) {
+      updateData.is_excluded = input.is_excluded;
+    }
+    if (input.source_type !== undefined) {
+      updateData.source_type = this.normalizeOptionalText(input.source_type);
+    }
+    if (input.source_id !== undefined) {
+      updateData.source_id = this.normalizeOptionalText(input.source_id);
+    }
+    if (input.source_snapshot_json !== undefined) {
+      updateData.source_snapshot_json = this.normalizeOptionalObjectJson(
+        input.source_snapshot_json,
+      );
+    }
+    if (input.metadata !== undefined) {
+      updateData.metadata = input.metadata ?? {};
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return current;
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_campaign_targets')
+      .update(updateData)
+      .eq('id', targetId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'campaign target 수정 실패',
+        500,
+        'V2_CAMPAIGN_TARGET_UPDATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async deleteCampaignTarget(targetId: string): Promise<void> {
+    await this.getCampaignTargetById(targetId);
+    const { error } = await this.supabase
+      .from('v2_campaign_targets')
+      .update({
+        deleted_at: new Date().toISOString(),
+      })
+      .eq('id', targetId);
+
+    if (error) {
+      throw new ApiException(
+        'campaign target 삭제 실패',
+        500,
+        'V2_CAMPAIGN_TARGET_DELETE_FAILED',
+      );
+    }
+  }
+
+  async getPriceLists(filters: {
+    campaignId?: string;
+    scopeType?: V2PriceListScope;
+    status?: V2PriceListStatus;
+  }): Promise<any[]> {
+    let query = this.supabase
+      .from('v2_price_lists')
+      .select('*')
+      .is('deleted_at', null)
+      .order('priority', { ascending: false })
+      .order('updated_at', { ascending: false });
+
+    if (filters.campaignId !== undefined) {
+      if (filters.campaignId === '' || filters.campaignId === null) {
+        query = query.is('campaign_id', null);
+      } else {
+        query = query.eq('campaign_id', filters.campaignId);
+      }
+    }
+    if (filters.scopeType) {
+      this.assertPriceListScope(filters.scopeType);
+      query = query.eq('scope_type', filters.scopeType);
+    }
+    if (filters.status) {
+      this.assertPriceListStatus(filters.status);
+      query = query.eq('status', filters.status);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw new ApiException(
+        'price list 목록 조회 실패',
+        500,
+        'V2_PRICE_LISTS_FETCH_FAILED',
+      );
+    }
+
+    return data || [];
+  }
+
+  async getPriceListById(priceListId: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('v2_price_lists')
+      .select('*')
+      .eq('id', priceListId)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'price list 조회 실패',
+        500,
+        'V2_PRICE_LIST_FETCH_FAILED',
+      );
+    }
+    if (!data) {
+      throw new ApiException(
+        'price list를 찾을 수 없습니다',
+        404,
+        'V2_PRICE_LIST_NOT_FOUND',
+      );
+    }
+
+    return data;
+  }
+
+  async createPriceList(input: CreateV2PriceListInput): Promise<any> {
+    const name = this.normalizeRequiredText(input.name, 'price list name은 필수입니다');
+    const scopeType = input.scope_type ?? 'BASE';
+    const status = input.status ?? 'DRAFT';
+    const currencyCode = this.normalizeCurrencyCode(input.currency_code ?? 'KRW');
+    this.assertPriceListScope(scopeType);
+    this.assertPriceListStatus(status);
+    this.assertSortOrder(input.priority);
+
+    const startsAt = this.normalizeOptionalTimestamp(input.starts_at, 'starts_at');
+    const endsAt = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
+    this.assertDateRange(startsAt, endsAt, 'price list 기간');
+
+    const campaignId = this.normalizeOptionalText(input.campaign_id);
+    if (campaignId) {
+      await this.getCampaignById(campaignId);
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_price_lists')
+      .insert({
+        campaign_id: campaignId,
+        name,
+        scope_type: scopeType,
+        status,
+        currency_code: currencyCode,
+        priority: input.priority ?? 0,
+        starts_at: startsAt,
+        ends_at: endsAt,
+        channel_scope_json: this.normalizeOptionalArrayJson(input.channel_scope_json),
+        source_type: this.normalizeOptionalText(input.source_type),
+        source_id: this.normalizeOptionalText(input.source_id),
+        source_snapshot_json: this.normalizeOptionalObjectJson(
+          input.source_snapshot_json,
+        ),
+        metadata: input.metadata ?? {},
+      })
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'price list 생성 실패',
+        500,
+        'V2_PRICE_LIST_CREATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async updatePriceList(priceListId: string, input: UpdateV2PriceListInput): Promise<any> {
+    const current = await this.getPriceListById(priceListId);
+    const updateData: Record<string, unknown> = {};
+
+    if (input.campaign_id !== undefined) {
+      const campaignId = this.normalizeOptionalText(input.campaign_id);
+      if (campaignId) {
+        await this.getCampaignById(campaignId);
+      }
+      updateData.campaign_id = campaignId;
+    }
+    if (input.rollback_of_price_list_id !== undefined) {
+      const rollbackId = this.normalizeOptionalText(input.rollback_of_price_list_id);
+      if (rollbackId) {
+        await this.getPriceListById(rollbackId);
+      }
+      updateData.rollback_of_price_list_id = rollbackId;
+    }
+    if (input.name !== undefined) {
+      updateData.name = this.normalizeRequiredText(
+        input.name,
+        'price list name은 필수입니다',
+      );
+    }
+    if (input.scope_type !== undefined) {
+      this.assertPriceListScope(input.scope_type);
+      updateData.scope_type = input.scope_type;
+    }
+    if (input.status !== undefined) {
+      this.assertPriceListStatus(input.status);
+      this.assertPriceListStatusTransition(
+        current.status as V2PriceListStatus,
+        input.status,
+      );
+      updateData.status = input.status;
+    }
+    if (input.currency_code !== undefined) {
+      updateData.currency_code = this.normalizeCurrencyCode(input.currency_code);
+    }
+    if (input.priority !== undefined) {
+      this.assertSortOrder(input.priority);
+      updateData.priority = input.priority;
+    }
+    if (input.published_at !== undefined) {
+      updateData.published_at = this.normalizeOptionalTimestamp(
+        input.published_at,
+        'published_at',
+      );
+    }
+    if (input.starts_at !== undefined) {
+      updateData.starts_at = this.normalizeOptionalTimestamp(
+        input.starts_at,
+        'starts_at',
+      );
+    }
+    if (input.ends_at !== undefined) {
+      updateData.ends_at = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
+    }
+    if (input.channel_scope_json !== undefined) {
+      updateData.channel_scope_json = this.normalizeOptionalArrayJson(
+        input.channel_scope_json,
+      );
+    }
+    if (input.source_type !== undefined) {
+      updateData.source_type = this.normalizeOptionalText(input.source_type);
+    }
+    if (input.source_id !== undefined) {
+      updateData.source_id = this.normalizeOptionalText(input.source_id);
+    }
+    if (input.source_snapshot_json !== undefined) {
+      updateData.source_snapshot_json = this.normalizeOptionalObjectJson(
+        input.source_snapshot_json,
+      );
+    }
+    if (input.metadata !== undefined) {
+      updateData.metadata = input.metadata ?? {};
+    }
+
+    const nextStartsAt =
+      (updateData.starts_at as string | null | undefined) ??
+      (current.starts_at as string | null);
+    const nextEndsAt =
+      (updateData.ends_at as string | null | undefined) ??
+      (current.ends_at as string | null);
+    this.assertDateRange(nextStartsAt, nextEndsAt, 'price list 기간');
+
+    if (Object.keys(updateData).length === 0) {
+      return current;
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_price_lists')
+      .update(updateData)
+      .eq('id', priceListId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'price list 수정 실패',
+        500,
+        'V2_PRICE_LIST_UPDATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async publishPriceList(priceListId: string): Promise<any> {
+    const current = await this.getPriceListById(priceListId);
+    this.assertPriceListStatusTransition(
+      current.status as V2PriceListStatus,
+      'PUBLISHED',
+    );
+
+    const now = new Date().toISOString();
+    let demoteQuery = this.supabase
+      .from('v2_price_lists')
+      .update({
+        status: 'ROLLED_BACK',
+      })
+      .neq('id', priceListId)
+      .eq('scope_type', current.scope_type)
+      .eq('currency_code', current.currency_code)
+      .is('deleted_at', null)
+      .eq('status', 'PUBLISHED');
+    demoteQuery = current.campaign_id
+      ? demoteQuery.eq('campaign_id', current.campaign_id)
+      : demoteQuery.is('campaign_id', null);
+
+    const { error: demoteError } = await demoteQuery;
+
+    if (demoteError) {
+      throw new ApiException(
+        '기존 PUBLISHED price list 정리 실패',
+        500,
+        'V2_PRICE_LIST_UPDATE_FAILED',
+      );
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_price_lists')
+      .update({
+        status: 'PUBLISHED',
+        published_at: now,
+      })
+      .eq('id', priceListId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'price list publish 실패',
+        500,
+        'V2_PRICE_LIST_PUBLISH_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async rollbackPriceList(priceListId: string): Promise<any> {
+    const current = await this.getPriceListById(priceListId);
+    if (current.status !== 'PUBLISHED') {
+      throw new ApiException(
+        'rollback 대상 price list는 PUBLISHED 상태여야 합니다',
+        400,
+        'INVALID_STATUS_TRANSITION',
+      );
+    }
+
+    let candidateQuery = this.supabase
+      .from('v2_price_lists')
+      .select('*')
+      .neq('id', priceListId)
+      .eq('scope_type', current.scope_type)
+      .eq('currency_code', current.currency_code)
+      .is('deleted_at', null)
+      .order('published_at', { ascending: false })
+      .order('updated_at', { ascending: false })
+      .limit(1);
+    candidateQuery = current.campaign_id
+      ? candidateQuery.eq('campaign_id', current.campaign_id)
+      : candidateQuery.is('campaign_id', null);
+
+    const { data: candidate, error: candidateError } = await candidateQuery.maybeSingle();
+    if (candidateError) {
+      throw new ApiException(
+        'rollback 대상 조회 실패',
+        500,
+        'V2_PRICE_LIST_FETCH_FAILED',
+      );
+    }
+    if (!candidate) {
+      throw new ApiException(
+        'rollback할 이전 price list를 찾을 수 없습니다',
+        404,
+        'V2_PRICE_LIST_NOT_FOUND',
+      );
+    }
+
+    const now = new Date().toISOString();
+    const { data: rolledBack, error: rollbackError } = await this.supabase
+      .from('v2_price_lists')
+      .update({
+        status: 'ROLLED_BACK',
+      })
+      .eq('id', priceListId)
+      .select('*')
+      .single();
+
+    if (rollbackError || !rolledBack) {
+      throw new ApiException(
+        'price list rollback 실패',
+        500,
+        'V2_PRICE_LIST_ROLLBACK_FAILED',
+      );
+    }
+
+    const { data: restored, error: restoreError } = await this.supabase
+      .from('v2_price_lists')
+      .update({
+        status: 'PUBLISHED',
+        published_at: now,
+        rollback_of_price_list_id: priceListId,
+      })
+      .eq('id', candidate.id)
+      .select('*')
+      .single();
+
+    if (restoreError || !restored) {
+      throw new ApiException(
+        'rollback 복구 대상 publish 실패',
+        500,
+        'V2_PRICE_LIST_ROLLBACK_FAILED',
+      );
+    }
+
+    return {
+      rolled_back_price_list: rolledBack,
+      restored_price_list: restored,
+    };
+  }
+
+  async getPriceListItems(priceListId: string): Promise<any[]> {
+    await this.getPriceListById(priceListId);
+    const { data, error } = await this.supabase
+      .from('v2_price_list_items')
+      .select(
+        `
+        *,
+        product:v2_products(id,title,slug,status,product_kind,project_id),
+        variant:v2_product_variants(id,sku,title,status,fulfillment_type,requires_shipping)
+      `,
+      )
+      .eq('price_list_id', priceListId)
+      .is('deleted_at', null)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        'price list item 목록 조회 실패',
+        500,
+        'V2_PRICE_LIST_ITEMS_FETCH_FAILED',
+      );
+    }
+
+    return data || [];
+  }
+
+  async createPriceListItem(
+    priceListId: string,
+    input: CreateV2PriceListItemInput,
+  ): Promise<any> {
+    await this.getPriceListById(priceListId);
+    const productId = this.normalizeRequiredText(
+      input.product_id,
+      'product_id는 필수입니다',
+    );
+    await this.ensureProductExists(productId);
+
+    const variantId = this.normalizeOptionalText(input.variant_id);
+    if (variantId) {
+      const variant = await this.getVariantById(variantId);
+      if (variant.product_id !== productId) {
+        throw new ApiException(
+          'variant가 지정한 product에 속하지 않습니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+    }
+
+    const status = input.status ?? 'ACTIVE';
+    this.assertPriceItemStatus(status);
+    const unitAmount = input.unit_amount;
+    if (!Number.isInteger(unitAmount) || (unitAmount as number) < 0) {
+      throw new ApiException(
+        'unit_amount는 0 이상의 정수여야 합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    if (input.compare_at_amount !== undefined && input.compare_at_amount !== null) {
+      if (
+        !Number.isInteger(input.compare_at_amount) ||
+        input.compare_at_amount < (unitAmount as number)
+      ) {
+        throw new ApiException(
+          'compare_at_amount는 unit_amount 이상 정수여야 합니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+    }
+
+    const minPurchaseQuantity = input.min_purchase_quantity ?? 1;
+    const maxPurchaseQuantity = input.max_purchase_quantity ?? null;
+    this.assertPurchaseQuantityRange(minPurchaseQuantity, maxPurchaseQuantity);
+
+    const startsAt = this.normalizeOptionalTimestamp(input.starts_at, 'starts_at');
+    const endsAt = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
+    this.assertDateRange(startsAt, endsAt, 'price list item 기간');
+
+    const { data, error } = await this.supabase
+      .from('v2_price_list_items')
+      .insert({
+        price_list_id: priceListId,
+        product_id: productId,
+        variant_id: variantId,
+        status,
+        unit_amount: unitAmount,
+        compare_at_amount: input.compare_at_amount ?? null,
+        min_purchase_quantity: minPurchaseQuantity,
+        max_purchase_quantity: maxPurchaseQuantity,
+        starts_at: startsAt,
+        ends_at: endsAt,
+        channel_scope_json: this.normalizeOptionalArrayJson(input.channel_scope_json),
+        source_type: this.normalizeOptionalText(input.source_type),
+        source_id: this.normalizeOptionalText(input.source_id),
+        source_snapshot_json: this.normalizeOptionalObjectJson(
+          input.source_snapshot_json,
+        ),
+        metadata: input.metadata ?? {},
+      })
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'price list item 생성 실패',
+        500,
+        'V2_PRICE_LIST_ITEM_CREATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async updatePriceListItem(
+    itemId: string,
+    input: UpdateV2PriceListItemInput,
+  ): Promise<any> {
+    const current = await this.getPriceListItemById(itemId);
+    const updateData: Record<string, unknown> = {};
+
+    const nextProductId =
+      input.product_id !== undefined
+        ? this.normalizeRequiredText(input.product_id, 'product_id는 필수입니다')
+        : (current.product_id as string);
+    if (input.product_id !== undefined) {
+      await this.ensureProductExists(nextProductId);
+      updateData.product_id = nextProductId;
+    }
+
+    if (input.variant_id !== undefined) {
+      const variantId = this.normalizeOptionalText(input.variant_id);
+      if (variantId) {
+        const variant = await this.getVariantById(variantId);
+        if (variant.product_id !== nextProductId) {
+          throw new ApiException(
+            'variant가 지정한 product에 속하지 않습니다',
+            400,
+            'VALIDATION_ERROR',
+          );
+        }
+      }
+      updateData.variant_id = variantId;
+    }
+    if (input.status !== undefined) {
+      this.assertPriceItemStatus(input.status);
+      updateData.status = input.status;
+    }
+    if (input.unit_amount !== undefined) {
+      if (!Number.isInteger(input.unit_amount) || input.unit_amount < 0) {
+        throw new ApiException(
+          'unit_amount는 0 이상의 정수여야 합니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+      updateData.unit_amount = input.unit_amount;
+    }
+    if (input.compare_at_amount !== undefined) {
+      if (input.compare_at_amount !== null) {
+        const nextUnitAmount =
+          (updateData.unit_amount as number | undefined) ??
+          (current.unit_amount as number);
+        if (
+          !Number.isInteger(input.compare_at_amount) ||
+          input.compare_at_amount < nextUnitAmount
+        ) {
+          throw new ApiException(
+            'compare_at_amount는 unit_amount 이상 정수여야 합니다',
+            400,
+            'VALIDATION_ERROR',
+          );
+        }
+      }
+      updateData.compare_at_amount = input.compare_at_amount;
+    }
+    if (input.min_purchase_quantity !== undefined) {
+      updateData.min_purchase_quantity = input.min_purchase_quantity;
+    }
+    if (input.max_purchase_quantity !== undefined) {
+      updateData.max_purchase_quantity = input.max_purchase_quantity;
+    }
+    if (
+      input.min_purchase_quantity !== undefined ||
+      input.max_purchase_quantity !== undefined
+    ) {
+      const minPurchaseQuantity =
+        (updateData.min_purchase_quantity as number | undefined) ??
+        (current.min_purchase_quantity as number);
+      const maxPurchaseQuantity =
+        (updateData.max_purchase_quantity as number | null | undefined) ??
+        (current.max_purchase_quantity as number | null);
+      this.assertPurchaseQuantityRange(minPurchaseQuantity, maxPurchaseQuantity);
+    }
+    if (input.starts_at !== undefined) {
+      updateData.starts_at = this.normalizeOptionalTimestamp(
+        input.starts_at,
+        'starts_at',
+      );
+    }
+    if (input.ends_at !== undefined) {
+      updateData.ends_at = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
+    }
+    if (input.channel_scope_json !== undefined) {
+      updateData.channel_scope_json = this.normalizeOptionalArrayJson(
+        input.channel_scope_json,
+      );
+    }
+    if (input.source_type !== undefined) {
+      updateData.source_type = this.normalizeOptionalText(input.source_type);
+    }
+    if (input.source_id !== undefined) {
+      updateData.source_id = this.normalizeOptionalText(input.source_id);
+    }
+    if (input.source_snapshot_json !== undefined) {
+      updateData.source_snapshot_json = this.normalizeOptionalObjectJson(
+        input.source_snapshot_json,
+      );
+    }
+    if (input.metadata !== undefined) {
+      updateData.metadata = input.metadata ?? {};
+    }
+
+    const nextStartsAt =
+      (updateData.starts_at as string | null | undefined) ??
+      (current.starts_at as string | null);
+    const nextEndsAt =
+      (updateData.ends_at as string | null | undefined) ??
+      (current.ends_at as string | null);
+    this.assertDateRange(nextStartsAt, nextEndsAt, 'price list item 기간');
+
+    if (Object.keys(updateData).length === 0) {
+      return current;
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_price_list_items')
+      .update(updateData)
+      .eq('id', itemId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'price list item 수정 실패',
+        500,
+        'V2_PRICE_LIST_ITEM_UPDATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async deactivatePriceListItem(itemId: string): Promise<any> {
+    await this.getPriceListItemById(itemId);
+    const { data, error } = await this.supabase
+      .from('v2_price_list_items')
+      .update({
+        status: 'INACTIVE',
+      })
+      .eq('id', itemId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'price list item 비활성화 실패',
+        500,
+        'V2_PRICE_LIST_ITEM_UPDATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async getPromotions(filters: {
+    campaignId?: string;
+    status?: V2PromotionStatus;
+    couponRequired?: boolean;
+  }): Promise<any[]> {
+    let query = this.supabase
+      .from('v2_promotions')
+      .select('*')
+      .is('deleted_at', null)
+      .order('priority', { ascending: true })
+      .order('updated_at', { ascending: false });
+
+    if (filters.campaignId !== undefined) {
+      if (filters.campaignId === '' || filters.campaignId === null) {
+        query = query.is('campaign_id', null);
+      } else {
+        query = query.eq('campaign_id', filters.campaignId);
+      }
+    }
+    if (filters.status) {
+      this.assertPromotionStatus(filters.status);
+      query = query.eq('status', filters.status);
+    }
+    if (filters.couponRequired !== undefined) {
+      query = query.eq('coupon_required', filters.couponRequired);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw new ApiException(
+        'promotion 목록 조회 실패',
+        500,
+        'V2_PROMOTIONS_FETCH_FAILED',
+      );
+    }
+
+    return data || [];
+  }
+
+  async getPromotionById(promotionId: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('v2_promotions')
+      .select('*')
+      .eq('id', promotionId)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'promotion 조회 실패',
+        500,
+        'V2_PROMOTION_FETCH_FAILED',
+      );
+    }
+    if (!data) {
+      throw new ApiException(
+        'promotion을 찾을 수 없습니다',
+        404,
+        'V2_PROMOTION_NOT_FOUND',
+      );
+    }
+
+    return data;
+  }
+
+  async createPromotion(input: CreateV2PromotionInput): Promise<any> {
+    const name = this.normalizeRequiredText(input.name, 'promotion name은 필수입니다');
+    const promotionType = input.promotion_type ?? 'ORDER_PERCENT';
+    const status = input.status ?? 'DRAFT';
+    const combinabilityMode = input.combinability_mode ?? 'STACKABLE';
+    this.assertPromotionType(promotionType);
+    this.assertPromotionStatus(status);
+    this.assertCombinabilityMode(combinabilityMode);
+
+    if (input.priority !== undefined) {
+      this.assertSortOrder(input.priority);
+    }
+    if (input.discount_value === undefined || input.discount_value === null) {
+      throw new ApiException(
+        'discount_value는 필수입니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    this.assertNonNegativeNumber(input.discount_value, 'discount_value는 0 이상이어야 합니다');
+    if (input.max_discount_amount !== undefined && input.max_discount_amount !== null) {
+      if (!Number.isInteger(input.max_discount_amount) || input.max_discount_amount < 0) {
+        throw new ApiException(
+          'max_discount_amount는 0 이상의 정수여야 합니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+    }
+
+    const startsAt = this.normalizeOptionalTimestamp(input.starts_at, 'starts_at');
+    const endsAt = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
+    this.assertDateRange(startsAt, endsAt, 'promotion 기간');
+
+    const campaignId = this.normalizeOptionalText(input.campaign_id);
+    if (campaignId) {
+      await this.getCampaignById(campaignId);
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_promotions')
+      .insert({
+        campaign_id: campaignId,
+        name,
+        description: this.normalizeOptionalText(input.description),
+        promotion_type: promotionType,
+        status,
+        combinability_mode: combinabilityMode,
+        coupon_required: input.coupon_required ?? false,
+        priority: input.priority ?? 100,
+        discount_value: input.discount_value,
+        max_discount_amount: input.max_discount_amount ?? null,
+        starts_at: startsAt,
+        ends_at: endsAt,
+        channel_scope_json: this.normalizeOptionalArrayJson(input.channel_scope_json),
+        purchase_limit_json: this.normalizeOptionalObjectJson(
+          input.purchase_limit_json,
+        ),
+        source_type: this.normalizeOptionalText(input.source_type),
+        source_id: this.normalizeOptionalText(input.source_id),
+        source_snapshot_json: this.normalizeOptionalObjectJson(
+          input.source_snapshot_json,
+        ),
+        metadata: input.metadata ?? {},
+      })
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'promotion 생성 실패',
+        500,
+        'V2_PROMOTION_CREATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async updatePromotion(
+    promotionId: string,
+    input: UpdateV2PromotionInput,
+  ): Promise<any> {
+    const current = await this.getPromotionById(promotionId);
+    const updateData: Record<string, unknown> = {};
+
+    if (input.campaign_id !== undefined) {
+      const campaignId = this.normalizeOptionalText(input.campaign_id);
+      if (campaignId) {
+        await this.getCampaignById(campaignId);
+      }
+      updateData.campaign_id = campaignId;
+    }
+    if (input.name !== undefined) {
+      updateData.name = this.normalizeRequiredText(
+        input.name,
+        'promotion name은 필수입니다',
+      );
+    }
+    if (input.description !== undefined) {
+      updateData.description = this.normalizeOptionalText(input.description);
+    }
+    if (input.promotion_type !== undefined) {
+      this.assertPromotionType(input.promotion_type);
+      updateData.promotion_type = input.promotion_type;
+    }
+    if (input.status !== undefined) {
+      this.assertPromotionStatus(input.status);
+      this.assertPromotionStatusTransition(
+        current.status as V2PromotionStatus,
+        input.status,
+      );
+      updateData.status = input.status;
+    }
+    if (input.combinability_mode !== undefined) {
+      this.assertCombinabilityMode(input.combinability_mode);
+      updateData.combinability_mode = input.combinability_mode;
+    }
+    if (input.coupon_required !== undefined) {
+      updateData.coupon_required = input.coupon_required;
+    }
+    if (input.priority !== undefined) {
+      this.assertSortOrder(input.priority);
+      updateData.priority = input.priority;
+    }
+    if (input.discount_value !== undefined) {
+      this.assertNonNegativeNumber(
+        input.discount_value,
+        'discount_value는 0 이상이어야 합니다',
+      );
+      updateData.discount_value = input.discount_value;
+    }
+    if (input.max_discount_amount !== undefined) {
+      if (input.max_discount_amount !== null) {
+        if (!Number.isInteger(input.max_discount_amount) || input.max_discount_amount < 0) {
+          throw new ApiException(
+            'max_discount_amount는 0 이상의 정수여야 합니다',
+            400,
+            'VALIDATION_ERROR',
+          );
+        }
+      }
+      updateData.max_discount_amount = input.max_discount_amount;
+    }
+    if (input.starts_at !== undefined) {
+      updateData.starts_at = this.normalizeOptionalTimestamp(
+        input.starts_at,
+        'starts_at',
+      );
+    }
+    if (input.ends_at !== undefined) {
+      updateData.ends_at = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
+    }
+    if (input.channel_scope_json !== undefined) {
+      updateData.channel_scope_json = this.normalizeOptionalArrayJson(
+        input.channel_scope_json,
+      );
+    }
+    if (input.purchase_limit_json !== undefined) {
+      updateData.purchase_limit_json = this.normalizeOptionalObjectJson(
+        input.purchase_limit_json,
+      );
+    }
+    if (input.source_type !== undefined) {
+      updateData.source_type = this.normalizeOptionalText(input.source_type);
+    }
+    if (input.source_id !== undefined) {
+      updateData.source_id = this.normalizeOptionalText(input.source_id);
+    }
+    if (input.source_snapshot_json !== undefined) {
+      updateData.source_snapshot_json = this.normalizeOptionalObjectJson(
+        input.source_snapshot_json,
+      );
+    }
+    if (input.metadata !== undefined) {
+      updateData.metadata = input.metadata ?? {};
+    }
+
+    const nextStartsAt =
+      (updateData.starts_at as string | null | undefined) ??
+      (current.starts_at as string | null);
+    const nextEndsAt =
+      (updateData.ends_at as string | null | undefined) ??
+      (current.ends_at as string | null);
+    this.assertDateRange(nextStartsAt, nextEndsAt, 'promotion 기간');
+
+    if (Object.keys(updateData).length === 0) {
+      return current;
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_promotions')
+      .update(updateData)
+      .eq('id', promotionId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'promotion 수정 실패',
+        500,
+        'V2_PROMOTION_UPDATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async getPromotionRules(promotionId: string): Promise<any[]> {
+    await this.getPromotionById(promotionId);
+    const { data, error } = await this.supabase
+      .from('v2_promotion_rules')
+      .select('*')
+      .eq('promotion_id', promotionId)
+      .is('deleted_at', null)
+      .order('sort_order', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        'promotion rule 목록 조회 실패',
+        500,
+        'V2_PROMOTION_RULES_FETCH_FAILED',
+      );
+    }
+
+    return data || [];
+  }
+
+  async createPromotionRule(
+    promotionId: string,
+    input: CreateV2PromotionRuleInput,
+  ): Promise<any> {
+    await this.getPromotionById(promotionId);
+    const ruleType = input.rule_type;
+    if (!ruleType) {
+      throw new ApiException(
+        'rule_type은 필수입니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    this.assertPromotionRuleType(ruleType);
+    if (input.sort_order !== undefined) {
+      this.assertSortOrder(input.sort_order);
+    }
+
+    const status = input.status ?? 'ACTIVE';
+    this.assertPriceItemStatus(status);
+
+    const { data, error } = await this.supabase
+      .from('v2_promotion_rules')
+      .insert({
+        promotion_id: promotionId,
+        rule_type: ruleType,
+        status,
+        sort_order: input.sort_order ?? 0,
+        rule_payload: this.normalizeOptionalObjectJson(input.rule_payload),
+        source_type: this.normalizeOptionalText(input.source_type),
+        source_id: this.normalizeOptionalText(input.source_id),
+        source_snapshot_json: this.normalizeOptionalObjectJson(
+          input.source_snapshot_json,
+        ),
+        metadata: input.metadata ?? {},
+      })
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'promotion rule 생성 실패',
+        500,
+        'V2_PROMOTION_RULE_CREATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async updatePromotionRule(
+    ruleId: string,
+    input: UpdateV2PromotionRuleInput,
+  ): Promise<any> {
+    const current = await this.getPromotionRuleById(ruleId);
+    const updateData: Record<string, unknown> = {};
+
+    if (input.rule_type !== undefined) {
+      this.assertPromotionRuleType(input.rule_type);
+      updateData.rule_type = input.rule_type;
+    }
+    if (input.status !== undefined) {
+      this.assertPriceItemStatus(input.status);
+      updateData.status = input.status;
+    }
+    if (input.sort_order !== undefined) {
+      this.assertSortOrder(input.sort_order);
+      updateData.sort_order = input.sort_order;
+    }
+    if (input.rule_payload !== undefined) {
+      updateData.rule_payload = this.normalizeOptionalObjectJson(input.rule_payload);
+    }
+    if (input.source_type !== undefined) {
+      updateData.source_type = this.normalizeOptionalText(input.source_type);
+    }
+    if (input.source_id !== undefined) {
+      updateData.source_id = this.normalizeOptionalText(input.source_id);
+    }
+    if (input.source_snapshot_json !== undefined) {
+      updateData.source_snapshot_json = this.normalizeOptionalObjectJson(
+        input.source_snapshot_json,
+      );
+    }
+    if (input.metadata !== undefined) {
+      updateData.metadata = input.metadata ?? {};
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return current;
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_promotion_rules')
+      .update(updateData)
+      .eq('id', ruleId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'promotion rule 수정 실패',
+        500,
+        'V2_PROMOTION_RULE_UPDATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async getCoupons(filters: {
+    promotionId?: string;
+    status?: V2CouponStatus;
+  }): Promise<any[]> {
+    let query = this.supabase
+      .from('v2_coupons')
+      .select('*')
+      .is('deleted_at', null)
+      .order('updated_at', { ascending: false });
+
+    if (filters.promotionId !== undefined) {
+      if (filters.promotionId === '' || filters.promotionId === null) {
+        query = query.is('promotion_id', null);
+      } else {
+        query = query.eq('promotion_id', filters.promotionId);
+      }
+    }
+    if (filters.status) {
+      this.assertCouponStatus(filters.status);
+      query = query.eq('status', filters.status);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw new ApiException(
+        'coupon 목록 조회 실패',
+        500,
+        'V2_COUPONS_FETCH_FAILED',
+      );
+    }
+
+    return data || [];
+  }
+
+  async getCouponById(couponId: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('v2_coupons')
+      .select('*')
+      .eq('id', couponId)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException('coupon 조회 실패', 500, 'V2_COUPON_FETCH_FAILED');
+    }
+    if (!data) {
+      throw new ApiException('coupon을 찾을 수 없습니다', 404, 'V2_COUPON_NOT_FOUND');
+    }
+
+    return data;
+  }
+
+  async getCouponRedemptions(filters: {
+    couponId?: string;
+    userId?: string;
+    status?: V2CouponRedemptionStatus;
+    quoteReference?: string;
+  }): Promise<any[]> {
+    let query = this.supabase
+      .from('v2_coupon_redemptions')
+      .select('*')
+      .is('deleted_at', null)
+      .order('created_at', { ascending: false });
+
+    if (filters.couponId) {
+      query = query.eq('coupon_id', filters.couponId);
+    }
+    if (filters.userId) {
+      query = query.eq('user_id', filters.userId);
+    }
+    if (filters.status) {
+      this.assertCouponRedemptionStatus(filters.status);
+      query = query.eq('status', filters.status);
+    }
+    if (filters.quoteReference) {
+      query = query.eq('quote_reference', filters.quoteReference);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw new ApiException(
+        'coupon redemption 목록 조회 실패',
+        500,
+        'V2_COUPON_REDEMPTIONS_FETCH_FAILED',
+      );
+    }
+
+    return data || [];
+  }
+
+  async createCoupon(input: CreateV2CouponInput): Promise<any> {
+    const code = this.normalizeRequiredText(input.code, 'coupon code는 필수입니다');
+    const status = input.status ?? 'DRAFT';
+    this.assertCouponStatus(status);
+    await this.assertCouponCodeAvailable(code);
+
+    if (input.max_issuance !== undefined && input.max_issuance !== null) {
+      if (!Number.isInteger(input.max_issuance) || input.max_issuance < 0) {
+        throw new ApiException(
+          'max_issuance은 0 이상의 정수여야 합니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+    }
+    if (input.max_redemptions_per_user !== undefined) {
+      this.assertPositiveInteger(
+        input.max_redemptions_per_user,
+        'max_redemptions_per_user',
+      );
+    }
+
+    const startsAt = this.normalizeOptionalTimestamp(input.starts_at, 'starts_at');
+    const endsAt = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
+    this.assertDateRange(startsAt, endsAt, 'coupon 기간');
+
+    const promotionId = this.normalizeOptionalText(input.promotion_id);
+    if (promotionId) {
+      await this.getPromotionById(promotionId);
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_coupons')
+      .insert({
+        promotion_id: promotionId,
+        code,
+        status,
+        starts_at: startsAt,
+        ends_at: endsAt,
+        max_issuance: input.max_issuance ?? null,
+        max_redemptions_per_user: input.max_redemptions_per_user ?? 1,
+        channel_scope_json: this.normalizeOptionalArrayJson(input.channel_scope_json),
+        purchase_limit_json: this.normalizeOptionalObjectJson(
+          input.purchase_limit_json,
+        ),
+        source_type: this.normalizeOptionalText(input.source_type),
+        source_id: this.normalizeOptionalText(input.source_id),
+        source_snapshot_json: this.normalizeOptionalObjectJson(
+          input.source_snapshot_json,
+        ),
+        metadata: input.metadata ?? {},
+      })
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException('coupon 생성 실패', 500, 'V2_COUPON_CREATE_FAILED');
+    }
+
+    return data;
+  }
+
+  async updateCoupon(couponId: string, input: UpdateV2CouponInput): Promise<any> {
+    const current = await this.getCouponById(couponId);
+    const updateData: Record<string, unknown> = {};
+
+    if (input.promotion_id !== undefined) {
+      const promotionId = this.normalizeOptionalText(input.promotion_id);
+      if (promotionId) {
+        await this.getPromotionById(promotionId);
+      }
+      updateData.promotion_id = promotionId;
+    }
+    if (input.code !== undefined) {
+      const code = this.normalizeRequiredText(input.code, 'coupon code는 필수입니다');
+      await this.assertCouponCodeAvailable(code, couponId);
+      updateData.code = code;
+    }
+    if (input.status !== undefined) {
+      this.assertCouponStatus(input.status);
+      this.assertCouponStatusTransition(current.status as V2CouponStatus, input.status);
+      updateData.status = input.status;
+    }
+    if (input.starts_at !== undefined) {
+      updateData.starts_at = this.normalizeOptionalTimestamp(
+        input.starts_at,
+        'starts_at',
+      );
+    }
+    if (input.ends_at !== undefined) {
+      updateData.ends_at = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
+    }
+    if (input.max_issuance !== undefined) {
+      if (input.max_issuance !== null) {
+        if (!Number.isInteger(input.max_issuance) || input.max_issuance < 0) {
+          throw new ApiException(
+            'max_issuance은 0 이상의 정수여야 합니다',
+            400,
+            'VALIDATION_ERROR',
+          );
+        }
+      }
+      updateData.max_issuance = input.max_issuance;
+    }
+    if (input.max_redemptions_per_user !== undefined) {
+      this.assertPositiveInteger(
+        input.max_redemptions_per_user,
+        'max_redemptions_per_user',
+      );
+      updateData.max_redemptions_per_user = input.max_redemptions_per_user;
+    }
+    if (input.channel_scope_json !== undefined) {
+      updateData.channel_scope_json = this.normalizeOptionalArrayJson(
+        input.channel_scope_json,
+      );
+    }
+    if (input.purchase_limit_json !== undefined) {
+      updateData.purchase_limit_json = this.normalizeOptionalObjectJson(
+        input.purchase_limit_json,
+      );
+    }
+    if (input.source_type !== undefined) {
+      updateData.source_type = this.normalizeOptionalText(input.source_type);
+    }
+    if (input.source_id !== undefined) {
+      updateData.source_id = this.normalizeOptionalText(input.source_id);
+    }
+    if (input.source_snapshot_json !== undefined) {
+      updateData.source_snapshot_json = this.normalizeOptionalObjectJson(
+        input.source_snapshot_json,
+      );
+    }
+    if (input.metadata !== undefined) {
+      updateData.metadata = input.metadata ?? {};
+    }
+
+    const nextStartsAt =
+      (updateData.starts_at as string | null | undefined) ??
+      (current.starts_at as string | null);
+    const nextEndsAt =
+      (updateData.ends_at as string | null | undefined) ??
+      (current.ends_at as string | null);
+    this.assertDateRange(nextStartsAt, nextEndsAt, 'coupon 기간');
+
+    if (Object.keys(updateData).length === 0) {
+      return current;
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_coupons')
+      .update(updateData)
+      .eq('id', couponId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException('coupon 수정 실패', 500, 'V2_COUPON_UPDATE_FAILED');
+    }
+
+    return data;
+  }
+
+  async validateCoupon(input: ValidateV2CouponInput): Promise<any> {
+    const code = this.normalizeRequiredText(input.code, 'coupon code는 필수입니다');
+    const evaluatedAt = this.normalizeOptionalTimestamp(
+      input.evaluated_at,
+      'evaluated_at',
+    )
+      ? new Date(input.evaluated_at as string)
+      : new Date();
+    const now = evaluatedAt.toISOString();
+
+    const { data: coupon, error } = await this.supabase
+      .from('v2_coupons')
+      .select(
+        `
+        *,
+        promotion:v2_promotions(*)
+      `,
+      )
+      .eq('code', code)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'coupon 검증 조회 실패',
+        500,
+        'V2_COUPON_FETCH_FAILED',
+      );
+    }
+    if (!coupon) {
+      return {
+        code,
+        eligible: false,
+        reason: 'COUPON_NOT_FOUND',
+      };
+    }
+
+    const checks: Array<{ key: string; passed: boolean; detail: string }> = [];
+
+    checks.push({
+      key: 'status_active',
+      passed: coupon.status === 'ACTIVE',
+      detail: `status=${coupon.status}`,
+    });
+    checks.push({
+      key: 'period_active',
+      passed: this.isTimestampInRange(coupon.starts_at, coupon.ends_at, now),
+      detail: `starts_at=${coupon.starts_at || '-'}, ends_at=${coupon.ends_at || '-'}`,
+    });
+    checks.push({
+      key: 'channel_scope_match',
+      passed: this.matchesChannelScope(coupon.channel_scope_json, input.channel || null),
+      detail: `channel=${input.channel || '-'}, scope=${JSON.stringify(
+        coupon.channel_scope_json || [],
+      )}`,
+    });
+
+    const maxIssuance = coupon.max_issuance as number | null;
+    const reservedCount = (coupon.reserved_count as number) ?? 0;
+    const redeemedCount = (coupon.redeemed_count as number) ?? 0;
+    checks.push({
+      key: 'issuance_limit',
+      passed:
+        maxIssuance === null || maxIssuance === undefined
+          ? true
+          : reservedCount + redeemedCount < maxIssuance,
+      detail: `reserved=${reservedCount}, redeemed=${redeemedCount}, max_issuance=${maxIssuance ?? '-'}`,
+    });
+
+    let userUsageCount = 0;
+    if (input.user_id) {
+      const { data: userRedemptions, error: redemptionError } = await this.supabase
+        .from('v2_coupon_redemptions')
+        .select('id,status')
+        .eq('coupon_id', coupon.id)
+        .eq('user_id', input.user_id)
+        .in('status', ['RESERVED', 'APPLIED'])
+        .is('deleted_at', null);
+
+      if (redemptionError) {
+        throw new ApiException(
+          'coupon 사용자 사용량 조회 실패',
+          500,
+          'V2_COUPON_REDEMPTIONS_FETCH_FAILED',
+        );
+      }
+      userUsageCount = (userRedemptions || []).length;
+    }
+    checks.push({
+      key: 'user_limit',
+      passed:
+        !input.user_id ||
+        userUsageCount < ((coupon.max_redemptions_per_user as number) ?? 1),
+      detail: `user_id=${input.user_id || '-'}, usage=${userUsageCount}, per_user_limit=${
+        coupon.max_redemptions_per_user
+      }`,
+    });
+
+    if (input.campaign_id) {
+      const promotionCampaignId = coupon.promotion?.campaign_id as string | null;
+      checks.push({
+        key: 'campaign_match',
+        passed: !promotionCampaignId || promotionCampaignId === input.campaign_id,
+        detail: `promotion_campaign_id=${promotionCampaignId || '-'}, request_campaign_id=${
+          input.campaign_id
+        }`,
+      });
+    }
+
+    const eligible = checks.every((check) => check.passed);
+    const firstFailed = checks.find((check) => !check.passed);
+
+    return {
+      code,
+      eligible,
+      reason: firstFailed?.key || null,
+      evaluated_at: now,
+      coupon,
+      checks,
+    };
+  }
+
+  async reserveCoupon(couponId: string, input: ReserveV2CouponInput): Promise<any> {
+    const coupon = await this.getCouponById(couponId);
+    const userId = this.normalizeRequiredText(input.user_id, 'user_id는 필수입니다');
+    const now = new Date().toISOString();
+    const validation = await this.validateCoupon({
+      code: coupon.code as string,
+      user_id: userId,
+      evaluated_at: now,
+    });
+
+    if (!validation.eligible) {
+      throw new ApiException(
+        `coupon reserve 불가: ${validation.reason || '검증 실패'}`,
+        400,
+        'COUPON_NOT_RESERVABLE',
+      );
+    }
+
+    const { data: redemption, error: redemptionError } = await this.supabase
+      .from('v2_coupon_redemptions')
+      .insert({
+        coupon_id: couponId,
+        user_id: userId,
+        status: 'RESERVED',
+        quote_reference: this.normalizeOptionalText(input.quote_reference),
+        reserved_at: now,
+        expires_at: this.normalizeOptionalTimestamp(input.expires_at, 'expires_at'),
+        source_type: this.normalizeOptionalText(input.source_type),
+        source_id: this.normalizeOptionalText(input.source_id),
+        source_snapshot_json: this.normalizeOptionalObjectJson(
+          input.source_snapshot_json,
+        ),
+        metadata: input.metadata ?? {},
+      })
+      .select('*')
+      .single();
+
+    if (redemptionError || !redemption) {
+      throw new ApiException(
+        'coupon reserve 기록 생성 실패',
+        500,
+        'V2_COUPON_REDEMPTION_CREATE_FAILED',
+      );
+    }
+
+    const { data: updatedCoupon, error: couponError } = await this.supabase
+      .from('v2_coupons')
+      .update({
+        reserved_count: (coupon.reserved_count as number) + 1,
+      })
+      .eq('id', couponId)
+      .select('*')
+      .single();
+
+    if (couponError || !updatedCoupon) {
+      throw new ApiException(
+        'coupon reserved_count 업데이트 실패',
+        500,
+        'V2_COUPON_UPDATE_FAILED',
+      );
+    }
+
+    return {
+      coupon: updatedCoupon,
+      redemption,
+    };
+  }
+
+  async releaseCouponRedemption(
+    redemptionId: string,
+    input: ReleaseV2CouponRedemptionInput = {},
+  ): Promise<any> {
+    const redemption = await this.getCouponRedemptionById(redemptionId);
+    if (redemption.status !== 'RESERVED') {
+      throw new ApiException(
+        'RESERVED 상태만 release할 수 있습니다',
+        400,
+        'INVALID_STATUS_TRANSITION',
+      );
+    }
+
+    const now = new Date().toISOString();
+    const mergedMetadata = {
+      ...(redemption.metadata || {}),
+      ...(input.reason ? { release_reason: input.reason } : {}),
+    };
+    const { data: releasedRedemption, error: redemptionError } = await this.supabase
+      .from('v2_coupon_redemptions')
+      .update({
+        status: 'RELEASED',
+        released_at: now,
+        metadata: mergedMetadata,
+      })
+      .eq('id', redemptionId)
+      .select('*')
+      .single();
+
+    if (redemptionError || !releasedRedemption) {
+      throw new ApiException(
+        'coupon redemption release 실패',
+        500,
+        'V2_COUPON_REDEMPTION_UPDATE_FAILED',
+      );
+    }
+
+    const coupon = await this.getCouponById(redemption.coupon_id as string);
+    const nextReservedCount = Math.max((coupon.reserved_count as number) - 1, 0);
+    const { data: updatedCoupon, error: couponError } = await this.supabase
+      .from('v2_coupons')
+      .update({
+        reserved_count: nextReservedCount,
+      })
+      .eq('id', coupon.id)
+      .select('*')
+      .single();
+
+    if (couponError || !updatedCoupon) {
+      throw new ApiException(
+        'coupon reserved_count release 업데이트 실패',
+        500,
+        'V2_COUPON_UPDATE_FAILED',
+      );
+    }
+
+    return {
+      coupon: updatedCoupon,
+      redemption: releasedRedemption,
+    };
+  }
+
+  async redeemCouponRedemption(
+    redemptionId: string,
+    input: RedeemV2CouponRedemptionInput = {},
+  ): Promise<any> {
+    const redemption = await this.getCouponRedemptionById(redemptionId);
+    if (redemption.status !== 'RESERVED' && redemption.status !== 'APPLIED') {
+      throw new ApiException(
+        'RESERVED 또는 APPLIED 상태만 redeem할 수 있습니다',
+        400,
+        'INVALID_STATUS_TRANSITION',
+      );
+    }
+    if (redemption.status === 'APPLIED') {
+      const coupon = await this.getCouponById(redemption.coupon_id as string);
+      return {
+        coupon,
+        redemption,
+      };
+    }
+
+    const now = new Date().toISOString();
+    const { data: appliedRedemption, error: redemptionError } = await this.supabase
+      .from('v2_coupon_redemptions')
+      .update({
+        status: 'APPLIED',
+        applied_at: now,
+        order_id: this.normalizeOptionalText(input.order_id),
+        metadata: {
+          ...(redemption.metadata || {}),
+          ...(input.metadata || {}),
+        },
+      })
+      .eq('id', redemptionId)
+      .select('*')
+      .single();
+
+    if (redemptionError || !appliedRedemption) {
+      throw new ApiException(
+        'coupon redemption redeem 실패',
+        500,
+        'V2_COUPON_REDEMPTION_UPDATE_FAILED',
+      );
+    }
+
+    const coupon = await this.getCouponById(redemption.coupon_id as string);
+    const nextReservedCount = Math.max((coupon.reserved_count as number) - 1, 0);
+    const nextRedeemedCount = (coupon.redeemed_count as number) + 1;
+    const shouldExhaust =
+      coupon.max_issuance !== null &&
+      coupon.max_issuance !== undefined &&
+      nextReservedCount + nextRedeemedCount >= (coupon.max_issuance as number);
+
+    const { data: updatedCoupon, error: couponError } = await this.supabase
+      .from('v2_coupons')
+      .update({
+        reserved_count: nextReservedCount,
+        redeemed_count: nextRedeemedCount,
+        status: shouldExhaust ? 'EXHAUSTED' : coupon.status,
+      })
+      .eq('id', coupon.id)
+      .select('*')
+      .single();
+
+    if (couponError || !updatedCoupon) {
+      throw new ApiException(
+        'coupon redeem 카운터 업데이트 실패',
+        500,
+        'V2_COUPON_UPDATE_FAILED',
+      );
+    }
+
+    return {
+      coupon: updatedCoupon,
+      redemption: appliedRedemption,
+    };
+  }
+
+  async buildPriceQuote(input: BuildV2PriceQuoteInput): Promise<any> {
+    return this.computePricingPipeline(input);
+  }
+
+  async evaluatePromotions(input: BuildV2PriceQuoteInput): Promise<any> {
+    const quote = await this.computePricingPipeline(input);
+    return {
+      quote_reference: quote.quote_reference,
+      evaluated_at: quote.evaluated_at,
+      coupon: quote.coupon,
+      promotion_evaluations: quote.promotion_evaluations,
+      applied_promotions: quote.applied_promotions,
+      summary: quote.summary,
+    };
+  }
+
+  async getPricingDebugTrace(input: BuildV2PriceQuoteInput): Promise<any> {
+    const quote = await this.computePricingPipeline(input);
+    return {
+      quote_reference: quote.quote_reference,
+      evaluated_at: quote.evaluated_at,
+      context: quote.context,
+      price_candidates: quote.price_candidates,
+      promotion_evaluations: quote.promotion_evaluations,
+      applied_promotions: quote.applied_promotions,
+      coupon: quote.coupon,
+      lines: quote.lines,
+      summary: quote.summary,
+    };
+  }
+
+  getOrderSnapshotContract(): any {
+    return {
+      order_adjustments: {
+        required_fields: [
+          'target_scope',
+          'source_type',
+          'source_id',
+          'code_snapshot',
+          'label_snapshot',
+          'amount',
+          'calculation_snapshot',
+        ],
+        enums: {
+          target_scope: ['ORDER', 'SHIPPING'],
+          source_type: ['PROMOTION', 'COUPON', 'MANUAL', 'ETC'],
+        },
+      },
+      order_item_adjustments: {
+        required_fields: [
+          'order_item_id',
+          'source_type',
+          'source_id',
+          'label_snapshot',
+          'amount',
+          'sequence_no',
+          'calculation_snapshot',
+        ],
+        enums: {
+          source_type: ['PRICE_LIST', 'PROMOTION', 'COUPON', 'BUNDLE_ALLOC', 'MANUAL'],
+        },
+      },
+      mapping_examples: [
+        {
+          pricing_source: 'BASE_PRICE_LIST',
+          adjustment_target: 'order_item_adjustments',
+          source_type: 'PRICE_LIST',
+        },
+        {
+          pricing_source: 'AUTO_PROMOTION',
+          adjustment_target: 'order_item_adjustments',
+          source_type: 'PROMOTION',
+        },
+        {
+          pricing_source: 'COUPON_PROMOTION',
+          adjustment_target: 'order_item_adjustments',
+          source_type: 'COUPON',
+        },
+        {
+          pricing_source: 'SHIPPING_PROMOTION',
+          adjustment_target: 'order_adjustments',
+          source_type: 'PROMOTION',
+          target_scope: 'SHIPPING',
+        },
+      ],
+    };
+  }
+
+  private async computePricingPipeline(input: BuildV2PriceQuoteInput): Promise<any> {
+    const evaluatedAt =
+      this.normalizeOptionalTimestamp(input.evaluated_at, 'evaluated_at') ??
+      new Date().toISOString();
+    const quoteReference =
+      this.normalizeOptionalText(input.quote_reference) ??
+      `Q-${Date.now().toString(36).toUpperCase()}`;
+    const channel = this.normalizeOptionalText(input.channel);
+    const campaignId = this.normalizeOptionalText(input.campaign_id);
+    const couponCode = this.normalizeOptionalText(input.coupon_code);
+    const userId = this.normalizeOptionalText(input.user_id);
+    const shippingAmount = this.normalizeOptionalInteger(
+      input.shipping_amount,
+      'shipping_amount',
+    );
+
+    if (campaignId) {
+      await this.getCampaignById(campaignId);
+    }
+
+    const linesInput = Array.isArray(input.lines) ? input.lines : [];
+    if (linesInput.length === 0) {
+      throw new ApiException('lines는 최소 1개 이상 필요합니다', 400, 'VALIDATION_ERROR');
+    }
+
+    const normalizedLines = linesInput.map((line, index) => {
+      const variantId = this.normalizeRequiredText(
+        line.variant_id,
+        `lines[${index}].variant_id는 필수입니다`,
+      );
+      const quantity = line.quantity ?? 1;
+      this.assertPositiveInteger(quantity, `lines[${index}].quantity`);
+      return { variant_id: variantId, quantity };
+    });
+
+    const variantIds = Array.from(
+      new Set(normalizedLines.map((line) => line.variant_id)),
+    );
+    const { data: variants, error: variantsError } = await this.supabase
+      .from('v2_product_variants')
+      .select('id,product_id,sku,title,fulfillment_type,requires_shipping,status')
+      .in('id', variantIds)
+      .is('deleted_at', null);
+
+    if (variantsError) {
+      throw new ApiException(
+        'quote variant 조회 실패',
+        500,
+        'V2_VARIANTS_FETCH_FAILED',
+      );
+    }
+    const variantById = new Map(((variants || []) as any[]).map((row) => [row.id, row]));
+    for (const line of normalizedLines) {
+      const variant = variantById.get(line.variant_id);
+      if (!variant) {
+        throw new ApiException(
+          `variant를 찾을 수 없습니다: ${line.variant_id}`,
+          404,
+          'V2_VARIANT_NOT_FOUND',
+        );
+      }
+      if (variant.status !== 'ACTIVE') {
+        throw new ApiException(
+          `ACTIVE variant만 quote 계산할 수 있습니다: ${line.variant_id}`,
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+    }
+
+    const productIds = Array.from(
+      new Set((variants || []).map((variant: any) => variant.product_id as string)),
+    );
+    const { data: products, error: productsError } = await this.supabase
+      .from('v2_products')
+      .select('id,project_id,title,product_kind,status')
+      .in('id', productIds)
+      .is('deleted_at', null);
+
+    if (productsError) {
+      throw new ApiException(
+        'quote product 조회 실패',
+        500,
+        'V2_PRODUCTS_FETCH_FAILED',
+      );
+    }
+    const productById = new Map(((products || []) as any[]).map((row) => [row.id, row]));
+
+    const { data: priceItems, error: priceItemsError } = await this.supabase
+      .from('v2_price_list_items')
+      .select(
+        `
+        *,
+        price_list:v2_price_lists(*)
+      `,
+      )
+      .in('product_id', productIds)
+      .eq('status', 'ACTIVE')
+      .is('deleted_at', null);
+
+    if (priceItemsError) {
+      throw new ApiException(
+        'price list item 조회 실패',
+        500,
+        'V2_PRICE_LIST_ITEMS_FETCH_FAILED',
+      );
+    }
+
+    const nowIso = evaluatedAt;
+    const lineResults: any[] = [];
+    const priceCandidates: any[] = [];
+    let subtotal = 0;
+
+    for (const line of normalizedLines) {
+      const variant = variantById.get(line.variant_id);
+      const product = productById.get(variant.product_id);
+      if (!product) {
+        throw new ApiException(
+          `상품을 찾을 수 없습니다: ${variant.product_id}`,
+          404,
+          'V2_PRODUCT_NOT_FOUND',
+        );
+      }
+
+      const candidates = ((priceItems || []) as any[])
+        .filter((item) => item.product_id === product.id)
+        .filter((item) => item.variant_id === line.variant_id || item.variant_id === null)
+        .filter((item) => this.isTimestampInRange(item.starts_at, item.ends_at, nowIso))
+        .filter((item) => {
+          const priceList = item.price_list;
+          if (!priceList || priceList.deleted_at) {
+            return false;
+          }
+          if (priceList.status !== 'PUBLISHED') {
+            return false;
+          }
+          if (!this.isTimestampInRange(priceList.starts_at, priceList.ends_at, nowIso)) {
+            return false;
+          }
+          if (!this.matchesChannelScope(priceList.channel_scope_json, channel)) {
+            return false;
+          }
+          if (!this.matchesChannelScope(item.channel_scope_json, channel)) {
+            return false;
+          }
+          return true;
+        });
+
+      const baseCandidates = candidates.filter(
+        (item) => item.price_list?.scope_type === 'BASE',
+      );
+      const overrideCandidates = candidates.filter(
+        (item) =>
+          item.price_list?.scope_type === 'OVERRIDE' &&
+          (!item.price_list?.campaign_id ||
+            item.price_list?.campaign_id === campaignId),
+      );
+
+      const selectedBase = this.pickBestPriceItem(baseCandidates);
+      const selectedOverride = this.pickBestPriceItem(overrideCandidates);
+      const selectedItem = selectedOverride || selectedBase;
+
+      if (!selectedItem) {
+        throw new ApiException(
+          `적용 가능한 가격표가 없습니다 (variant=${line.variant_id})`,
+          400,
+          'PRICE_LIST_NOT_FOUND',
+        );
+      }
+
+      const lineSubtotal = (selectedItem.unit_amount as number) * line.quantity;
+      subtotal += lineSubtotal;
+
+      lineResults.push({
+        variant_id: variant.id,
+        product_id: product.id,
+        project_id: product.project_id,
+        product_kind: product.product_kind,
+        sku: variant.sku,
+        title: variant.title,
+        quantity: line.quantity,
+        fulfillment_type: variant.fulfillment_type,
+        requires_shipping: variant.requires_shipping,
+        pricing: {
+          base_price_list_id: selectedBase?.price_list_id ?? null,
+          base_price_list_item_id: selectedBase?.id ?? null,
+          base_unit_amount: selectedBase?.unit_amount ?? null,
+          override_price_list_id: selectedOverride?.price_list_id ?? null,
+          override_price_list_item_id: selectedOverride?.id ?? null,
+          override_unit_amount: selectedOverride?.unit_amount ?? null,
+          selected_price_list_id: selectedItem.price_list_id,
+          selected_price_list_item_id: selectedItem.id,
+          unit_amount: selectedItem.unit_amount,
+          compare_at_amount: selectedItem.compare_at_amount,
+          line_subtotal: lineSubtotal,
+        },
+        adjustments: [],
+        discounts: {
+          auto: 0,
+          coupon: 0,
+          manual: 0,
+        },
+      });
+
+      priceCandidates.push({
+        variant_id: variant.id,
+        candidates: candidates.map((item) => ({
+          item_id: item.id,
+          price_list_id: item.price_list_id,
+          scope_type: item.price_list?.scope_type,
+          campaign_id: item.price_list?.campaign_id,
+          priority: item.price_list?.priority,
+          unit_amount: item.unit_amount,
+          starts_at: item.starts_at,
+          ends_at: item.ends_at,
+          selected:
+            item.id === selectedItem.id &&
+            item.price_list_id === selectedItem.price_list_id,
+        })),
+      });
+    }
+
+    const couponValidation = couponCode
+      ? await this.validateCoupon({
+          code: couponCode,
+          user_id: userId,
+          campaign_id: campaignId,
+          channel,
+          evaluated_at: evaluatedAt,
+        })
+      : null;
+
+    const { data: promotions, error: promotionsError } = await this.supabase
+      .from('v2_promotions')
+      .select('*')
+      .eq('status', 'ACTIVE')
+      .is('deleted_at', null)
+      .order('priority', { ascending: true });
+    if (promotionsError) {
+      throw new ApiException(
+        'promotion 조회 실패',
+        500,
+        'V2_PROMOTIONS_FETCH_FAILED',
+      );
+    }
+
+    const promotionIds = ((promotions || []) as any[]).map((promotion) => promotion.id);
+    let promotionRules: any[] = [];
+    if (promotionIds.length > 0) {
+      const { data: rules, error: rulesError } = await this.supabase
+        .from('v2_promotion_rules')
+        .select('*')
+        .in('promotion_id', promotionIds)
+        .eq('status', 'ACTIVE')
+        .is('deleted_at', null)
+        .order('sort_order', { ascending: true });
+      if (rulesError) {
+        throw new ApiException(
+          'promotion rule 조회 실패',
+          500,
+          'V2_PROMOTION_RULES_FETCH_FAILED',
+        );
+      }
+      promotionRules = rules || [];
+    }
+    const rulesByPromotionId = new Map<string, any[]>();
+    for (const rule of promotionRules) {
+      const list = rulesByPromotionId.get(rule.promotion_id) || [];
+      list.push(rule);
+      rulesByPromotionId.set(rule.promotion_id, list);
+    }
+
+    const lineRemaining = lineResults.map((line) => line.pricing.line_subtotal as number);
+    let orderLevelDiscountTotal = 0;
+    let shippingDiscountTotal = 0;
+    let runningShippingAmount = shippingAmount ?? 0;
+
+    const promotionEvaluations: any[] = [];
+    const appliedPromotions: any[] = [];
+
+    const phases = ['auto', 'coupon', 'shipping'] as const;
+    for (const phase of phases) {
+      let exclusiveApplied = false;
+      const phasePromotions = ((promotions || []) as any[])
+        .filter((promotion) =>
+          this.resolvePromotionPhase(promotion) === phase,
+        )
+        .filter((promotion) =>
+          this.isTimestampInRange(promotion.starts_at, promotion.ends_at, nowIso),
+        )
+        .filter((promotion) =>
+          this.matchesChannelScope(promotion.channel_scope_json, channel),
+        )
+        .filter((promotion) => !promotion.campaign_id || promotion.campaign_id === campaignId)
+        .sort((a, b) => (a.priority as number) - (b.priority as number));
+
+      for (const promotion of phasePromotions) {
+        const rules = rulesByPromotionId.get(promotion.id) || [];
+        const ruleResult = this.evaluatePromotionRules(rules, {
+          lines: lineResults,
+          channel,
+          campaignId,
+          userId,
+          subtotal,
+          currentSubtotal: lineRemaining.reduce((sum, value) => sum + value, 0),
+        });
+
+        const couponMatched =
+          !promotion.coupon_required ||
+          (couponValidation?.eligible &&
+            couponValidation?.coupon?.promotion_id === promotion.id);
+        const eligible = ruleResult.passed && couponMatched;
+
+        const evaluation: any = {
+          promotion_id: promotion.id,
+          name: promotion.name,
+          phase,
+          promotion_type: promotion.promotion_type,
+          combinability_mode: promotion.combinability_mode,
+          eligible,
+          rule_results: ruleResult.results,
+          coupon_matched: couponMatched,
+          skipped_reason: null,
+          applied_discount_amount: 0,
+        };
+
+        if (!eligible) {
+          evaluation.skipped_reason = ruleResult.passed
+            ? 'COUPON_NOT_MATCHED'
+            : 'RULE_NOT_MATCHED';
+          promotionEvaluations.push(evaluation);
+          continue;
+        }
+
+        if (exclusiveApplied) {
+          evaluation.skipped_reason = 'EXCLUSIVE_PROMOTION_ALREADY_APPLIED';
+          promotionEvaluations.push(evaluation);
+          continue;
+        }
+
+        const eligibleIndexes = this.getPromotionEligibleLineIndexes(
+          lineResults,
+          rules,
+        );
+        const type = promotion.promotion_type as V2PromotionType;
+        let appliedAmount = 0;
+
+        if (type === 'ITEM_PERCENT' || type === 'ITEM_FIXED') {
+          const remainingByIndex = eligibleIndexes.map((index) => lineRemaining[index]);
+          const rawDiscounts = this.calculateItemPromotionDiscounts(
+            type,
+            Number(promotion.discount_value),
+            lineResults,
+            eligibleIndexes,
+            remainingByIndex,
+          );
+          const cappedDiscounts = this.capDiscountAllocations(
+            rawDiscounts,
+            promotion.max_discount_amount as number | null,
+          );
+          for (let i = 0; i < eligibleIndexes.length; i += 1) {
+            const lineIndex = eligibleIndexes[i];
+            const discount = Math.min(cappedDiscounts[i], lineRemaining[lineIndex]);
+            if (discount <= 0) {
+              continue;
+            }
+            lineRemaining[lineIndex] -= discount;
+            const line = lineResults[lineIndex];
+            const bucket = phase === 'coupon' ? 'coupon' : 'auto';
+            line.discounts[bucket] += discount;
+            line.adjustments.push({
+              source_type: phase === 'coupon' ? 'COUPON' : 'PROMOTION',
+              source_id: promotion.id,
+              label_snapshot: promotion.name,
+              amount: -discount,
+              phase,
+            });
+            appliedAmount += discount;
+          }
+        } else if (type === 'ORDER_PERCENT' || type === 'ORDER_FIXED') {
+          const currentSubtotal = lineRemaining.reduce((sum, value) => sum + value, 0);
+          const calculated = this.calculateOrderPromotionDiscount(
+            type,
+            Number(promotion.discount_value),
+            currentSubtotal,
+            promotion.max_discount_amount as number | null,
+          );
+          appliedAmount = calculated;
+          orderLevelDiscountTotal += calculated;
+        } else if (type === 'SHIPPING_PERCENT' || type === 'SHIPPING_FIXED') {
+          const calculated = this.calculateOrderPromotionDiscount(
+            type,
+            Number(promotion.discount_value),
+            runningShippingAmount,
+            promotion.max_discount_amount as number | null,
+          );
+          appliedAmount = calculated;
+          runningShippingAmount -= calculated;
+          shippingDiscountTotal += calculated;
+        }
+
+        evaluation.applied_discount_amount = appliedAmount;
+        if (appliedAmount <= 0) {
+          evaluation.skipped_reason = 'NO_EFFECT';
+          promotionEvaluations.push(evaluation);
+          continue;
+        }
+
+        promotionEvaluations.push(evaluation);
+        appliedPromotions.push({
+          promotion_id: promotion.id,
+          name: promotion.name,
+          phase,
+          promotion_type: promotion.promotion_type,
+          applied_discount_amount: appliedAmount,
+        });
+
+        if (promotion.combinability_mode === 'EXCLUSIVE') {
+          exclusiveApplied = true;
+        }
+      }
+    }
+
+    const itemDiscountTotal = lineResults.reduce(
+      (sum, line) => sum + line.discounts.auto + line.discounts.coupon,
+      0,
+    );
+    const lineSubtotalAfterItemDiscounts = lineRemaining.reduce(
+      (sum, value) => sum + value,
+      0,
+    );
+    const totalDiscount = itemDiscountTotal + orderLevelDiscountTotal + shippingDiscountTotal;
+    const payable =
+      lineSubtotalAfterItemDiscounts -
+      orderLevelDiscountTotal +
+      (shippingAmount ?? 0) -
+      shippingDiscountTotal;
+
+    return {
+      quote_reference: quoteReference,
+      evaluated_at: evaluatedAt,
+      context: {
+        campaign_id: campaignId,
+        channel,
+        coupon_code: couponCode,
+        user_id: userId,
+        shipping_amount: shippingAmount ?? 0,
+      },
+      price_candidates: priceCandidates,
+      coupon: couponValidation,
+      lines: lineResults.map((line, index) => ({
+        ...line,
+        pricing: {
+          ...line.pricing,
+          line_total_after_item_discounts: lineRemaining[index],
+        },
+      })),
+      promotion_evaluations: promotionEvaluations,
+      applied_promotions: appliedPromotions,
+      summary: {
+        subtotal,
+        line_subtotal_after_item_discounts: lineSubtotalAfterItemDiscounts,
+        item_discount_total: itemDiscountTotal,
+        order_level_discount_total: orderLevelDiscountTotal,
+        shipping_amount: shippingAmount ?? 0,
+        shipping_discount_total: shippingDiscountTotal,
+        total_discount: totalDiscount,
+        total_payable_amount: Math.max(payable, 0),
+      },
     };
   }
 
@@ -4083,6 +6994,868 @@ export class V2CatalogService {
     }
 
     return floored;
+  }
+
+  private async assertCampaignCodeAvailable(
+    code: string,
+    excludeCampaignId?: string,
+  ): Promise<void> {
+    let query = this.supabase
+      .from('v2_campaigns')
+      .select('id')
+      .eq('code', code)
+      .is('deleted_at', null);
+
+    if (excludeCampaignId) {
+      query = query.neq('id', excludeCampaignId);
+    }
+
+    const { data, error } = await query.limit(1).maybeSingle();
+    if (error) {
+      throw new ApiException(
+        'campaign code 중복 검사 실패',
+        500,
+        'V2_CAMPAIGN_FETCH_FAILED',
+      );
+    }
+    if (data) {
+      throw new ApiException(
+        '이미 사용 중인 campaign code입니다',
+        409,
+        'CODE_ALREADY_EXISTS',
+      );
+    }
+  }
+
+  private async getCampaignTargetById(targetId: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('v2_campaign_targets')
+      .select('*')
+      .eq('id', targetId)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'campaign target 조회 실패',
+        500,
+        'V2_CAMPAIGN_TARGET_FETCH_FAILED',
+      );
+    }
+    if (!data) {
+      throw new ApiException(
+        'campaign target을 찾을 수 없습니다',
+        404,
+        'V2_CAMPAIGN_TARGET_NOT_FOUND',
+      );
+    }
+
+    return data;
+  }
+
+  private async ensureCampaignTargetEntityExists(
+    targetType: V2CampaignTargetType,
+    targetId: string,
+  ): Promise<void> {
+    if (targetType === 'PROJECT') {
+      await this.ensureProjectExists(targetId);
+      return;
+    }
+    if (targetType === 'PRODUCT') {
+      await this.ensureProductExists(targetId);
+      return;
+    }
+    if (targetType === 'VARIANT') {
+      await this.ensureVariantExists(targetId);
+      return;
+    }
+    if (targetType === 'BUNDLE_DEFINITION') {
+      await this.getBundleDefinitionById(targetId);
+      return;
+    }
+    throw new ApiException('지원하지 않는 target_type입니다', 400, 'VALIDATION_ERROR');
+  }
+
+  private async getPriceListItemById(itemId: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('v2_price_list_items')
+      .select('*')
+      .eq('id', itemId)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'price list item 조회 실패',
+        500,
+        'V2_PRICE_LIST_ITEM_FETCH_FAILED',
+      );
+    }
+    if (!data) {
+      throw new ApiException(
+        'price list item을 찾을 수 없습니다',
+        404,
+        'V2_PRICE_LIST_ITEM_NOT_FOUND',
+      );
+    }
+
+    return data;
+  }
+
+  private async getPromotionRuleById(ruleId: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('v2_promotion_rules')
+      .select('*')
+      .eq('id', ruleId)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'promotion rule 조회 실패',
+        500,
+        'V2_PROMOTION_RULE_FETCH_FAILED',
+      );
+    }
+    if (!data) {
+      throw new ApiException(
+        'promotion rule을 찾을 수 없습니다',
+        404,
+        'V2_PROMOTION_RULE_NOT_FOUND',
+      );
+    }
+
+    return data;
+  }
+
+  private async assertCouponCodeAvailable(
+    code: string,
+    excludeCouponId?: string,
+  ): Promise<void> {
+    let query = this.supabase
+      .from('v2_coupons')
+      .select('id')
+      .eq('code', code)
+      .is('deleted_at', null);
+    if (excludeCouponId) {
+      query = query.neq('id', excludeCouponId);
+    }
+
+    const { data, error } = await query.limit(1).maybeSingle();
+    if (error) {
+      throw new ApiException(
+        'coupon code 중복 검사 실패',
+        500,
+        'V2_COUPON_FETCH_FAILED',
+      );
+    }
+    if (data) {
+      throw new ApiException(
+        '이미 사용 중인 coupon code입니다',
+        409,
+        'CODE_ALREADY_EXISTS',
+      );
+    }
+  }
+
+  private async getCouponRedemptionById(redemptionId: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('v2_coupon_redemptions')
+      .select('*')
+      .eq('id', redemptionId)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'coupon redemption 조회 실패',
+        500,
+        'V2_COUPON_REDEMPTION_FETCH_FAILED',
+      );
+    }
+    if (!data) {
+      throw new ApiException(
+        'coupon redemption을 찾을 수 없습니다',
+        404,
+        'V2_COUPON_REDEMPTION_NOT_FOUND',
+      );
+    }
+
+    return data;
+  }
+
+  private assertCampaignType(value: string): void {
+    const allowed: V2CampaignType[] = ['POPUP', 'EVENT', 'SALE', 'DROP', 'ALWAYS_ON'];
+    if (!allowed.includes(value as V2CampaignType)) {
+      throw new ApiException(
+        'campaign_type 값이 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private assertCampaignStatus(value: string): void {
+    const allowed: V2CampaignStatus[] = [
+      'DRAFT',
+      'ACTIVE',
+      'SUSPENDED',
+      'CLOSED',
+      'ARCHIVED',
+    ];
+    if (!allowed.includes(value as V2CampaignStatus)) {
+      throw new ApiException(
+        'campaign status 값이 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private assertCampaignStatusTransition(
+    current: V2CampaignStatus,
+    next: V2CampaignStatus,
+  ): void {
+    const allowed: Record<V2CampaignStatus, V2CampaignStatus[]> = {
+      DRAFT: ['DRAFT', 'ACTIVE', 'ARCHIVED'],
+      ACTIVE: ['ACTIVE', 'SUSPENDED', 'CLOSED', 'ARCHIVED'],
+      SUSPENDED: ['SUSPENDED', 'ACTIVE', 'CLOSED', 'ARCHIVED'],
+      CLOSED: ['CLOSED', 'ARCHIVED'],
+      ARCHIVED: ['ARCHIVED'],
+    };
+    if (!allowed[current].includes(next)) {
+      throw new ApiException(
+        `허용되지 않는 campaign 상태 전이입니다: ${current} -> ${next}`,
+        400,
+        'INVALID_STATUS_TRANSITION',
+      );
+    }
+  }
+
+  private assertCampaignTargetType(value: string): void {
+    const allowed: V2CampaignTargetType[] = [
+      'PROJECT',
+      'PRODUCT',
+      'VARIANT',
+      'BUNDLE_DEFINITION',
+    ];
+    if (!allowed.includes(value as V2CampaignTargetType)) {
+      throw new ApiException(
+        'campaign target_type 값이 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private assertPriceListScope(value: string): void {
+    const allowed: V2PriceListScope[] = ['BASE', 'OVERRIDE'];
+    if (!allowed.includes(value as V2PriceListScope)) {
+      throw new ApiException(
+        'price list scope_type 값이 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private assertPriceListStatus(value: string): void {
+    const allowed: V2PriceListStatus[] = [
+      'DRAFT',
+      'PUBLISHED',
+      'ROLLED_BACK',
+      'ARCHIVED',
+    ];
+    if (!allowed.includes(value as V2PriceListStatus)) {
+      throw new ApiException(
+        'price list status 값이 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private assertPriceListStatusTransition(
+    current: V2PriceListStatus,
+    next: V2PriceListStatus,
+  ): void {
+    const allowed: Record<V2PriceListStatus, V2PriceListStatus[]> = {
+      DRAFT: ['DRAFT', 'PUBLISHED', 'ARCHIVED'],
+      PUBLISHED: ['PUBLISHED', 'ROLLED_BACK', 'ARCHIVED'],
+      ROLLED_BACK: ['ROLLED_BACK', 'PUBLISHED', 'ARCHIVED'],
+      ARCHIVED: ['ARCHIVED'],
+    };
+    if (!allowed[current].includes(next)) {
+      throw new ApiException(
+        `허용되지 않는 price list 상태 전이입니다: ${current} -> ${next}`,
+        400,
+        'INVALID_STATUS_TRANSITION',
+      );
+    }
+  }
+
+  private assertPriceItemStatus(value: string): void {
+    const allowed: V2PriceItemStatus[] = ['ACTIVE', 'INACTIVE'];
+    if (!allowed.includes(value as V2PriceItemStatus)) {
+      throw new ApiException(
+        'price item status 값이 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private assertPromotionType(value: string): void {
+    const allowed: V2PromotionType[] = [
+      'ITEM_PERCENT',
+      'ITEM_FIXED',
+      'ORDER_PERCENT',
+      'ORDER_FIXED',
+      'SHIPPING_PERCENT',
+      'SHIPPING_FIXED',
+    ];
+    if (!allowed.includes(value as V2PromotionType)) {
+      throw new ApiException(
+        'promotion_type 값이 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private assertPromotionStatus(value: string): void {
+    const allowed: V2PromotionStatus[] = ['DRAFT', 'ACTIVE', 'SUSPENDED', 'ARCHIVED'];
+    if (!allowed.includes(value as V2PromotionStatus)) {
+      throw new ApiException(
+        'promotion status 값이 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private assertPromotionStatusTransition(
+    current: V2PromotionStatus,
+    next: V2PromotionStatus,
+  ): void {
+    const allowed: Record<V2PromotionStatus, V2PromotionStatus[]> = {
+      DRAFT: ['DRAFT', 'ACTIVE', 'ARCHIVED'],
+      ACTIVE: ['ACTIVE', 'SUSPENDED', 'ARCHIVED'],
+      SUSPENDED: ['SUSPENDED', 'ACTIVE', 'ARCHIVED'],
+      ARCHIVED: ['ARCHIVED'],
+    };
+    if (!allowed[current].includes(next)) {
+      throw new ApiException(
+        `허용되지 않는 promotion 상태 전이입니다: ${current} -> ${next}`,
+        400,
+        'INVALID_STATUS_TRANSITION',
+      );
+    }
+  }
+
+  private assertCombinabilityMode(value: string): void {
+    const allowed: V2CombinabilityMode[] = ['STACKABLE', 'EXCLUSIVE'];
+    if (!allowed.includes(value as V2CombinabilityMode)) {
+      throw new ApiException(
+        'combinability_mode 값이 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private assertPromotionRuleType(value: string): void {
+    const allowed: V2PromotionRuleType[] = [
+      'MIN_ORDER_AMOUNT',
+      'MIN_ITEM_QUANTITY',
+      'TARGET_PROJECT',
+      'TARGET_PRODUCT',
+      'TARGET_VARIANT',
+      'TARGET_BUNDLE',
+      'CHANNEL',
+      'USER_SEGMENT',
+    ];
+    if (!allowed.includes(value as V2PromotionRuleType)) {
+      throw new ApiException(
+        'promotion rule_type 값이 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private assertCouponStatus(value: string): void {
+    const allowed: V2CouponStatus[] = [
+      'DRAFT',
+      'ACTIVE',
+      'PAUSED',
+      'EXHAUSTED',
+      'EXPIRED',
+      'ARCHIVED',
+    ];
+    if (!allowed.includes(value as V2CouponStatus)) {
+      throw new ApiException(
+        'coupon status 값이 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private assertCouponStatusTransition(
+    current: V2CouponStatus,
+    next: V2CouponStatus,
+  ): void {
+    const allowed: Record<V2CouponStatus, V2CouponStatus[]> = {
+      DRAFT: ['DRAFT', 'ACTIVE', 'ARCHIVED'],
+      ACTIVE: ['ACTIVE', 'PAUSED', 'EXHAUSTED', 'EXPIRED', 'ARCHIVED'],
+      PAUSED: ['PAUSED', 'ACTIVE', 'EXPIRED', 'ARCHIVED'],
+      EXHAUSTED: ['EXHAUSTED', 'ARCHIVED'],
+      EXPIRED: ['EXPIRED', 'ARCHIVED'],
+      ARCHIVED: ['ARCHIVED'],
+    };
+    if (!allowed[current].includes(next)) {
+      throw new ApiException(
+        `허용되지 않는 coupon 상태 전이입니다: ${current} -> ${next}`,
+        400,
+        'INVALID_STATUS_TRANSITION',
+      );
+    }
+  }
+
+  private assertCouponRedemptionStatus(value: string): void {
+    const allowed: V2CouponRedemptionStatus[] = [
+      'RESERVED',
+      'APPLIED',
+      'RELEASED',
+      'CANCELED',
+      'EXPIRED',
+    ];
+    if (!allowed.includes(value as V2CouponRedemptionStatus)) {
+      throw new ApiException(
+        'coupon redemption status 값이 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private assertPurchaseQuantityRange(
+    minPurchaseQuantity: number,
+    maxPurchaseQuantity?: number | null,
+  ): void {
+    if (!Number.isInteger(minPurchaseQuantity) || minPurchaseQuantity <= 0) {
+      throw new ApiException(
+        'min_purchase_quantity는 1 이상의 정수여야 합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    if (maxPurchaseQuantity === undefined || maxPurchaseQuantity === null) {
+      return;
+    }
+    if (
+      !Number.isInteger(maxPurchaseQuantity) ||
+      maxPurchaseQuantity < minPurchaseQuantity
+    ) {
+      throw new ApiException(
+        'max_purchase_quantity는 min_purchase_quantity 이상 정수여야 합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private normalizeCurrencyCode(value: string): string {
+    const normalized = value.trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(normalized)) {
+      throw new ApiException(
+        'currency_code는 3자리 ISO 코드여야 합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    return normalized;
+  }
+
+  private normalizeOptionalTimestamp(
+    value: string | null | undefined,
+    fieldName: string,
+  ): string | null {
+    if (value === undefined || value === null) {
+      return null;
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const parsed = new Date(trimmed);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new ApiException(
+        `${fieldName}는 유효한 ISO timestamp여야 합니다`,
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    return parsed.toISOString();
+  }
+
+  private normalizeOptionalInteger(
+    value: number | null | undefined,
+    fieldName: string,
+  ): number | null {
+    if (value === undefined || value === null) {
+      return null;
+    }
+    if (!Number.isInteger(value) || value < 0) {
+      throw new ApiException(
+        `${fieldName}는 0 이상의 정수여야 합니다`,
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    return value;
+  }
+
+  private assertDateRange(
+    startsAt: string | null | undefined,
+    endsAt: string | null | undefined,
+    label: string,
+  ): void {
+    if (!startsAt || !endsAt) {
+      return;
+    }
+    if (new Date(startsAt).getTime() > new Date(endsAt).getTime()) {
+      throw new ApiException(
+        `${label} starts_at은 ends_at보다 같거나 빨라야 합니다`,
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private normalizeOptionalArrayJson(value: unknown): unknown[] {
+    if (value === undefined || value === null) {
+      return [];
+    }
+    if (!Array.isArray(value)) {
+      throw new ApiException(
+        'JSON 배열 형식이 필요합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    return value;
+  }
+
+  private normalizeOptionalObjectJson(value: unknown): Record<string, unknown> {
+    if (value === undefined || value === null) {
+      return {};
+    }
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      throw new ApiException(
+        'JSON 객체 형식이 필요합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    return value as Record<string, unknown>;
+  }
+
+  private isTimestampInRange(
+    startsAt: string | null | undefined,
+    endsAt: string | null | undefined,
+    nowIso: string,
+  ): boolean {
+    const now = new Date(nowIso).getTime();
+    if (startsAt && new Date(startsAt).getTime() > now) {
+      return false;
+    }
+    if (endsAt && new Date(endsAt).getTime() < now) {
+      return false;
+    }
+    return true;
+  }
+
+  private matchesChannelScope(
+    scopeValue: unknown,
+    channel: string | null | undefined,
+  ): boolean {
+    if (!scopeValue) {
+      return true;
+    }
+    if (!Array.isArray(scopeValue)) {
+      return true;
+    }
+    if (scopeValue.length === 0) {
+      return true;
+    }
+    if (!channel) {
+      return false;
+    }
+    const upperChannel = channel.trim().toUpperCase();
+    const normalized = scopeValue
+      .map((item) => (typeof item === 'string' ? item.toUpperCase() : null))
+      .filter((item): item is string => !!item);
+    return normalized.includes('ALL') || normalized.includes(upperChannel);
+  }
+
+  private pickBestPriceItem(items: any[]): any | null {
+    if (!items || items.length === 0) {
+      return null;
+    }
+    const sorted = [...items].sort((a, b) => {
+      const priorityDiff = (b.price_list?.priority ?? 0) - (a.price_list?.priority ?? 0);
+      if (priorityDiff !== 0) {
+        return priorityDiff;
+      }
+      const publishedA = a.price_list?.published_at
+        ? new Date(a.price_list.published_at).getTime()
+        : 0;
+      const publishedB = b.price_list?.published_at
+        ? new Date(b.price_list.published_at).getTime()
+        : 0;
+      if (publishedA !== publishedB) {
+        return publishedB - publishedA;
+      }
+      const createdA = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const createdB = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return createdB - createdA;
+    });
+    return sorted[0];
+  }
+
+  private resolvePromotionPhase(
+    promotion: any,
+  ): 'auto' | 'coupon' | 'shipping' {
+    const promotionType = promotion.promotion_type as V2PromotionType;
+    if (promotionType.startsWith('SHIPPING_')) {
+      return 'shipping';
+    }
+    if (promotion.coupon_required) {
+      return 'coupon';
+    }
+    return 'auto';
+  }
+
+  private evaluatePromotionRules(
+    rules: any[],
+    context: {
+      lines: any[];
+      channel: string | null | undefined;
+      campaignId: string | null | undefined;
+      userId: string | null | undefined;
+      subtotal: number;
+      currentSubtotal: number;
+    },
+  ): { passed: boolean; results: Array<{ rule_id: string; passed: boolean; detail: string }> } {
+    if (!rules || rules.length === 0) {
+      return { passed: true, results: [] };
+    }
+
+    const results = rules.map((rule) => {
+      const payload = this.normalizeRulePayload(rule.rule_payload);
+      const type = rule.rule_type as V2PromotionRuleType;
+
+      if (type === 'MIN_ORDER_AMOUNT') {
+        const amount = Number(payload.amount ?? 0);
+        const passed = context.currentSubtotal >= amount;
+        return {
+          rule_id: rule.id as string,
+          passed,
+          detail: `subtotal=${context.currentSubtotal}, required=${amount}`,
+        };
+      }
+      if (type === 'MIN_ITEM_QUANTITY') {
+        const required = Number(payload.quantity ?? payload.min_quantity ?? 0);
+        const totalQty = context.lines.reduce(
+          (sum, line) => sum + (line.quantity as number),
+          0,
+        );
+        const passed = totalQty >= required;
+        return {
+          rule_id: rule.id as string,
+          passed,
+          detail: `quantity=${totalQty}, required=${required}`,
+        };
+      }
+      if (type === 'CHANNEL') {
+        const channels = this.normalizeStringArray(payload.channels, true);
+        const currentChannel = (context.channel || '').toUpperCase();
+        const passed =
+          channels.length === 0 ||
+          channels.includes('ALL') ||
+          channels.includes(currentChannel);
+        return {
+          rule_id: rule.id as string,
+          passed,
+          detail: `channel=${context.channel || '-'}, allowed=${channels.join(',')}`,
+        };
+      }
+      if (type === 'USER_SEGMENT') {
+        const requiredUserIds = this.normalizeStringArray(payload.user_ids);
+        const passed =
+          requiredUserIds.length === 0 ||
+          (!!context.userId && requiredUserIds.includes(context.userId));
+        return {
+          rule_id: rule.id as string,
+          passed,
+          detail: `user_id=${context.userId || '-'}, required_user_count=${requiredUserIds.length}`,
+        };
+      }
+
+      const allowedValues =
+        type === 'TARGET_PROJECT'
+          ? this.normalizeStringArray(payload.project_ids)
+          : type === 'TARGET_PRODUCT'
+            ? this.normalizeStringArray(payload.product_ids)
+            : type === 'TARGET_VARIANT'
+              ? this.normalizeStringArray(payload.variant_ids)
+              : this.normalizeStringArray(payload.product_kinds, true);
+      const passed = this.getPromotionEligibleLineIndexes(context.lines, [rule]).length > 0;
+      return {
+        rule_id: rule.id as string,
+        passed,
+        detail: `${type} target_count=${allowedValues.length}`,
+      };
+    });
+
+    return {
+      passed: results.every((result) => result.passed),
+      results,
+    };
+  }
+
+  private getPromotionEligibleLineIndexes(lines: any[], rules: any[]): number[] {
+    if (!rules || rules.length === 0) {
+      return lines.map((_, index) => index);
+    }
+
+    let indexes = lines.map((_, index) => index);
+    for (const rule of rules) {
+      const payload = this.normalizeRulePayload(rule.rule_payload);
+      const type = rule.rule_type as V2PromotionRuleType;
+      if (type === 'TARGET_PROJECT') {
+        const allowed = this.normalizeStringArray(payload.project_ids);
+        if (allowed.length > 0) {
+          indexes = indexes.filter((index) => allowed.includes(lines[index].project_id));
+        }
+        continue;
+      }
+      if (type === 'TARGET_PRODUCT') {
+        const allowed = this.normalizeStringArray(payload.product_ids);
+        if (allowed.length > 0) {
+          indexes = indexes.filter((index) => allowed.includes(lines[index].product_id));
+        }
+        continue;
+      }
+      if (type === 'TARGET_VARIANT') {
+        const allowed = this.normalizeStringArray(payload.variant_ids);
+        if (allowed.length > 0) {
+          indexes = indexes.filter((index) => allowed.includes(lines[index].variant_id));
+        }
+        continue;
+      }
+      if (type === 'TARGET_BUNDLE') {
+        const allowedKinds = this.normalizeStringArray(payload.product_kinds, true);
+        if (allowedKinds.length > 0) {
+          indexes = indexes.filter((index) =>
+            allowedKinds.includes((lines[index].product_kind as string).toUpperCase()),
+          );
+        } else {
+          indexes = indexes.filter((index) => lines[index].product_kind === 'BUNDLE');
+        }
+      }
+    }
+    return indexes;
+  }
+
+  private calculateItemPromotionDiscounts(
+    promotionType: V2PromotionType,
+    discountValue: number,
+    lines: any[],
+    eligibleIndexes: number[],
+    remainingByIndex: number[],
+  ): number[] {
+    if (eligibleIndexes.length === 0) {
+      return [];
+    }
+    if (promotionType === 'ITEM_PERCENT') {
+      return eligibleIndexes.map((_, idx) =>
+        Math.floor((remainingByIndex[idx] * discountValue) / 100),
+      );
+    }
+    if (promotionType === 'ITEM_FIXED') {
+      return eligibleIndexes.map((lineIndex, idx) => {
+        const quantity = lines[lineIndex].quantity as number;
+        const fixedAmount = Math.round(discountValue * quantity);
+        return Math.min(fixedAmount, remainingByIndex[idx]);
+      });
+    }
+    return eligibleIndexes.map(() => 0);
+  }
+
+  private capDiscountAllocations(
+    discounts: number[],
+    maxDiscountAmount: number | null | undefined,
+  ): number[] {
+    if (discounts.length === 0) {
+      return [];
+    }
+    const total = discounts.reduce((sum, value) => sum + value, 0);
+    if (
+      maxDiscountAmount === null ||
+      maxDiscountAmount === undefined ||
+      total <= maxDiscountAmount
+    ) {
+      return discounts;
+    }
+    if (maxDiscountAmount <= 0) {
+      return discounts.map(() => 0);
+    }
+
+    return this.allocateAmountByWeights(maxDiscountAmount, discounts);
+  }
+
+  private calculateOrderPromotionDiscount(
+    promotionType: V2PromotionType,
+    discountValue: number,
+    baseAmount: number,
+    maxDiscountAmount: number | null | undefined,
+  ): number {
+    if (baseAmount <= 0) {
+      return 0;
+    }
+    let raw = 0;
+    if (promotionType === 'ORDER_PERCENT' || promotionType === 'SHIPPING_PERCENT') {
+      raw = Math.floor((baseAmount * discountValue) / 100);
+    } else if (
+      promotionType === 'ORDER_FIXED' ||
+      promotionType === 'SHIPPING_FIXED'
+    ) {
+      raw = Math.round(discountValue);
+    }
+    if (maxDiscountAmount !== null && maxDiscountAmount !== undefined) {
+      raw = Math.min(raw, maxDiscountAmount);
+    }
+    return Math.max(Math.min(raw, baseAmount), 0);
+  }
+
+  private normalizeRulePayload(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+    return value as Record<string, unknown>;
+  }
+
+  private normalizeStringArray(value: unknown, upperCase = false): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    return value
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter((item) => item.length > 0)
+      .map((item) => (upperCase ? item.toUpperCase() : item));
   }
 
   private async ensureProjectExists(projectId: string): Promise<void> {
