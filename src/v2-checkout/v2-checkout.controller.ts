@@ -63,6 +63,17 @@ interface PaymentCallbackBody {
   metadata?: Record<string, unknown> | null;
 }
 
+interface CancelV2OrderBody {
+  reason?: string | null;
+}
+
+interface RefundV2OrderBody {
+  amount?: number | null;
+  reason?: string | null;
+  external_reference?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
 @Controller('v2/checkout')
 export class V2CheckoutController {
   constructor(
@@ -151,6 +162,21 @@ export class V2CheckoutController {
     return successResponse(order);
   }
 
+  @Post('orders/:orderId/cancel')
+  async cancelOrder(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('orderId') orderId: string,
+    @Body() body: CancelV2OrderBody,
+  ) {
+    const user = await this.authSessionService.requireUser(authorization);
+    const result = await this.v2CheckoutService.cancelOrder(
+      user.id,
+      orderId,
+      body,
+    );
+    return successResponse(result, 'v2 주문이 취소되었습니다');
+  }
+
   @Post('orders/:orderId/payment-callback')
   async applyPaymentCallback(
     @Headers('authorization') authorization: string | undefined,
@@ -163,6 +189,27 @@ export class V2CheckoutController {
       body,
     );
     return successResponse(result, 'v2 결제 콜백이 반영되었습니다');
+  }
+
+  @Post('orders/:orderId/refund')
+  async refundOrder(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('orderId') orderId: string,
+    @Body() body: RefundV2OrderBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2CheckoutService.refundOrder(orderId, body);
+    return successResponse(result, 'v2 환불이 반영되었습니다');
+  }
+
+  @Get('orders/:orderId/debug')
+  async getOrderDebug(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('orderId') orderId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2CheckoutService.getOrderDebugById(orderId);
+    return successResponse(result);
   }
 
   private async requireAdmin(authorization: string | undefined): Promise<void> {
