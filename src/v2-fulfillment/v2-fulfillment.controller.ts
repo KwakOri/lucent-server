@@ -409,6 +409,11 @@ export class V2FulfillmentController {
       domain: 'FULFILLMENT',
       actor,
       requiredPermissionCode: 'ENTITLEMENT_REISSUE',
+      approval: {
+        required: true,
+        assigneeRoleCode: 'OPS_MANAGER',
+        reason: body.reason || null,
+      },
       resourceType: 'DIGITAL_ENTITLEMENT',
       resourceId: entitlementId,
       inputPayload: {
