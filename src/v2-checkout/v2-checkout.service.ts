@@ -45,6 +45,7 @@ interface ValidateV2CheckoutInput {
   coupon_code?: string | null;
   channel?: string | null;
   shipping_amount?: number | null;
+  shipping_postcode?: string | null;
 }
 
 interface CreateV2OrderInput extends ValidateV2CheckoutInput {
@@ -104,7 +105,9 @@ interface CheckoutPayload {
   campaignId: string | null;
   couponCode: string | null;
   channel: string | null;
-  shippingAmount: number;
+  requestedShippingAmount: number | null;
+  shippingPostcode: string | null;
+  shippingRequired: boolean;
 }
 
 interface BundleSelectionItem {
@@ -116,6 +119,37 @@ interface BundleConfigurationSnapshot {
   bundle_definition_id: string;
   selected_components: BundleSelectionItem[];
 }
+
+const BASE_SHIPPING_FEE = 3500;
+const FREE_SHIPPING_THRESHOLD = 50000;
+const JEJU_EXTRA_FEE = 3000;
+const ISLAND_EXTRA_FEE = 5000;
+
+const JEJU_POSTCODE_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [63000, 63644],
+];
+
+const ISLAND_POSTCODE_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [40200, 40240], // 울릉도
+  [22386, 22388], // 인천 중구 섬
+  [23004, 23010], // 강화군 섬
+  [23100, 23136], // 옹진군 섬
+  [32133, 32133], // 태안 가의도
+  [33411, 33411], // 보령 호도
+  [46768, 46771], // 부산 강서구 섬
+  [52570, 52571], // 사천 섬
+  [53031, 53033], // 통영 섬
+  [53089, 53104], // 통영 섬
+  [56347, 56349], // 부안 섬
+  [57068, 57069], // 영광 섬
+  [58760, 58762], // 목포 섬
+  [58800, 58810], // 신안 섬
+  [58816, 58818], // 신안 섬
+  [58828, 58866], // 신안 섬
+  [58953, 58958], // 진도 섬
+  [59102, 59103], // 완도 섬
+  [59106, 59106], // 완도 섬
+];
 
 @Injectable()
 export class V2CheckoutService {
@@ -340,14 +374,7 @@ export class V2CheckoutService {
     }
 
     const checkoutPayload = this.resolveCheckoutPayload(input, cartItems);
-    const quote = await this.v2CatalogService.buildPriceQuote({
-      lines: checkoutPayload.lines,
-      campaign_id: checkoutPayload.campaignId || undefined,
-      coupon_code: checkoutPayload.couponCode || undefined,
-      channel: checkoutPayload.channel || undefined,
-      user_id: profileId,
-      shipping_amount: checkoutPayload.shippingAmount,
-    });
+    const { quote } = await this.buildCheckoutQuote(profileId, checkoutPayload);
 
     await this.touchCart(cart.id);
 
@@ -407,14 +434,10 @@ export class V2CheckoutService {
     }
 
     const checkoutPayload = this.resolveCheckoutPayload(input, cartItems);
-    const quote = await this.v2CatalogService.buildPriceQuote({
-      lines: checkoutPayload.lines,
-      campaign_id: checkoutPayload.campaignId || undefined,
-      coupon_code: checkoutPayload.couponCode || undefined,
-      channel: checkoutPayload.channel || undefined,
-      user_id: profileId,
-      shipping_amount: checkoutPayload.shippingAmount,
-    });
+    const { quote, shippingAmount } = await this.buildCheckoutQuote(
+      profileId,
+      checkoutPayload,
+    );
 
     const summary = (quote?.summary || {}) as Record<string, unknown>;
     const currencyCode = this.normalizeCurrencyCode(input.currency_code);
@@ -443,7 +466,7 @@ export class V2CheckoutService {
         'order_level_discount_total',
       ),
       shipping_amount: this.normalizeNonNegativeInteger(
-        summary.shipping_amount ?? checkoutPayload.shippingAmount ?? 0,
+        summary.shipping_amount ?? shippingAmount ?? 0,
         'shipping_amount',
       ),
       shipping_discount_total: this.normalizeNonNegativeInteger(
@@ -1232,6 +1255,9 @@ export class V2CheckoutService {
         };
       },
     );
+    const shippingRequired = cartItems.some(
+      (item) => item?.variant?.requires_shipping === true,
+    );
     const lines = lineContexts.map((line) => ({
       variant_id: line.variantId,
       quantity: line.quantity,
@@ -1257,10 +1283,67 @@ export class V2CheckoutService {
       campaignId,
       couponCode: this.normalizeOptionalText(input.coupon_code),
       channel: this.normalizeOptionalText(input.channel),
-      shippingAmount: this.normalizeNonNegativeInteger(
-        input.shipping_amount ?? 0,
-        'shipping_amount',
-      ),
+      requestedShippingAmount:
+        input.shipping_amount === null || input.shipping_amount === undefined
+          ? null
+          : this.normalizeNonNegativeInteger(
+              input.shipping_amount,
+              'shipping_amount',
+            ),
+      shippingPostcode: this.normalizeOptionalPostcode(input.shipping_postcode),
+      shippingRequired,
+    };
+  }
+
+  private async buildCheckoutQuote(
+    profileId: string,
+    checkoutPayload: CheckoutPayload,
+  ): Promise<{ quote: any; shippingAmount: number }> {
+    const requestedShippingAmount = checkoutPayload.requestedShippingAmount;
+    const initialShippingAmount = requestedShippingAmount ?? 0;
+
+    let quote = await this.v2CatalogService.buildPriceQuote({
+      lines: checkoutPayload.lines,
+      campaign_id: checkoutPayload.campaignId || undefined,
+      coupon_code: checkoutPayload.couponCode || undefined,
+      channel: checkoutPayload.channel || undefined,
+      user_id: profileId,
+      shipping_amount: initialShippingAmount,
+    });
+
+    if (requestedShippingAmount !== null) {
+      return {
+        quote,
+        shippingAmount: requestedShippingAmount,
+      };
+    }
+
+    const summary = (quote?.summary || {}) as Record<string, unknown>;
+    const subtotalAmount = this.normalizeNonNegativeInteger(
+      summary.subtotal ?? 0,
+      'subtotal',
+    );
+
+    const computedShippingAmount = this.calculateShippingAmountByPolicy({
+      shippingRequired: checkoutPayload.shippingRequired,
+      subtotalAmount,
+      postcode: checkoutPayload.shippingPostcode,
+    });
+
+    if (computedShippingAmount !== initialShippingAmount) {
+      quote = await this.v2CatalogService.buildPriceQuote({
+        lines: checkoutPayload.lines,
+        campaign_id: checkoutPayload.campaignId || undefined,
+        coupon_code: checkoutPayload.couponCode || undefined,
+        channel: checkoutPayload.channel || undefined,
+        user_id: profileId,
+        shipping_amount: computedShippingAmount,
+      });
+    }
+
+    return {
+      quote,
+      shippingAmount: computedShippingAmount,
     };
   }
 
@@ -2279,6 +2362,50 @@ export class V2CheckoutService {
     return 'ETC';
   }
 
+  private calculateShippingAmountByPolicy(input: {
+    shippingRequired: boolean;
+    subtotalAmount: number;
+    postcode: string | null;
+  }): number {
+    if (!input.shippingRequired) {
+      return 0;
+    }
+
+    const baseFee =
+      input.subtotalAmount >= FREE_SHIPPING_THRESHOLD ? 0 : BASE_SHIPPING_FEE;
+    const extraFee = this.resolveExtraShippingFeeByPostcode(input.postcode);
+    return baseFee + extraFee;
+  }
+
+  private resolveExtraShippingFeeByPostcode(postcode: string | null): number {
+    if (!postcode) {
+      return 0;
+    }
+
+    const postcodeNumber = Number.parseInt(postcode, 10);
+    if (!Number.isInteger(postcodeNumber)) {
+      return 0;
+    }
+
+    if (this.isPostcodeInRanges(postcodeNumber, JEJU_POSTCODE_RANGES)) {
+      return JEJU_EXTRA_FEE;
+    }
+    if (this.isPostcodeInRanges(postcodeNumber, ISLAND_POSTCODE_RANGES)) {
+      return ISLAND_EXTRA_FEE;
+    }
+
+    return 0;
+  }
+
+  private isPostcodeInRanges(
+    postcodeNumber: number,
+    ranges: ReadonlyArray<readonly [number, number]>,
+  ): boolean {
+    return ranges.some(
+      ([start, end]) => postcodeNumber >= start && postcodeNumber <= end,
+    );
+  }
+
   private normalizeLineType(value?: string | null): V2OrderLineType {
     const normalized = this.normalizeOptionalText(value);
     if (
@@ -2344,6 +2471,20 @@ export class V2CheckoutService {
     }
     const normalized = value.trim();
     return normalized.length > 0 ? normalized : null;
+  }
+
+  private normalizeOptionalPostcode(value: unknown): string | null {
+    const normalized = this.normalizeOptionalText(value);
+    if (!normalized) {
+      return null;
+    }
+
+    const digitsOnly = normalized.replace(/\D/g, '');
+    if (!/^\d{5}$/.test(digitsOnly)) {
+      return null;
+    }
+
+    return digitsOnly;
   }
 
   private normalizeOptionalUuid(value: unknown): string | null {

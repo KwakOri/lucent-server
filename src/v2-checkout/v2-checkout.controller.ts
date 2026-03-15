@@ -37,6 +37,7 @@ interface ValidateV2CheckoutBody {
   coupon_code?: string | null;
   channel?: string | null;
   shipping_amount?: number | null;
+  shipping_postcode?: string | null;
 }
 
 interface CreateV2OrderBody {
@@ -45,6 +46,7 @@ interface CreateV2OrderBody {
   coupon_code?: string | null;
   channel?: string | null;
   shipping_amount?: number | null;
+  shipping_postcode?: string | null;
   currency_code?: string | null;
   customer_snapshot?: Record<string, unknown> | null;
   billing_address_snapshot?: Record<string, unknown> | null;
