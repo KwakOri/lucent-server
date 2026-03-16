@@ -1,6 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { forwardRef, Inject, Injectable } from '@nestjs/common';
 import { ApiException } from '../common/errors/api.exception';
 import { getSupabaseClient } from '../supabase/supabase.client';
+import {
+  V2AdminActionActor,
+  V2AdminActionExecutorService,
+} from './v2-admin-action-executor.service';
+import { V2FulfillmentService } from '../v2-fulfillment/v2-fulfillment.service';
 
 @Injectable()
 export class V2AdminService {
@@ -10,6 +15,12 @@ export class V2AdminService {
     'OPERATIONS',
     'ROLLBACK_READY',
   ] as const;
+
+  constructor(
+    private readonly v2AdminActionExecutorService: V2AdminActionExecutorService,
+    @Inject(forwardRef(() => V2FulfillmentService))
+    private readonly v2FulfillmentService: V2FulfillmentService,
+  ) {}
 
   private get supabase(): any {
     return getSupabaseClient() as any;
@@ -1620,70 +1631,55 @@ export class V2AdminService {
         execute: {
           queued_count: 0,
           action_log_ids: [],
+          logs: [],
+          summary: {
+            attempted_count: 0,
+            succeeded_count: 0,
+            pending_approval_count: 0,
+            failed_count: 0,
+          },
           note: '실행 가능한 대상이 없어 액션 로그를 생성하지 않았습니다.',
         },
       };
     }
 
-    const requiresApproval = actionKey === 'FULFILLMENT_ENTITLEMENT_REVOKE';
-    const actionLogRows = executableCandidates.map((candidate) => ({
-      action_key: actionKey,
-      domain: 'ORDER',
-      resource_type: candidate.resource_type,
-      resource_id: candidate.resource_id,
-      actor_id: actor.id,
-      actor_email_snapshot: actor.email,
-      request_id: requestId,
-      action_status: 'PENDING',
-      requires_approval: requiresApproval,
-      input_payload: {
-        mode,
-        source: 'ORDER_QUEUE_BULK_ACTION_SKELETON',
-        action_key: actionKey,
-        order_id: candidate.order_id,
-        order_no: candidate.order_no,
-        resource_type: candidate.resource_type,
-        resource_id: candidate.resource_id,
-        current_status: candidate.current_status,
-        reason: reason || null,
-      },
-      precheck_result: {
-        dry_run_validated: true,
-        candidate_resolved: true,
-      },
-      permission_result: {
-        admin_checked: true,
-        local_bypass: actor.isLocalBypass,
-      },
-      transition_result: {
-        transition_key: this.resolveBulkTransitionKey(actionKey),
-        from_state: candidate.current_status,
-      },
-      execution_result: {
-        queued_only: true,
-        skeleton: true,
-        reason:
-          '실제 상태 전이 연결 전 단계입니다. 후속 작업에서 도메인 executor와 연동됩니다.',
-      },
-      metadata: {
-        ...metadata,
-        bulk_reason: reason || null,
-        bulk_requested_at: now,
-      },
-    }));
-
-    const { data: inserted, error: insertError } = await this.supabase
-      .from('v2_admin_action_logs')
-      .insert(actionLogRows)
-      .select('id, resource_type, resource_id, action_status, requires_approval, created_at');
-
-    if (insertError) {
-      throw new ApiException(
-        'bulk action log 생성 실패',
-        500,
-        'V2_ADMIN_BULK_ACTION_LOG_CREATE_FAILED',
-      );
+    const executionLogs: any[] = [];
+    for (let index = 0; index < executableCandidates.length; index += 1) {
+      const candidate = executableCandidates[index];
+      const candidateRequestId = this.buildBulkCandidateRequestId({
+        actionKey,
+        baseRequestId: requestId,
+        candidate,
+        index,
+      });
+      const executionLog = await this.executeBulkCandidate({
+        actionKey,
+        actor,
+        candidate,
+        reason,
+        metadata,
+        now,
+        candidateRequestId,
+      });
+      executionLogs.push(executionLog);
     }
+
+    const actionLogIds = Array.from(
+      new Set(
+        executionLogs
+          .map((item) => this.normalizeOptionalText(item.action_log_id))
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+    const succeededCount = executionLogs.filter(
+      (item) => item.status === 'SUCCEEDED',
+    ).length;
+    const pendingApprovalCount = executionLogs.filter(
+      (item) => item.status === 'PENDING_APPROVAL',
+    ).length;
+    const failedCount = executionLogs.filter(
+      (item) => item.status === 'FAILED',
+    ).length;
 
     return {
       mode,
@@ -1692,10 +1688,19 @@ export class V2AdminService {
       summary,
       rows,
       execute: {
-        queued_count: inserted?.length || 0,
-        action_log_ids: (inserted || []).map((row: any) => row.id).filter(Boolean),
-        logs: inserted || [],
-        note: '현재 execute는 action log enqueue 스켈레톤 단계입니다.',
+        queued_count: actionLogIds.length,
+        action_log_ids: actionLogIds,
+        logs: executionLogs,
+        summary: {
+          attempted_count: executionLogs.length,
+          succeeded_count: succeededCount,
+          pending_approval_count: pendingApprovalCount,
+          failed_count: failedCount,
+        },
+        note:
+          pendingApprovalCount > 0
+            ? '승인 대상 액션은 PENDING_APPROVAL로 기록되었습니다.'
+            : '실행 가능한 대상에 대해 액션이 실행되었습니다.',
       },
     };
   }
@@ -2279,6 +2284,251 @@ export class V2AdminService {
       return 'ENTITLEMENT_REVOKE';
     }
     return 'ORDER_BULK_ACTION_REQUESTED';
+  }
+
+  private async executeBulkCandidate(input: {
+    actionKey: string;
+    actor: V2AdminActionActor;
+    candidate: {
+      order_id: string;
+      order_no: string | null;
+      resource_type: 'SHIPMENT' | 'DIGITAL_ENTITLEMENT';
+      resource_id: string;
+      current_status: string | null;
+      transition_key: string;
+    };
+    reason: string | null;
+    metadata: Record<string, unknown>;
+    now: string;
+    candidateRequestId: string;
+  }): Promise<any> {
+    const payload = {
+      source: 'ORDER_QUEUE_BULK_ACTION',
+      action_key: input.actionKey,
+      order_id: input.candidate.order_id,
+      order_no: input.candidate.order_no,
+      resource_type: input.candidate.resource_type,
+      resource_id: input.candidate.resource_id,
+      current_status: input.candidate.current_status,
+      reason: input.reason,
+      bulk_requested_at: input.now,
+      metadata: input.metadata,
+    } as const;
+
+    try {
+      if (input.actionKey === 'FULFILLMENT_SHIPMENT_DISPATCH') {
+        const execution = await this.v2AdminActionExecutorService.execute({
+          actionKey: input.actionKey,
+          domain: 'FULFILLMENT',
+          actor: input.actor,
+          requiredPermissionCode: 'FULFILLMENT_EXECUTE',
+          resourceType: 'SHIPMENT',
+          resourceId: input.candidate.resource_id,
+          requestId: input.candidateRequestId,
+          inputPayload: payload,
+          transition: () => ({
+            transitionKey: input.candidate.transition_key,
+            fromState: input.candidate.current_status,
+            toState: 'SHIPPED',
+            reason: input.reason,
+          }),
+          execute: () =>
+            this.v2FulfillmentService.dispatchShipment(input.candidate.resource_id, {
+              metadata: {
+                source: 'ORDER_QUEUE_BULK_ACTION',
+                order_id: input.candidate.order_id,
+                order_no: input.candidate.order_no,
+                bulk_reason: input.reason,
+              },
+            }),
+        });
+
+        return {
+          status: 'SUCCEEDED',
+          order_id: input.candidate.order_id,
+          order_no: input.candidate.order_no,
+          resource_type: input.candidate.resource_type,
+          resource_id: input.candidate.resource_id,
+          action_log_id: execution.action_log_id,
+          result: execution.result,
+        };
+      }
+
+      if (input.actionKey === 'FULFILLMENT_ENTITLEMENT_REISSUE') {
+        const execution = await this.v2AdminActionExecutorService.execute({
+          actionKey: input.actionKey,
+          domain: 'FULFILLMENT',
+          actor: input.actor,
+          requiredPermissionCode: 'ENTITLEMENT_REISSUE',
+          resourceType: 'DIGITAL_ENTITLEMENT',
+          resourceId: input.candidate.resource_id,
+          requestId: input.candidateRequestId,
+          inputPayload: payload,
+          transition: () => ({
+            transitionKey: input.candidate.transition_key,
+            fromState: input.candidate.current_status,
+            toState: 'GRANTED',
+            reason: input.reason,
+          }),
+          execute: () =>
+            this.v2FulfillmentService.reissueEntitlement(input.candidate.resource_id, {
+              metadata: {
+                source: 'ORDER_QUEUE_BULK_ACTION',
+                order_id: input.candidate.order_id,
+                order_no: input.candidate.order_no,
+                bulk_reason: input.reason,
+              },
+            }),
+        });
+
+        return {
+          status: 'SUCCEEDED',
+          order_id: input.candidate.order_id,
+          order_no: input.candidate.order_no,
+          resource_type: input.candidate.resource_type,
+          resource_id: input.candidate.resource_id,
+          action_log_id: execution.action_log_id,
+          result: execution.result,
+        };
+      }
+
+      if (input.actionKey === 'FULFILLMENT_ENTITLEMENT_REVOKE') {
+        const execution = await this.v2AdminActionExecutorService.execute({
+          actionKey: input.actionKey,
+          domain: 'FULFILLMENT',
+          actor: input.actor,
+          requiredPermissionCode: 'ENTITLEMENT_REISSUE',
+          approval: {
+            required: true,
+            assigneeRoleCode: 'OPS_MANAGER',
+            reason: input.reason,
+            metadata: {
+              source: 'ORDER_QUEUE_BULK_ACTION',
+              order_id: input.candidate.order_id,
+              order_no: input.candidate.order_no,
+            },
+          },
+          resourceType: 'DIGITAL_ENTITLEMENT',
+          resourceId: input.candidate.resource_id,
+          requestId: input.candidateRequestId,
+          inputPayload: payload,
+          transition: () => ({
+            transitionKey: input.candidate.transition_key,
+            fromState: input.candidate.current_status,
+            toState: 'REVOKED',
+            reason: input.reason,
+          }),
+          execute: () =>
+            this.v2FulfillmentService.revokeEntitlement(input.candidate.resource_id, {
+              reason: input.reason || undefined,
+              metadata: {
+                source: 'ORDER_QUEUE_BULK_ACTION',
+                order_id: input.candidate.order_id,
+                order_no: input.candidate.order_no,
+                bulk_reason: input.reason,
+              },
+            }),
+        });
+
+        return {
+          status: 'SUCCEEDED',
+          order_id: input.candidate.order_id,
+          order_no: input.candidate.order_no,
+          resource_type: input.candidate.resource_type,
+          resource_id: input.candidate.resource_id,
+          action_log_id: execution.action_log_id,
+          result: execution.result,
+        };
+      }
+
+      throw new ApiException(
+        `지원하지 않는 bulk action_key 입니다: ${input.actionKey}`,
+        400,
+        'V2_ADMIN_BULK_ACTION_UNSUPPORTED',
+      );
+    } catch (error) {
+      const parsed = this.parseBulkExecutionError(error);
+      const actionLogId = await this.findActionLogIdByRequestId(
+        input.candidateRequestId,
+      );
+      const pendingApproval = parsed.error_code === 'V2_ADMIN_APPROVAL_REQUIRED';
+
+      return {
+        status: pendingApproval ? 'PENDING_APPROVAL' : 'FAILED',
+        order_id: input.candidate.order_id,
+        order_no: input.candidate.order_no,
+        resource_type: input.candidate.resource_type,
+        resource_id: input.candidate.resource_id,
+        action_log_id: actionLogId,
+        error_code: parsed.error_code,
+        error_message: parsed.message,
+      };
+    }
+  }
+
+  private buildBulkCandidateRequestId(input: {
+    actionKey: string;
+    baseRequestId: string | null;
+    candidate: {
+      order_id: string;
+      resource_id: string;
+    };
+    index: number;
+  }): string {
+    const base =
+      this.normalizeOptionalText(input.baseRequestId) ||
+      `bulk-${input.actionKey.toLowerCase()}-${Date.now()}`;
+    return `${base}:${input.candidate.order_id}:${input.candidate.resource_id}:${input.index}`;
+  }
+
+  private async findActionLogIdByRequestId(
+    requestId: string,
+  ): Promise<string | null> {
+    const { data, error } = await this.supabase
+      .from('v2_admin_action_logs')
+      .select('id, created_at')
+      .eq('request_id', requestId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !data?.id) {
+      return null;
+    }
+    return data.id as string;
+  }
+
+  private parseBulkExecutionError(error: unknown): {
+    error_code: string;
+    message: string;
+  } {
+    if (error instanceof ApiException) {
+      const response = error.getResponse() as
+        | string
+        | { message?: string; errorCode?: string };
+      if (typeof response === 'string') {
+        return {
+          error_code: 'API_EXCEPTION',
+          message: response,
+        };
+      }
+      return {
+        error_code: response?.errorCode || 'API_EXCEPTION',
+        message: response?.message || 'bulk 실행 중 오류가 발생했습니다',
+      };
+    }
+
+    if (error instanceof Error) {
+      return {
+        error_code: 'UNEXPECTED_ERROR',
+        message: error.message,
+      };
+    }
+
+    return {
+      error_code: 'UNEXPECTED_ERROR',
+      message: 'bulk 실행 중 알 수 없는 오류가 발생했습니다',
+    };
   }
 
   private parseBoolean(raw?: string): boolean {
