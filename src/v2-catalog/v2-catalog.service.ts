@@ -565,6 +565,16 @@ interface GetV2ShopProductsInput {
   campaign_id?: string | null;
 }
 
+interface GetV2ShopCampaignsInput {
+  channel?: string | null;
+  include_upcoming?: boolean;
+}
+
+interface GetV2ShopCouponsInput {
+  campaign_id?: string | null;
+  channel?: string | null;
+}
+
 interface GetV2ShopProductDetailInput {
   channel?: string | null;
   campaign_id?: string | null;
@@ -587,14 +597,6 @@ interface MigrationCheckResult {
   expected: string;
   actual: string;
   detail: string;
-}
-
-interface ReadSwitchChecklistItem {
-  key: string;
-  passed: boolean;
-  severity: 'BLOCKING' | 'ADVISORY';
-  detail: string;
-  action: string;
 }
 
 interface ReadSwitchRemediationTask {
@@ -1175,6 +1177,154 @@ export class V2CatalogService {
         total,
       },
     };
+  }
+
+  async getShopCampaigns(input: GetV2ShopCampaignsInput = {}): Promise<any[]> {
+    const nowIso = new Date().toISOString();
+    const channel = this.normalizeOptionalText(input.channel);
+    const includeUpcoming = input.include_upcoming ?? false;
+
+    const { data, error } = await this.supabase
+      .from('v2_campaigns')
+      .select(
+        'id,code,name,description,campaign_type,status,starts_at,ends_at,channel_scope_json',
+      )
+      .eq('status', 'ACTIVE')
+      .is('deleted_at', null)
+      .order('starts_at', { ascending: true, nullsFirst: true })
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      throw new ApiException(
+        'v2 shop campaign 목록 조회 실패',
+        500,
+        'V2_SHOP_CAMPAIGNS_FETCH_FAILED',
+      );
+    }
+
+    return (data || []).filter((campaign: any) => {
+      if (!this.matchesChannelScope(campaign.channel_scope_json, channel)) {
+        return false;
+      }
+
+      if (includeUpcoming) {
+        if (
+          campaign.ends_at &&
+          new Date(campaign.ends_at).getTime() < new Date(nowIso).getTime()
+        ) {
+          return false;
+        }
+        return true;
+      }
+
+      return this.isTimestampInRange(campaign.starts_at, campaign.ends_at, nowIso);
+    });
+  }
+
+  async getShopCoupons(input: GetV2ShopCouponsInput = {}): Promise<any[]> {
+    const nowIso = new Date().toISOString();
+    const campaignId = this.normalizeOptionalText(input.campaign_id);
+    const channel = this.normalizeOptionalText(input.channel);
+
+    const { data, error } = await this.supabase
+      .from('v2_coupons')
+      .select(
+        `
+        id,
+        code,
+        status,
+        starts_at,
+        ends_at,
+        max_issuance,
+        max_redemptions_per_user,
+        reserved_count,
+        redeemed_count,
+        channel_scope_json,
+        promotion:v2_promotions(
+          id,
+          name,
+          campaign_id,
+          status,
+          starts_at,
+          ends_at,
+          channel_scope_json
+        )
+      `,
+      )
+      .eq('status', 'ACTIVE')
+      .is('deleted_at', null)
+      .order('updated_at', { ascending: false });
+
+    if (error) {
+      throw new ApiException(
+        'v2 shop coupon 목록 조회 실패',
+        500,
+        'V2_SHOP_COUPONS_FETCH_FAILED',
+      );
+    }
+
+    return (data || [])
+      .filter((coupon: any) => {
+        if (!this.isTimestampInRange(coupon.starts_at, coupon.ends_at, nowIso)) {
+          return false;
+        }
+        if (!this.matchesChannelScope(coupon.channel_scope_json, channel)) {
+          return false;
+        }
+
+        const promotion = coupon.promotion;
+        if (!promotion || promotion.status !== 'ACTIVE') {
+          return false;
+        }
+        if (!this.isTimestampInRange(promotion.starts_at, promotion.ends_at, nowIso)) {
+          return false;
+        }
+        if (!this.matchesChannelScope(promotion.channel_scope_json, channel)) {
+          return false;
+        }
+        if (
+          campaignId &&
+          promotion.campaign_id &&
+          promotion.campaign_id !== campaignId
+        ) {
+          return false;
+        }
+
+        const maxIssuance = coupon.max_issuance as number | null;
+        const reservedCount = (coupon.reserved_count as number) ?? 0;
+        const redeemedCount = (coupon.redeemed_count as number) ?? 0;
+        if (
+          maxIssuance !== null &&
+          maxIssuance !== undefined &&
+          reservedCount + redeemedCount >= maxIssuance
+        ) {
+          return false;
+        }
+        return true;
+      })
+      .map((coupon: any) => {
+        const maxIssuance = coupon.max_issuance as number | null;
+        const reservedCount = (coupon.reserved_count as number) ?? 0;
+        const redeemedCount = (coupon.redeemed_count as number) ?? 0;
+        return {
+          id: coupon.id,
+          code: coupon.code,
+          status: coupon.status,
+          starts_at: coupon.starts_at,
+          ends_at: coupon.ends_at,
+          max_issuance: maxIssuance,
+          max_redemptions_per_user: coupon.max_redemptions_per_user ?? 1,
+          reserved_count: reservedCount,
+          redeemed_count: redeemedCount,
+          available_issuance:
+            maxIssuance === null || maxIssuance === undefined
+              ? null
+              : Math.max(0, maxIssuance - (reservedCount + redeemedCount)),
+          promotion_id: coupon.promotion.id,
+          promotion_name: coupon.promotion.name,
+          campaign_id: coupon.promotion.campaign_id,
+        };
+      });
   }
 
   async getShopProductDetail(
@@ -7226,7 +7376,7 @@ export class V2CatalogService {
     if (totalWeight <= 0) {
       const base = Math.floor(totalAmount / weights.length);
       let remainder = totalAmount - base * weights.length;
-      return weights.map((_, index) => {
+      return weights.map(() => {
         if (remainder > 0) {
           remainder -= 1;
           return base + 1;
