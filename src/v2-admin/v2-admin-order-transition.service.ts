@@ -10,12 +10,14 @@ import {
 
 type V2OrderLinearStage =
   | 'PAYMENT_PENDING'
+  | 'PAYMENT_CONFIRMED'
   | 'PRODUCTION'
   | 'READY_TO_SHIP'
   | 'IN_TRANSIT'
   | 'DELIVERED';
 
 type V2OrderTransitionActionKey =
+  | 'ORDER_PAYMENT_MARK_AUTHORIZED'
   | 'ORDER_PAYMENT_MARK_CAPTURED'
   | 'FULFILLMENT_SHIPMENT_DISPATCH'
   | 'FULFILLMENT_SHIPMENT_DELIVER'
@@ -75,18 +77,14 @@ interface ShipmentRow {
 
 const LINEAR_STAGE_ORDER: V2OrderLinearStage[] = [
   'PAYMENT_PENDING',
+  'PAYMENT_CONFIRMED',
   'PRODUCTION',
   'READY_TO_SHIP',
   'IN_TRANSIT',
   'DELIVERED',
 ];
 
-const PAYMENT_CAPTURED_STATUSES = new Set([
-  'AUTHORIZED',
-  'CAPTURED',
-  'PARTIALLY_REFUNDED',
-  'REFUNDED',
-]);
+const PAYMENT_CAPTURED_STATUSES = new Set(['CAPTURED', 'PARTIALLY_REFUNDED', 'REFUNDED']);
 
 @Injectable()
 export class V2AdminOrderTransitionService {
@@ -308,9 +306,10 @@ export class V2AdminOrderTransitionService {
       );
     }
 
-    const paymentNeedsCapture = !PAYMENT_CAPTURED_STATUSES.has(
-      statuses.payment_status,
-    );
+    const paymentStatus = String(statuses.payment_status || '').toUpperCase();
+    const paymentNeedsAuthorize =
+      paymentStatus === 'PENDING' || paymentStatus === 'FAILED';
+    const paymentNeedsCapture = !PAYMENT_CAPTURED_STATUSES.has(paymentStatus);
 
     const addAction = (action: Omit<OrderLinearTransitionAction, 'sequence'>) => {
       actions.push({
@@ -320,23 +319,65 @@ export class V2AdminOrderTransitionService {
       sequence += 1;
     };
 
+    const addPaymentActionsUpToCaptured = () => {
+      if (paymentNeedsAuthorize) {
+        addAction({
+          action_key: 'ORDER_PAYMENT_MARK_AUTHORIZED',
+          resource_type: 'ORDER',
+          resource_id: input.order.id,
+          from_state: statuses.payment_status,
+          to_state: 'AUTHORIZED',
+          requires_approval: false,
+          note: '입금 확인(결제 AUTHORIZED) 처리',
+        });
+      }
+
+      if (paymentNeedsCapture) {
+        addAction({
+          action_key: 'ORDER_PAYMENT_MARK_CAPTURED',
+          resource_type: 'ORDER',
+          resource_id: input.order.id,
+          from_state: paymentNeedsAuthorize ? 'AUTHORIZED' : statuses.payment_status,
+          to_state: 'CAPTURED',
+          requires_approval: false,
+          note: '결제 확정(CAPTURED) 처리',
+        });
+      }
+    };
+
     const shipmentStatus = (shipment: ShipmentRow) =>
       String(shipment.shipment_status || '').toUpperCase();
     const entitlementStatus = (entitlement: EntitlementRow) =>
       String(entitlement.status || '').toUpperCase();
 
     if (blockedReasons.length === 0) {
-      if (input.targetStage === 'PRODUCTION') {
-        if (paymentNeedsCapture) {
+      if (paymentStatus === 'CANCELED' && input.targetStage !== 'PAYMENT_PENDING') {
+        blockedReasons.push(
+          '결제 상태가 CANCELED인 주문은 선형 단계 전환을 자동 실행할 수 없습니다.',
+        );
+      }
+
+      if (input.targetStage === 'PAYMENT_CONFIRMED') {
+        if (paymentNeedsAuthorize) {
           addAction({
-            action_key: 'ORDER_PAYMENT_MARK_CAPTURED',
+            action_key: 'ORDER_PAYMENT_MARK_AUTHORIZED',
             resource_type: 'ORDER',
             resource_id: input.order.id,
             from_state: statuses.payment_status,
-            to_state: 'CAPTURED',
+            to_state: 'AUTHORIZED',
             requires_approval: false,
-            note: '입금 확인(결제 CAPTURED) 처리',
+            note: '입금 확인(결제 AUTHORIZED) 처리',
           });
+        } else if (paymentStatus !== 'AUTHORIZED') {
+          blockedReasons.push(
+            `현재 결제 상태(${paymentStatus})에서는 입금 확인 단계로 전환할 수 없습니다.`,
+          );
+        }
+      }
+
+      if (input.targetStage === 'PRODUCTION') {
+        if (paymentNeedsCapture) {
+          addPaymentActionsUpToCaptured();
         }
       }
 
@@ -349,15 +390,7 @@ export class V2AdminOrderTransitionService {
           blockedReasons.push('실물 shipment가 없어 배송 대기 전환을 수행할 수 없습니다.');
         } else {
           if (paymentNeedsCapture) {
-            addAction({
-              action_key: 'ORDER_PAYMENT_MARK_CAPTURED',
-              resource_type: 'ORDER',
-              resource_id: input.order.id,
-              from_state: statuses.payment_status,
-              to_state: 'CAPTURED',
-              requires_approval: false,
-              note: '입금 확인(결제 CAPTURED) 처리',
-            });
+            addPaymentActionsUpToCaptured();
           }
 
           for (const shipment of input.shipments) {
@@ -380,15 +413,7 @@ export class V2AdminOrderTransitionService {
           blockedReasons.push('실물 shipment가 없어 배송 중 전환을 수행할 수 없습니다.');
         } else {
           if (paymentNeedsCapture) {
-            addAction({
-              action_key: 'ORDER_PAYMENT_MARK_CAPTURED',
-              resource_type: 'ORDER',
-              resource_id: input.order.id,
-              from_state: statuses.payment_status,
-              to_state: 'CAPTURED',
-              requires_approval: false,
-              note: '입금 확인(결제 CAPTURED) 처리',
-            });
+            addPaymentActionsUpToCaptured();
           }
 
           for (const shipment of input.shipments) {
@@ -414,15 +439,7 @@ export class V2AdminOrderTransitionService {
 
       if (input.targetStage === 'DELIVERED') {
         if (paymentNeedsCapture) {
-          addAction({
-            action_key: 'ORDER_PAYMENT_MARK_CAPTURED',
-            resource_type: 'ORDER',
-            resource_id: input.order.id,
-            from_state: statuses.payment_status,
-            to_state: 'CAPTURED',
-            requires_approval: false,
-            note: '입금 확인(결제 CAPTURED) 처리',
-          });
+          addPaymentActionsUpToCaptured();
         }
 
         if (composition.has_physical) {
@@ -526,6 +543,9 @@ export class V2AdminOrderTransitionService {
     entitlements: EntitlementRow[];
   }): V2OrderLinearStage {
     const paymentStatus = String(input.paymentStatus || '').toUpperCase();
+    if (paymentStatus === 'AUTHORIZED') {
+      return 'PAYMENT_CONFIRMED';
+    }
     if (!PAYMENT_CAPTURED_STATUSES.has(paymentStatus)) {
       return 'PAYMENT_PENDING';
     }
@@ -597,6 +617,53 @@ export class V2AdminOrderTransitionService {
     });
 
     try {
+      if (input.action.action_key === 'ORDER_PAYMENT_MARK_AUTHORIZED') {
+        const execution = await this.v2AdminActionExecutorService.execute({
+          actionKey: 'ORDER_PAYMENT_MARK_AUTHORIZED',
+          domain: 'ORDER',
+          actor: input.actor,
+          resourceType: 'ORDER',
+          resourceId: input.action.resource_id,
+          requestId: actionRequestId,
+          inputPayload: {
+            source: 'ORDER_LINEAR_STAGE_TRANSITION',
+            order_id: input.row.order_id,
+            order_no: input.row.order_no,
+            target_stage: input.targetStage,
+            reason: input.reason,
+            metadata: input.metadata,
+          },
+          transition: () => ({
+            transitionKey: 'ORDER_PAYMENT_AUTHORIZE',
+            fromState: input.action.from_state,
+            toState: input.action.to_state,
+            reason: input.reason,
+          }),
+          execute: () =>
+            this.v2CheckoutService.applyPaymentCallback(input.row.order_id, {
+              external_reference: `ADMIN-LINEAR-${Date.now()}-${input.row.order_id}`,
+              status: 'AUTHORIZED',
+              provider: 'MANUAL',
+              method: 'MANUAL',
+              metadata: {
+                source: 'ORDER_LINEAR_STAGE_TRANSITION',
+                target_stage: input.targetStage,
+                reason: input.reason,
+                order_no: input.row.order_no,
+              },
+            }),
+        });
+        return {
+          status: 'SUCCEEDED',
+          order_id: input.row.order_id,
+          order_no: input.row.order_no,
+          action_key: input.action.action_key,
+          resource_type: input.action.resource_type,
+          resource_id: input.action.resource_id,
+          action_log_id: execution.action_log_id,
+        };
+      }
+
       if (input.action.action_key === 'ORDER_PAYMENT_MARK_CAPTURED') {
         const execution = await this.v2AdminActionExecutorService.execute({
           actionKey: 'ORDER_PAYMENT_MARK_CAPTURED',
@@ -1059,6 +1126,9 @@ export class V2AdminOrderTransitionService {
   private linearStageLabel(stage: V2OrderLinearStage): string {
     if (stage === 'PAYMENT_PENDING') {
       return '입금 대기';
+    }
+    if (stage === 'PAYMENT_CONFIRMED') {
+      return '입금 확인';
     }
     if (stage === 'PRODUCTION') {
       return '제작중';
