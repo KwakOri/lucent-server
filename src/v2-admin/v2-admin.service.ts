@@ -86,6 +86,16 @@ export class V2AdminService {
               endpoint: 'POST /api/v2/checkout/orders/:orderId/refund',
               transition_key: 'ORDER_REFUND',
             },
+            {
+              action_key: 'ORDER_QUEUE_BULK_ACTION',
+              domain: 'ORDER',
+              resource_type: 'ORDER',
+              required_permission_code: null,
+              requires_approval: false,
+              approval_role_code: null,
+              endpoint: 'POST /api/v2/admin/ops/orders/bulk-actions',
+              transition_key: 'ORDER_BULK_ACTION_REQUESTED',
+            },
           ],
         },
         {
@@ -1521,6 +1531,175 @@ export class V2AdminService {
     };
   }
 
+  async bulkOrderQueueAction(input: {
+    mode?: string;
+    actionKey?: string;
+    orderIds?: string[];
+    reason?: string | null;
+    requestId?: string | null;
+    previewLimit?: string | number;
+    metadata?: Record<string, unknown> | null;
+    actor?: {
+      id?: string | null;
+      email?: string | null;
+      isLocalBypass?: boolean;
+    };
+  }): Promise<any> {
+    const mode = this.normalizeBulkActionMode(input.mode);
+    const actionKey = this.normalizeBulkActionKey(input.actionKey);
+    const orderIds = this.normalizeBulkOrderIds(input.orderIds);
+    const previewLimit = this.normalizeBulkPreviewLimit(input.previewLimit);
+    const reason = this.normalizeOptionalText(input.reason);
+    const requestId = this.normalizeOptionalText(input.requestId);
+    const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
+    const actor = this.normalizeBulkActor(input.actor);
+    const now = new Date().toISOString();
+
+    const ordersById = await this.fetchBulkTargetOrders(orderIds);
+    const candidatesByOrderId = await this.resolveBulkCandidatesByOrder({
+      actionKey,
+      orderIds,
+      previewLimit,
+    });
+
+    const rows = orderIds.map((orderId) => {
+      const order = ordersById.get(orderId) || null;
+      const candidates = candidatesByOrderId.get(orderId) || [];
+      return {
+        order_id: orderId,
+        order_no: order?.order_no || null,
+        exists: Boolean(order),
+        statuses: order
+          ? {
+              order_status: order.order_status,
+              payment_status: order.payment_status,
+              fulfillment_status: order.fulfillment_status,
+            }
+          : null,
+        candidate_count: candidates.length,
+        candidates: candidates.slice(0, previewLimit),
+      };
+    });
+
+    const summary = {
+      requested_order_count: orderIds.length,
+      found_order_count: rows.filter((row) => row.exists).length,
+      missing_order_count: rows.filter((row) => !row.exists).length,
+      candidate_count: rows.reduce(
+        (sum, row) => sum + Number(row.candidate_count || 0),
+        0,
+      ),
+    };
+
+    if (mode === 'DRY_RUN') {
+      return {
+        mode,
+        action_key: actionKey,
+        requested_at: now,
+        summary,
+        rows,
+      };
+    }
+
+    const executableCandidates = rows
+      .filter((row) => row.exists)
+      .flatMap((row) =>
+        (row.candidates || []).map((candidate: any) => ({
+          ...candidate,
+          order_id: row.order_id,
+          order_no: row.order_no,
+        })),
+      );
+
+    if (executableCandidates.length === 0) {
+      return {
+        mode,
+        action_key: actionKey,
+        requested_at: now,
+        summary,
+        execute: {
+          queued_count: 0,
+          action_log_ids: [],
+          note: '실행 가능한 대상이 없어 액션 로그를 생성하지 않았습니다.',
+        },
+      };
+    }
+
+    const requiresApproval = actionKey === 'FULFILLMENT_ENTITLEMENT_REVOKE';
+    const actionLogRows = executableCandidates.map((candidate) => ({
+      action_key: actionKey,
+      domain: 'ORDER',
+      resource_type: candidate.resource_type,
+      resource_id: candidate.resource_id,
+      actor_id: actor.id,
+      actor_email_snapshot: actor.email,
+      request_id: requestId,
+      action_status: 'PENDING',
+      requires_approval: requiresApproval,
+      input_payload: {
+        mode,
+        source: 'ORDER_QUEUE_BULK_ACTION_SKELETON',
+        action_key: actionKey,
+        order_id: candidate.order_id,
+        order_no: candidate.order_no,
+        resource_type: candidate.resource_type,
+        resource_id: candidate.resource_id,
+        current_status: candidate.current_status,
+        reason: reason || null,
+      },
+      precheck_result: {
+        dry_run_validated: true,
+        candidate_resolved: true,
+      },
+      permission_result: {
+        admin_checked: true,
+        local_bypass: actor.isLocalBypass,
+      },
+      transition_result: {
+        transition_key: this.resolveBulkTransitionKey(actionKey),
+        from_state: candidate.current_status,
+      },
+      execution_result: {
+        queued_only: true,
+        skeleton: true,
+        reason:
+          '실제 상태 전이 연결 전 단계입니다. 후속 작업에서 도메인 executor와 연동됩니다.',
+      },
+      metadata: {
+        ...metadata,
+        bulk_reason: reason || null,
+        bulk_requested_at: now,
+      },
+    }));
+
+    const { data: inserted, error: insertError } = await this.supabase
+      .from('v2_admin_action_logs')
+      .insert(actionLogRows)
+      .select('id, resource_type, resource_id, action_status, requires_approval, created_at');
+
+    if (insertError) {
+      throw new ApiException(
+        'bulk action log 생성 실패',
+        500,
+        'V2_ADMIN_BULK_ACTION_LOG_CREATE_FAILED',
+      );
+    }
+
+    return {
+      mode,
+      action_key: actionKey,
+      requested_at: now,
+      summary,
+      rows,
+      execute: {
+        queued_count: inserted?.length || 0,
+        action_log_ids: (inserted || []).map((row: any) => row.id).filter(Boolean),
+        logs: inserted || [],
+        note: '현재 execute는 action log enqueue 스켈레톤 단계입니다.',
+      },
+    };
+  }
+
   async getOrderDetail(orderId: string): Promise<any> {
     const normalizedOrderId = this.normalizeRequiredText(
       orderId,
@@ -1878,6 +2057,230 @@ export class V2AdminService {
     return Math.max(1, Math.min(100, parsed));
   }
 
+  private normalizeBulkActionMode(raw?: string): 'DRY_RUN' | 'EXECUTE' {
+    const normalized = this.normalizeOptionalText(raw)?.toUpperCase();
+    if (normalized === 'EXECUTE') {
+      return 'EXECUTE';
+    }
+    return 'DRY_RUN';
+  }
+
+  private normalizeBulkActionKey(raw?: string): string {
+    const normalized = this.normalizeRequiredText(
+      raw,
+      'action_key가 필요합니다',
+    ).toUpperCase();
+    const supported = new Set([
+      'FULFILLMENT_SHIPMENT_DISPATCH',
+      'FULFILLMENT_ENTITLEMENT_REISSUE',
+      'FULFILLMENT_ENTITLEMENT_REVOKE',
+    ]);
+    if (!supported.has(normalized)) {
+      throw new ApiException(
+        `지원하지 않는 bulk action_key 입니다: ${normalized}`,
+        400,
+        'V2_ADMIN_BULK_ACTION_UNSUPPORTED',
+      );
+    }
+    return normalized;
+  }
+
+  private normalizeBulkOrderIds(raw?: string[]): string[] {
+    if (!Array.isArray(raw) || raw.length === 0) {
+      throw new ApiException(
+        'order_ids 배열이 필요합니다',
+        400,
+        'V2_ADMIN_BULK_ORDER_IDS_REQUIRED',
+      );
+    }
+
+    const deduped = Array.from(
+      new Set(
+        raw
+          .map((value) => this.normalizeOptionalText(value))
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+
+    if (deduped.length === 0) {
+      throw new ApiException(
+        '유효한 order_id가 없습니다',
+        400,
+        'V2_ADMIN_BULK_ORDER_IDS_REQUIRED',
+      );
+    }
+    if (deduped.length > 200) {
+      throw new ApiException(
+        'order_ids는 최대 200개까지 허용됩니다',
+        400,
+        'V2_ADMIN_BULK_ORDER_IDS_TOO_MANY',
+      );
+    }
+
+    for (const orderId of deduped) {
+      if (!this.isUuid(orderId)) {
+        throw new ApiException(
+          `order_id UUID 형식이 올바르지 않습니다: ${orderId}`,
+          400,
+          'V2_ADMIN_BULK_ORDER_ID_INVALID',
+        );
+      }
+    }
+
+    return deduped;
+  }
+
+  private normalizeBulkPreviewLimit(raw?: string | number): number {
+    if (raw === undefined || raw === null) {
+      return 20;
+    }
+    const parsed =
+      typeof raw === 'number' ? Math.trunc(raw) : Number.parseInt(String(raw), 10);
+    if (Number.isNaN(parsed)) {
+      return 20;
+    }
+    return Math.max(1, Math.min(100, parsed));
+  }
+
+  private normalizeBulkActor(input?: {
+    id?: string | null;
+    email?: string | null;
+    isLocalBypass?: boolean;
+  }): {
+    id: string | null;
+    email: string | null;
+    isLocalBypass: boolean;
+  } {
+    const actorId = this.normalizeOptionalText(input?.id || null);
+    return {
+      id: actorId && this.isUuid(actorId) ? actorId : null,
+      email: this.normalizeOptionalText(input?.email || null),
+      isLocalBypass: Boolean(input?.isLocalBypass),
+    };
+  }
+
+  private async fetchBulkTargetOrders(orderIds: string[]): Promise<Map<string, any>> {
+    const { data, error } = await this.supabase
+      .from('v2_orders')
+      .select('id, order_no, order_status, payment_status, fulfillment_status')
+      .in('id', orderIds);
+
+    if (error) {
+      throw new ApiException(
+        'bulk 대상 주문 조회 실패',
+        500,
+        'V2_ADMIN_BULK_ORDERS_FETCH_FAILED',
+      );
+    }
+
+    const map = new Map<string, any>();
+    for (const row of data || []) {
+      if (row?.id) {
+        map.set(row.id as string, row);
+      }
+    }
+    return map;
+  }
+
+  private async resolveBulkCandidatesByOrder(input: {
+    actionKey: string;
+    orderIds: string[];
+    previewLimit: number;
+  }): Promise<Map<string, any[]>> {
+    const result = new Map<string, any[]>();
+    const pushCandidate = (orderId: string, candidate: any) => {
+      const list = result.get(orderId) || [];
+      if (list.length >= input.previewLimit) {
+        result.set(orderId, list);
+        return;
+      }
+      list.push(candidate);
+      result.set(orderId, list);
+    };
+
+    if (input.actionKey === 'FULFILLMENT_SHIPMENT_DISPATCH') {
+      const { data, error } = await this.supabase
+        .from('v2_admin_fulfillment_queue_view')
+        .select('order_id, shipment_id, shipment_status')
+        .in('order_id', input.orderIds)
+        .eq('fulfillment_kind', 'SHIPMENT')
+        .in('shipment_status', ['READY_TO_PACK', 'PACKING']);
+
+      if (error) {
+        throw new ApiException(
+          'bulk shipment 후보 조회 실패',
+          500,
+          'V2_ADMIN_BULK_SHIPMENT_CANDIDATES_FETCH_FAILED',
+        );
+      }
+
+      for (const row of data || []) {
+        if (!row?.order_id || !row?.shipment_id) {
+          continue;
+        }
+        pushCandidate(row.order_id as string, {
+          resource_type: 'SHIPMENT',
+          resource_id: row.shipment_id,
+          current_status: row.shipment_status,
+          transition_key: this.resolveBulkTransitionKey(input.actionKey),
+        });
+      }
+
+      return result;
+    }
+
+    const entitlementAllowedStatuses =
+      input.actionKey === 'FULFILLMENT_ENTITLEMENT_REISSUE'
+        ? ['PENDING', 'GRANTED', 'EXPIRED']
+        : ['PENDING', 'GRANTED', 'EXPIRED'];
+
+    if (
+      input.actionKey === 'FULFILLMENT_ENTITLEMENT_REISSUE' ||
+      input.actionKey === 'FULFILLMENT_ENTITLEMENT_REVOKE'
+    ) {
+      const { data, error } = await this.supabase
+        .from('v2_digital_entitlements')
+        .select('id, order_id, status')
+        .in('order_id', input.orderIds)
+        .in('status', entitlementAllowedStatuses);
+
+      if (error) {
+        throw new ApiException(
+          'bulk entitlement 후보 조회 실패',
+          500,
+          'V2_ADMIN_BULK_ENTITLEMENT_CANDIDATES_FETCH_FAILED',
+        );
+      }
+
+      for (const row of data || []) {
+        if (!row?.order_id || !row?.id) {
+          continue;
+        }
+        pushCandidate(row.order_id as string, {
+          resource_type: 'DIGITAL_ENTITLEMENT',
+          resource_id: row.id,
+          current_status: row.status,
+          transition_key: this.resolveBulkTransitionKey(input.actionKey),
+        });
+      }
+    }
+
+    return result;
+  }
+
+  private resolveBulkTransitionKey(actionKey: string): string {
+    if (actionKey === 'FULFILLMENT_SHIPMENT_DISPATCH') {
+      return 'SHIPMENT_DISPATCH';
+    }
+    if (actionKey === 'FULFILLMENT_ENTITLEMENT_REISSUE') {
+      return 'ENTITLEMENT_REISSUE';
+    }
+    if (actionKey === 'FULFILLMENT_ENTITLEMENT_REVOKE') {
+      return 'ENTITLEMENT_REVOKE';
+    }
+    return 'ORDER_BULK_ACTION_REQUESTED';
+  }
+
   private parseBoolean(raw?: string): boolean {
     if (!raw) {
       return false;
@@ -1892,6 +2295,12 @@ export class V2AdminService {
     }
     const normalized = value.trim();
     return normalized.length > 0 ? normalized : null;
+  }
+
+  private isUuid(value: string): boolean {
+    const uuidRegex =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    return uuidRegex.test(value);
   }
 
   private readBooleanEnv(key: string, fallback: boolean): boolean {

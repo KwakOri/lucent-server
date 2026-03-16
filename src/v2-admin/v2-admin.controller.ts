@@ -29,6 +29,16 @@ interface OrderQueueQuery {
   order_status?: string;
 }
 
+interface BulkOrderActionBody {
+  mode?: string;
+  action_key?: string;
+  order_ids?: string[];
+  reason?: string | null;
+  request_id?: string | null;
+  preview_limit?: string | number;
+  metadata?: Record<string, unknown> | null;
+}
+
 interface FulfillmentQueueQuery {
   limit?: string;
   kind?: string;
@@ -506,6 +516,31 @@ export class V2AdminController {
       orderStatus: query.order_status,
     });
     return successResponse(queue);
+  }
+
+  @Post('ops/orders/bulk-actions')
+  async bulkOrderAction(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: BulkOrderActionBody,
+  ) {
+    const admin = await this.requireAdmin(authorization);
+    const result = await this.v2AdminService.bulkOrderQueueAction({
+      mode: body.mode,
+      actionKey: body.action_key,
+      orderIds: body.order_ids,
+      reason: body.reason,
+      requestId: body.request_id,
+      previewLimit: body.preview_limit,
+      metadata: body.metadata,
+      actor: {
+        id: typeof admin?.id === 'string' ? admin.id : null,
+        email: typeof admin?.email === 'string' ? admin.email : null,
+        isLocalBypass:
+          this.authSessionService.isLocalAdminBypassEnabled() ||
+          admin?.id === 'LOCAL_ADMIN_BYPASS',
+      },
+    });
+    return successResponse(result);
   }
 
   @Get('ops/orders/:orderId/detail')
