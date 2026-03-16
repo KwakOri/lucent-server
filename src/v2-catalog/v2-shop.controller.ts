@@ -17,6 +17,34 @@ interface V2ShopPricePreviewBody {
 export class V2ShopController {
   constructor(private readonly v2CatalogService: V2CatalogService) {}
 
+  @Get('campaigns')
+  async getShopCampaigns(
+    @Query('channel') channel?: string,
+    @Query('include_upcoming') includeUpcomingSnake?: string,
+    @Query('includeUpcoming') includeUpcomingCamel?: string,
+  ) {
+    const campaigns = await this.v2CatalogService.getShopCampaigns({
+      channel,
+      include_upcoming: this.parseBoolean(
+        includeUpcomingSnake ?? includeUpcomingCamel,
+      ),
+    });
+    return successResponse(campaigns);
+  }
+
+  @Get('coupons')
+  async getShopCoupons(
+    @Query('campaign_id') campaignIdSnake?: string,
+    @Query('campaignId') campaignIdCamel?: string,
+    @Query('channel') channel?: string,
+  ) {
+    const coupons = await this.v2CatalogService.getShopCoupons({
+      campaign_id: campaignIdSnake ?? campaignIdCamel,
+      channel,
+    });
+    return successResponse(coupons);
+  }
+
   @Get('products')
   async getShopProducts(
     @Query('cursor') cursor?: string,
@@ -72,5 +100,19 @@ export class V2ShopController {
       );
     }
     return parsed;
+  }
+
+  private parseBoolean(value?: string): boolean | undefined {
+    if (value === undefined) {
+      return undefined;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true' || normalized === '1') {
+      return true;
+    }
+    if (normalized === 'false' || normalized === '0') {
+      return false;
+    }
+    throw new ApiException('boolean 파라미터 값이 유효하지 않습니다', 400, 'VALIDATION_ERROR');
   }
 }
