@@ -333,7 +333,7 @@ export class V2FulfillmentService {
     const { data: orderItems, error: orderItemsError } = await this.supabase
       .from('v2_order_items')
       .select(
-        'id, quantity, line_status, fulfillment_type_snapshot, requires_shipping_snapshot',
+        'id, quantity, line_type, line_status, fulfillment_type_snapshot, requires_shipping_snapshot',
       )
       .eq('order_id', orderId)
       .order('created_at', { ascending: true });
@@ -353,10 +353,9 @@ export class V2FulfillmentService {
       );
     }
 
-    const targetItems = orderItems.filter((item: any) => {
-      const status = item.line_status as string | null;
-      return status !== 'CANCELED' && status !== 'REFUNDED';
-    });
+    const targetItems = orderItems.filter((item: any) =>
+      this.isFulfillmentActionableOrderItem(item),
+    );
     if (targetItems.length === 0) {
       throw new ApiException(
         'plan 생성 대상 line이 없습니다',
@@ -2207,7 +2206,7 @@ export class V2FulfillmentService {
     const { data, error } = await this.supabase
       .from('v2_order_items')
       .select(
-        'id, variant_id, line_status, fulfillment_type_snapshot, requires_shipping_snapshot',
+        'id, variant_id, line_type, line_status, fulfillment_type_snapshot, requires_shipping_snapshot',
       )
       .eq('order_id', orderId);
 
@@ -2218,7 +2217,9 @@ export class V2FulfillmentService {
         'ORDER_ITEM_FETCH_FAILED',
       );
     }
-    return data || [];
+    return (data || []).filter((item: any) =>
+      this.isFulfillmentActionableOrderItem(item),
+    );
   }
 
   private buildCutoverPolicy(): {
@@ -2349,6 +2350,10 @@ export class V2FulfillmentService {
   }
 
   private isOrderItemDigital(orderItem: any): boolean {
+    if (!this.isFulfillmentActionableOrderItem(orderItem)) {
+      return false;
+    }
+
     if (orderItem.fulfillment_type_snapshot === 'DIGITAL') {
       return true;
     }
@@ -2356,6 +2361,20 @@ export class V2FulfillmentService {
       return true;
     }
     return false;
+  }
+
+  private isFulfillmentActionableOrderItem(orderItem: any): boolean {
+    const lineType = this.normalizeOptionalText(orderItem?.line_type);
+    if (lineType === 'BUNDLE_PARENT') {
+      return false;
+    }
+
+    const lineStatus = this.normalizeOptionalText(orderItem?.line_status);
+    if (lineStatus === 'CANCELED' || lineStatus === 'REFUNDED') {
+      return false;
+    }
+
+    return true;
   }
 
   private isShippingRuleConditionMatched(
@@ -2403,7 +2422,7 @@ export class V2FulfillmentService {
     const { data, error } = await this.supabase
       .from('v2_order_items')
       .select(
-        'id, order_id, variant_id, quantity, line_status, fulfillment_type_snapshot, requires_shipping_snapshot',
+        'id, order_id, variant_id, quantity, line_type, line_status, fulfillment_type_snapshot, requires_shipping_snapshot',
       )
       .eq('id', orderItemId)
       .eq('order_id', orderId)
@@ -2423,6 +2442,25 @@ export class V2FulfillmentService {
         'ORDER_ITEM_NOT_FOUND',
       );
     }
+
+    const lineType = this.normalizeOptionalText(data.line_type);
+    if (lineType === 'BUNDLE_PARENT') {
+      throw new ApiException(
+        'BUNDLE_PARENT line은 fulfillment 액션 대상이 아닙니다',
+        409,
+        'ORDER_ITEM_LINE_TYPE_INVALID',
+      );
+    }
+
+    const lineStatus = this.normalizeOptionalText(data.line_status);
+    if (lineStatus === 'CANCELED' || lineStatus === 'REFUNDED') {
+      throw new ApiException(
+        `종료 상태 order_item은 fulfillment 액션 대상이 아닙니다 (현재: ${lineStatus})`,
+        409,
+        'ORDER_ITEM_INVALID_STATE',
+      );
+    }
+
     return data;
   }
 
