@@ -11,6 +11,7 @@ import {
 import { AuthSessionService } from '../auth/auth-session.service';
 import { successResponse } from '../common/api-response';
 import { ApiException } from '../common/errors/api.exception';
+import { V2AdminOrderTransitionService } from './v2-admin-order-transition.service';
 import { V2AdminService } from './v2-admin.service';
 
 interface ActionLogQuery {
@@ -36,6 +37,14 @@ interface BulkOrderActionBody {
   reason?: string | null;
   request_id?: string | null;
   preview_limit?: string | number;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface OrderLinearTransitionBody {
+  order_ids?: string[];
+  target_stage?: string;
+  reason?: string | null;
+  request_id?: string | null;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -188,6 +197,7 @@ interface SaveCutoverStageIssueBody {
 export class V2AdminController {
   constructor(
     private readonly v2AdminService: V2AdminService,
+    private readonly v2AdminOrderTransitionService: V2AdminOrderTransitionService,
     private readonly authSessionService: AuthSessionService,
   ) {}
 
@@ -531,6 +541,52 @@ export class V2AdminController {
       reason: body.reason,
       requestId: body.request_id,
       previewLimit: body.preview_limit,
+      metadata: body.metadata,
+      actor: {
+        id: typeof admin?.id === 'string' ? admin.id : null,
+        email: typeof admin?.email === 'string' ? admin.email : null,
+        isLocalBypass:
+          this.authSessionService.isLocalAdminBypassEnabled() ||
+          admin?.id === 'LOCAL_ADMIN_BYPASS',
+      },
+    });
+    return successResponse(result);
+  }
+
+  @Post('ops/orders/transition-preview')
+  async previewOrderLinearTransition(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: OrderLinearTransitionBody,
+  ) {
+    const admin = await this.requireAdmin(authorization);
+    const result = await this.v2AdminOrderTransitionService.preview({
+      orderIds: body.order_ids,
+      targetStage: body.target_stage,
+      reason: body.reason,
+      requestId: body.request_id,
+      metadata: body.metadata,
+      actor: {
+        id: typeof admin?.id === 'string' ? admin.id : null,
+        email: typeof admin?.email === 'string' ? admin.email : null,
+        isLocalBypass:
+          this.authSessionService.isLocalAdminBypassEnabled() ||
+          admin?.id === 'LOCAL_ADMIN_BYPASS',
+      },
+    });
+    return successResponse(result);
+  }
+
+  @Post('ops/orders/transition-execute')
+  async executeOrderLinearTransition(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: OrderLinearTransitionBody,
+  ) {
+    const admin = await this.requireAdmin(authorization);
+    const result = await this.v2AdminOrderTransitionService.execute({
+      orderIds: body.order_ids,
+      targetStage: body.target_stage,
+      reason: body.reason,
+      requestId: body.request_id,
       metadata: body.metadata,
       actor: {
         id: typeof admin?.id === 'string' ? admin.id : null,
