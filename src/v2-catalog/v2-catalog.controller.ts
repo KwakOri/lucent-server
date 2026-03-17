@@ -544,16 +544,6 @@ export class V2CatalogController {
     return successResponse(assets);
   }
 
-  @Post('media-assets')
-  async createMediaAsset(
-    @Headers('authorization') authorization: string | undefined,
-    @Body() body: Record<string, unknown>,
-  ) {
-    await this.requireAdmin(authorization);
-    const asset = await this.v2CatalogService.createMediaAsset(body);
-    return successResponse(asset);
-  }
-
   @Post('media-assets/upload')
   @UseInterceptors(
     FileInterceptor('file', {
