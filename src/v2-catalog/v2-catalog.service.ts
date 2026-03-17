@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { ApiException } from '../common/errors/api.exception';
+import { uploadFileToR2 } from '../images/r2.util';
 import { getSupabaseClient } from '../supabase/supabase.client';
 
 type V2ProjectStatus = 'DRAFT' | 'ACTIVE' | 'ARCHIVED';
@@ -295,6 +297,18 @@ interface UpdateMediaAssetInput {
   file_size?: number | null;
   checksum?: string | null;
   status?: V2MediaAssetStatus;
+  metadata?: Record<string, unknown>;
+}
+
+interface UploadMediaAssetFileInput {
+  file: {
+    buffer: Buffer;
+    originalname: string;
+    mimetype: string;
+    size: number;
+  };
+  asset_kind?: string;
+  status?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -1915,6 +1929,39 @@ export class V2CatalogService {
     }
 
     return data || [];
+  }
+
+  async uploadMediaAssetFile(input: UploadMediaAssetFileInput): Promise<any> {
+    this.validateMediaAssetUploadFile(input.file);
+
+    const inferredKind = this.inferMediaAssetKind(
+      input.file.mimetype,
+      input.file.originalname,
+    );
+    const assetKind = (input.asset_kind as V2MediaAssetKind | undefined) ?? inferredKind;
+    this.assertMediaAssetKind(assetKind);
+    const status = (input.status as V2MediaAssetStatus | undefined) ?? 'ACTIVE';
+    this.assertMediaAssetStatus(status);
+
+    const r2Key = this.generateMediaAssetR2Key(assetKind, input.file.originalname);
+    const publicUrl = await uploadFileToR2({
+      key: r2Key,
+      body: input.file.buffer,
+      contentType: input.file.mimetype,
+    });
+
+    return this.createMediaAsset({
+      asset_kind: assetKind,
+      status,
+      storage_provider: 'R2',
+      storage_bucket: process.env.R2_BUCKET_NAME || null,
+      storage_path: r2Key,
+      public_url: publicUrl,
+      file_name: input.file.originalname,
+      mime_type: input.file.mimetype,
+      file_size: input.file.size,
+      metadata: input.metadata ?? {},
+    });
   }
 
   async createMediaAsset(input: CreateMediaAssetInput): Promise<any> {
@@ -9659,6 +9706,55 @@ export class V2CatalogService {
       return 'application/zip';
     }
     return 'application/octet-stream';
+  }
+
+  private validateMediaAssetUploadFile(file: {
+    originalname: string;
+    mimetype: string;
+    size: number;
+  }): void {
+    if (!file.originalname || !file.mimetype) {
+      throw new ApiException(
+        '업로드 파일 정보가 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    if (!Number.isInteger(file.size) || file.size <= 0) {
+      throw new ApiException(
+        '업로드 파일 크기가 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const maxSize = 200 * 1024 * 1024;
+    if (file.size > maxSize) {
+      throw new ApiException(
+        '파일 크기는 200MB를 초과할 수 없습니다',
+        400,
+        'FILE_TOO_LARGE',
+      );
+    }
+  }
+
+  private generateMediaAssetR2Key(
+    assetKind: V2MediaAssetKind,
+    originalFilename: string,
+  ): string {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const uuid = randomUUID();
+    const safeFilename = originalFilename
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+
+    const finalName = safeFilename || 'file.bin';
+    return `media-assets/${assetKind.toLowerCase()}/${year}/${month}/${uuid}-${finalName}`;
   }
 
   private extractFileNameFromStoragePath(storagePath: string): string {
