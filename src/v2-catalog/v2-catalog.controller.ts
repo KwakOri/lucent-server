@@ -524,6 +524,44 @@ export class V2CatalogController {
     return successResponse({ message: 'variant가 삭제되었습니다' });
   }
 
+  @Get('media-assets')
+  async getMediaAssets(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('kind')
+    kind?: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'DOCUMENT' | 'ARCHIVE' | 'FILE',
+    @Query('status') status?: 'ACTIVE' | 'INACTIVE' | 'ARCHIVED',
+    @Query('search') search?: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const assets = await this.v2CatalogService.getMediaAssets({
+      kind,
+      status,
+      search,
+    });
+    return successResponse(assets);
+  }
+
+  @Post('media-assets')
+  async createMediaAsset(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const asset = await this.v2CatalogService.createMediaAsset(body);
+    return successResponse(asset);
+  }
+
+  @Patch('media-assets/:id')
+  async updateMediaAsset(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') mediaAssetId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const asset = await this.v2CatalogService.updateMediaAsset(mediaAssetId, body);
+    return successResponse(asset);
+  }
+
   @Get('products/:productId/media')
   async getProductMedia(
     @Headers('authorization') authorization: string | undefined,
