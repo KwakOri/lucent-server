@@ -1965,11 +1965,17 @@ export class V2CatalogService {
   }
 
   async createMediaAsset(input: CreateMediaAssetInput): Promise<any> {
-    const storagePath = this.normalizeRequiredText(
+    const rawStoragePath = this.normalizeRequiredText(
       input.storage_path,
       'storage_path는 필수입니다',
     );
     const mimeType = this.normalizeOptionalText(input.mime_type) || null;
+    const storageProvider =
+      this.normalizeOptionalText(input.storage_provider)?.toUpperCase() || 'R2';
+    const storagePath =
+      storageProvider === 'R2'
+        ? this.normalizeV2R2StoragePath(rawStoragePath)
+        : rawStoragePath;
     const assetKind =
       input.asset_kind ?? this.inferMediaAssetKind(mimeType, storagePath);
     this.assertMediaAssetKind(assetKind);
@@ -1984,8 +1990,6 @@ export class V2CatalogService {
     const fileName =
       this.normalizeOptionalText(input.file_name) ||
       this.extractFileNameFromStoragePath(storagePath);
-    const storageProvider =
-      this.normalizeOptionalText(input.storage_provider)?.toUpperCase() || 'R2';
 
     const { data: existing, error: existingError } = await this.supabase
       .from('media_assets')
@@ -2103,10 +2107,14 @@ export class V2CatalogService {
       updateData.status = input.status;
     }
     if (input.storage_path !== undefined) {
-      updateData.storage_path = this.normalizeRequiredText(
+      const nextPath = this.normalizeRequiredText(
         input.storage_path,
         'storage_path는 필수입니다',
       );
+      updateData.storage_path =
+        current.storage_provider === 'R2'
+          ? this.normalizeV2R2StoragePath(nextPath)
+          : nextPath;
     }
     if (input.public_url !== undefined) {
       updateData.public_url = this.normalizeOptionalText(input.public_url);
@@ -9754,7 +9762,18 @@ export class V2CatalogService {
       .replace(/^-|-$/g, '');
 
     const finalName = safeFilename || 'file.bin';
-    return `media-assets/${assetKind.toLowerCase()}/${year}/${month}/${uuid}-${finalName}`;
+    return `v2/media-assets/${assetKind.toLowerCase()}/${year}/${month}/${uuid}-${finalName}`;
+  }
+
+  private normalizeV2R2StoragePath(storagePath: string): string {
+    const normalized = storagePath.trim().replace(/^\/+/, '');
+    if (!normalized) {
+      return 'v2';
+    }
+    if (normalized.startsWith('v2/')) {
+      return normalized;
+    }
+    return `v2/${normalized}`;
   }
 
   private extractFileNameFromStoragePath(storagePath: string): string {
