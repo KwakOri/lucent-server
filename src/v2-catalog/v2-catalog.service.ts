@@ -13,6 +13,8 @@ type V2MediaRole = 'PRIMARY' | 'GALLERY' | 'DETAIL';
 type V2MediaStatus = 'DRAFT' | 'ACTIVE' | 'INACTIVE' | 'ARCHIVED';
 type V2AssetRole = 'PRIMARY' | 'BONUS';
 type V2DigitalAssetStatus = 'DRAFT' | 'READY' | 'RETIRED';
+type V2MediaAssetKind = 'IMAGE' | 'VIDEO' | 'AUDIO' | 'DOCUMENT' | 'ARCHIVE' | 'FILE';
+type V2MediaAssetStatus = 'ACTIVE' | 'INACTIVE' | 'ARCHIVED';
 type V2BundleMode = 'FIXED' | 'CUSTOMIZABLE';
 type V2BundleStatus = 'DRAFT' | 'ACTIVE' | 'ARCHIVED';
 type V2BundlePricingStrategy = 'WEIGHTED' | 'FIXED_AMOUNT';
@@ -157,6 +159,7 @@ interface UpdateV2VariantInput {
 interface CreateV2MediaInput {
   media_type?: V2MediaType;
   media_role?: V2MediaRole;
+  media_asset_id?: string;
   storage_path?: string;
   public_url?: string | null;
   alt_text?: string | null;
@@ -169,6 +172,7 @@ interface CreateV2MediaInput {
 interface UpdateV2MediaInput {
   media_type?: V2MediaType;
   media_role?: V2MediaRole;
+  media_asset_id?: string;
   storage_path?: string;
   public_url?: string | null;
   alt_text?: string | null;
@@ -180,8 +184,10 @@ interface UpdateV2MediaInput {
 
 interface CreateV2DigitalAssetInput {
   asset_role?: V2AssetRole;
+  media_asset_id?: string;
   file_name?: string;
   storage_path?: string;
+  public_url?: string | null;
   mime_type?: string;
   file_size?: number;
   version_no?: number;
@@ -191,8 +197,10 @@ interface CreateV2DigitalAssetInput {
 }
 
 interface UpdateV2DigitalAssetInput {
+  media_asset_id?: string;
   file_name?: string;
   storage_path?: string;
+  public_url?: string | null;
   mime_type?: string;
   file_size?: number;
   checksum?: string | null;
@@ -254,6 +262,39 @@ interface UpdateV2BundleComponentOptionInput {
   option_key?: string;
   option_value?: string;
   sort_order?: number;
+  metadata?: Record<string, unknown>;
+}
+
+interface GetMediaAssetsInput {
+  kind?: V2MediaAssetKind;
+  status?: V2MediaAssetStatus;
+  search?: string;
+}
+
+interface CreateMediaAssetInput {
+  asset_kind?: V2MediaAssetKind;
+  storage_provider?: string;
+  storage_bucket?: string | null;
+  storage_path?: string;
+  public_url?: string | null;
+  file_name?: string;
+  mime_type?: string | null;
+  file_size?: number | null;
+  checksum?: string | null;
+  status?: V2MediaAssetStatus;
+  metadata?: Record<string, unknown>;
+}
+
+interface UpdateMediaAssetInput {
+  asset_kind?: V2MediaAssetKind;
+  storage_bucket?: string | null;
+  storage_path?: string;
+  public_url?: string | null;
+  file_name?: string;
+  mime_type?: string | null;
+  file_size?: number | null;
+  checksum?: string | null;
+  status?: V2MediaAssetStatus;
   metadata?: Record<string, unknown>;
 }
 
@@ -1837,11 +1878,252 @@ export class V2CatalogService {
     }
   }
 
+  async getMediaAssets(input: GetMediaAssetsInput = {}): Promise<any[]> {
+    if (input.kind) {
+      this.assertMediaAssetKind(input.kind);
+    }
+    if (input.status) {
+      this.assertMediaAssetStatus(input.status);
+    }
+
+    let query = this.supabase
+      .from('media_assets')
+      .select('*')
+      .is('deleted_at', null)
+      .order('created_at', { ascending: false });
+
+    if (input.kind) {
+      query = query.eq('asset_kind', input.kind);
+    }
+    if (input.status) {
+      query = query.eq('status', input.status);
+    }
+    if (input.search?.trim()) {
+      const normalized = input.search.trim();
+      query = query.or(
+        `file_name.ilike.%${normalized}%,storage_path.ilike.%${normalized}%`,
+      );
+    }
+
+    const { data, error } = await query.limit(300);
+    if (error) {
+      throw new ApiException(
+        'media asset 조회 실패',
+        500,
+        'MEDIA_ASSET_FETCH_FAILED',
+      );
+    }
+
+    return data || [];
+  }
+
+  async createMediaAsset(input: CreateMediaAssetInput): Promise<any> {
+    const storagePath = this.normalizeRequiredText(
+      input.storage_path,
+      'storage_path는 필수입니다',
+    );
+    const mimeType = this.normalizeOptionalText(input.mime_type) || null;
+    const assetKind =
+      input.asset_kind ?? this.inferMediaAssetKind(mimeType, storagePath);
+    this.assertMediaAssetKind(assetKind);
+
+    const status = input.status ?? 'ACTIVE';
+    this.assertMediaAssetStatus(status);
+
+    if (input.file_size !== undefined && input.file_size !== null) {
+      this.assertPositiveInteger(input.file_size, 'file_size');
+    }
+
+    const fileName =
+      this.normalizeOptionalText(input.file_name) ||
+      this.extractFileNameFromStoragePath(storagePath);
+    const storageProvider =
+      this.normalizeOptionalText(input.storage_provider)?.toUpperCase() || 'R2';
+
+    const { data: existing, error: existingError } = await this.supabase
+      .from('media_assets')
+      .select('*')
+      .eq('storage_provider', storageProvider)
+      .eq('storage_path', storagePath)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (existingError) {
+      throw new ApiException(
+        'media asset 조회 실패',
+        500,
+        'MEDIA_ASSET_FETCH_FAILED',
+      );
+    }
+
+    if (existing) {
+      const patch: Record<string, unknown> = {};
+      const normalizedPublicUrl = this.normalizeOptionalText(input.public_url);
+      const normalizedChecksum = this.normalizeOptionalText(input.checksum);
+      const normalizedBucket = this.normalizeOptionalText(input.storage_bucket);
+      if (normalizedPublicUrl && !existing.public_url) {
+        patch.public_url = normalizedPublicUrl;
+      }
+      if (existing.asset_kind === 'FILE' && assetKind !== 'FILE') {
+        patch.asset_kind = assetKind;
+      }
+      if (fileName && !existing.file_name) {
+        patch.file_name = fileName;
+      }
+      if (mimeType && !existing.mime_type) {
+        patch.mime_type = mimeType;
+      }
+      if ((input.file_size ?? null) && !existing.file_size) {
+        patch.file_size = input.file_size;
+      }
+      if (normalizedChecksum && !existing.checksum) {
+        patch.checksum = normalizedChecksum;
+      }
+      if (normalizedBucket && !existing.storage_bucket) {
+        patch.storage_bucket = normalizedBucket;
+      }
+      if (status === 'ACTIVE' && existing.status !== 'ACTIVE') {
+        patch.status = 'ACTIVE';
+      }
+      if (input.metadata && Object.keys(input.metadata).length > 0) {
+        patch.metadata = {
+          ...(existing.metadata || {}),
+          ...input.metadata,
+        };
+      }
+
+      if (Object.keys(patch).length === 0) {
+        return existing;
+      }
+
+      const { data: updated, error: updateError } = await this.supabase
+        .from('media_assets')
+        .update(patch)
+        .eq('id', existing.id)
+        .select('*')
+        .single();
+
+      if (updateError || !updated) {
+        throw new ApiException(
+          'media asset 갱신 실패',
+          500,
+          'MEDIA_ASSET_UPDATE_FAILED',
+        );
+      }
+
+      return updated;
+    }
+
+    const { data, error } = await this.supabase
+      .from('media_assets')
+      .insert({
+        asset_kind: assetKind,
+        storage_provider: storageProvider,
+        storage_bucket: this.normalizeOptionalText(input.storage_bucket),
+        storage_path: storagePath,
+        public_url: this.normalizeOptionalText(input.public_url),
+        file_name: fileName,
+        mime_type: mimeType,
+        file_size: input.file_size ?? null,
+        checksum: this.normalizeOptionalText(input.checksum),
+        status,
+        metadata: input.metadata ?? {},
+      })
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'media asset 생성 실패',
+        500,
+        'MEDIA_ASSET_CREATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async updateMediaAsset(mediaAssetId: string, input: UpdateMediaAssetInput): Promise<any> {
+    const current = await this.getMediaAssetById(mediaAssetId);
+    const updateData: Record<string, unknown> = {};
+
+    if (input.asset_kind !== undefined) {
+      this.assertMediaAssetKind(input.asset_kind);
+      updateData.asset_kind = input.asset_kind;
+    }
+    if (input.status !== undefined) {
+      this.assertMediaAssetStatus(input.status);
+      updateData.status = input.status;
+    }
+    if (input.storage_path !== undefined) {
+      updateData.storage_path = this.normalizeRequiredText(
+        input.storage_path,
+        'storage_path는 필수입니다',
+      );
+    }
+    if (input.public_url !== undefined) {
+      updateData.public_url = this.normalizeOptionalText(input.public_url);
+    }
+    if (input.file_name !== undefined) {
+      updateData.file_name = this.normalizeRequiredText(
+        input.file_name,
+        'file_name은 필수입니다',
+      );
+    }
+    if (input.mime_type !== undefined) {
+      updateData.mime_type = this.normalizeOptionalText(input.mime_type);
+    }
+    if (input.file_size !== undefined) {
+      if (input.file_size === null) {
+        updateData.file_size = null;
+      } else {
+        this.assertPositiveInteger(input.file_size, 'file_size');
+        updateData.file_size = input.file_size;
+      }
+    }
+    if (input.checksum !== undefined) {
+      updateData.checksum = this.normalizeOptionalText(input.checksum);
+    }
+    if (input.storage_bucket !== undefined) {
+      updateData.storage_bucket = this.normalizeOptionalText(input.storage_bucket);
+    }
+    if (input.metadata !== undefined) {
+      updateData.metadata = input.metadata ?? {};
+    }
+
+    const nextStoragePath = (updateData.storage_path as string | undefined) ?? current.storage_path;
+    const nextFileName = (updateData.file_name as string | undefined) ?? current.file_name;
+    if (!nextFileName && nextStoragePath) {
+      updateData.file_name = this.extractFileNameFromStoragePath(nextStoragePath);
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return current;
+    }
+
+    const { data, error } = await this.supabase
+      .from('media_assets')
+      .update(updateData)
+      .eq('id', mediaAssetId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'media asset 수정 실패',
+        500,
+        'MEDIA_ASSET_UPDATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
   async getProductMedia(productId: string): Promise<any[]> {
     await this.ensureProductExists(productId);
     const { data, error } = await this.supabase
       .from('v2_product_media')
-      .select('*')
+      .select('*, media_asset:media_assets(*)')
       .eq('product_id', productId)
       .is('deleted_at', null)
       .order('sort_order', { ascending: true });
@@ -1859,16 +2141,13 @@ export class V2CatalogService {
 
   async createProductMedia(productId: string, input: CreateV2MediaInput): Promise<any> {
     await this.ensureProductExists(productId);
-    const storagePath = this.normalizeRequiredText(
-      input.storage_path,
-      'storage_path는 필수입니다',
-    );
     const mediaType = input.media_type ?? 'IMAGE';
     const mediaRole = input.media_role ?? 'GALLERY';
     this.assertMediaType(mediaType);
     this.assertMediaRole(mediaRole);
     this.assertMediaStatus(input.status ?? 'DRAFT');
     this.assertSortOrder(input.sort_order);
+    const mediaAsset = await this.resolveProductMediaAsset(mediaType, input);
 
     const isPrimary = input.is_primary ?? mediaRole === 'PRIMARY';
     if (isPrimary) {
@@ -1881,8 +2160,9 @@ export class V2CatalogService {
         product_id: productId,
         media_type: mediaType,
         media_role: mediaRole,
-        storage_path: storagePath,
-        public_url: this.normalizeOptionalText(input.public_url),
+        media_asset_id: mediaAsset.id,
+        storage_path: mediaAsset.storage_path,
+        public_url: mediaAsset.public_url,
         alt_text: this.normalizeOptionalText(input.alt_text),
         sort_order: input.sort_order ?? 0,
         is_primary: isPrimary,
@@ -1906,23 +2186,16 @@ export class V2CatalogService {
   async updateProductMedia(mediaId: string, input: UpdateV2MediaInput): Promise<any> {
     const current = await this.getMediaById(mediaId);
     const updateData: Record<string, unknown> = {};
+    let nextMediaType = current.media_type as V2MediaType;
 
     if (input.media_type !== undefined) {
       this.assertMediaType(input.media_type);
       updateData.media_type = input.media_type;
+      nextMediaType = input.media_type;
     }
     if (input.media_role !== undefined) {
       this.assertMediaRole(input.media_role);
       updateData.media_role = input.media_role;
-    }
-    if (input.storage_path !== undefined) {
-      updateData.storage_path = this.normalizeRequiredText(
-        input.storage_path,
-        'storage_path는 필수입니다',
-      );
-    }
-    if (input.public_url !== undefined) {
-      updateData.public_url = this.normalizeOptionalText(input.public_url);
     }
     if (input.alt_text !== undefined) {
       updateData.alt_text = this.normalizeOptionalText(input.alt_text);
@@ -1937,6 +2210,16 @@ export class V2CatalogService {
     }
     if (input.metadata !== undefined) {
       updateData.metadata = input.metadata ?? {};
+    }
+    if (
+      input.media_asset_id !== undefined ||
+      input.storage_path !== undefined ||
+      input.public_url !== undefined
+    ) {
+      const mediaAsset = await this.resolveProductMediaAsset(nextMediaType, input);
+      updateData.media_asset_id = mediaAsset.id;
+      updateData.storage_path = mediaAsset.storage_path;
+      updateData.public_url = mediaAsset.public_url;
     }
     if (input.is_primary !== undefined) {
       updateData.is_primary = input.is_primary;
@@ -1994,7 +2277,7 @@ export class V2CatalogService {
     await this.ensureVariantExists(variantId);
     const { data, error } = await this.supabase
       .from('v2_digital_assets')
-      .select('*')
+      .select('*, media_asset:media_assets(*)')
       .eq('variant_id', variantId)
       .is('deleted_at', null)
       .order('version_no', { ascending: false });
@@ -2031,32 +2314,40 @@ export class V2CatalogService {
     const versionNo =
       input.version_no ?? (await this.getNextDigitalAssetVersion(variantId, assetRole));
     this.assertPositiveInteger(versionNo, 'version_no');
+    const mediaAsset = await this.resolveDigitalAssetMediaAsset(input);
 
-    const fileName = this.normalizeRequiredText(
-      input.file_name,
-      'file_name은 필수입니다',
-    );
-    const storagePath = this.normalizeRequiredText(
-      input.storage_path,
-      'storage_path는 필수입니다',
-    );
-    const mimeType = this.normalizeRequiredText(
-      input.mime_type,
-      'mime_type은 필수입니다',
-    );
-    this.assertPositiveInteger(input.file_size, 'file_size');
+    const fileName =
+      this.normalizeOptionalText(input.file_name) ||
+      this.normalizeOptionalText(mediaAsset.file_name) ||
+      this.extractFileNameFromStoragePath(mediaAsset.storage_path);
+    const storagePath = mediaAsset.storage_path as string;
+    const mimeType =
+      this.normalizeOptionalText(input.mime_type) ||
+      this.normalizeOptionalText(mediaAsset.mime_type);
+    if (!mimeType) {
+      throw new ApiException(
+        'mime_type은 필수입니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    const fileSize = input.file_size ?? mediaAsset.file_size;
+    this.assertPositiveInteger(fileSize ?? undefined, 'file_size');
 
     const { data, error } = await this.supabase
       .from('v2_digital_assets')
       .insert({
         variant_id: variantId,
         asset_role: assetRole,
+        media_asset_id: mediaAsset.id,
         file_name: fileName,
         storage_path: storagePath,
         mime_type: mimeType,
-        file_size: input.file_size,
+        file_size: fileSize,
         version_no: versionNo,
-        checksum: this.normalizeOptionalText(input.checksum),
+        checksum:
+          this.normalizeOptionalText(input.checksum) ??
+          this.normalizeOptionalText(mediaAsset.checksum),
         status,
         metadata: input.metadata ?? {},
       })
@@ -2080,31 +2371,40 @@ export class V2CatalogService {
   ): Promise<any> {
     const current = await this.getDigitalAssetById(assetId);
     const updateData: Record<string, unknown> = {};
-
-    if (input.file_name !== undefined) {
-      updateData.file_name = this.normalizeRequiredText(
-        input.file_name,
-        'file_name은 필수입니다',
-      );
-    }
-    if (input.storage_path !== undefined) {
-      updateData.storage_path = this.normalizeRequiredText(
-        input.storage_path,
-        'storage_path는 필수입니다',
-      );
-    }
-    if (input.mime_type !== undefined) {
-      updateData.mime_type = this.normalizeRequiredText(
-        input.mime_type,
-        'mime_type은 필수입니다',
-      );
-    }
-    if (input.file_size !== undefined) {
-      this.assertPositiveInteger(input.file_size, 'file_size');
-      updateData.file_size = input.file_size;
-    }
-    if (input.checksum !== undefined) {
-      updateData.checksum = this.normalizeOptionalText(input.checksum);
+    if (
+      input.media_asset_id !== undefined ||
+      input.storage_path !== undefined ||
+      input.public_url !== undefined ||
+      input.file_name !== undefined ||
+      input.mime_type !== undefined ||
+      input.file_size !== undefined ||
+      input.checksum !== undefined
+    ) {
+      const mediaAsset = await this.resolveDigitalAssetMediaAsset(input, current);
+      const fileName =
+        this.normalizeOptionalText(input.file_name) ||
+        this.normalizeOptionalText(mediaAsset.file_name) ||
+        this.extractFileNameFromStoragePath(mediaAsset.storage_path);
+      const mimeType =
+        this.normalizeOptionalText(input.mime_type) ||
+        this.normalizeOptionalText(mediaAsset.mime_type);
+      if (!mimeType) {
+        throw new ApiException(
+          'mime_type은 필수입니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+      const fileSize = input.file_size ?? mediaAsset.file_size;
+      this.assertPositiveInteger(fileSize ?? undefined, 'file_size');
+      updateData.media_asset_id = mediaAsset.id;
+      updateData.storage_path = mediaAsset.storage_path;
+      updateData.file_name = fileName;
+      updateData.mime_type = mimeType;
+      updateData.file_size = fileSize;
+      updateData.checksum =
+        this.normalizeOptionalText(input.checksum) ??
+        this.normalizeOptionalText(mediaAsset.checksum);
     }
     if (input.status !== undefined) {
       this.assertDigitalAssetStatus(input.status);
@@ -8714,7 +9014,7 @@ export class V2CatalogService {
   private async getMediaById(mediaId: string): Promise<any> {
     const { data, error } = await this.supabase
       .from('v2_product_media')
-      .select('*')
+      .select('*, media_asset:media_assets(*)')
       .eq('id', mediaId)
       .is('deleted_at', null)
       .maybeSingle();
@@ -8740,7 +9040,7 @@ export class V2CatalogService {
   private async getDigitalAssetById(assetId: string): Promise<any> {
     const { data, error } = await this.supabase
       .from('v2_digital_assets')
-      .select('*')
+      .select('*, media_asset:media_assets(*)')
       .eq('id', assetId)
       .is('deleted_at', null)
       .maybeSingle();
@@ -8761,6 +9061,135 @@ export class V2CatalogService {
     }
 
     return data;
+  }
+
+  private async getMediaAssetById(mediaAssetId: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('media_assets')
+      .select('*')
+      .eq('id', mediaAssetId)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'media asset 조회 실패',
+        500,
+        'MEDIA_ASSET_FETCH_FAILED',
+      );
+    }
+    if (!data) {
+      throw new ApiException(
+        'media asset를 찾을 수 없습니다',
+        404,
+        'MEDIA_ASSET_NOT_FOUND',
+      );
+    }
+
+    return data;
+  }
+
+  private async resolveProductMediaAsset(
+    mediaType: V2MediaType,
+    input: {
+      media_asset_id?: string;
+      storage_path?: string;
+      public_url?: string | null;
+      metadata?: Record<string, unknown>;
+    },
+  ): Promise<any> {
+    const mediaAssetId = this.normalizeOptionalText(input.media_asset_id);
+    if (mediaAssetId) {
+      return this.getMediaAssetById(mediaAssetId);
+    }
+
+    const storagePath =
+      this.normalizeOptionalText(input.storage_path) ||
+      this.deriveStoragePathFromPublicUrl(input.public_url);
+    if (!storagePath) {
+      throw new ApiException(
+        'media_asset_id 또는 storage_path/public_url이 필요합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    return this.createMediaAsset({
+      asset_kind: mediaType === 'VIDEO' ? 'VIDEO' : 'IMAGE',
+      storage_provider: 'R2',
+      storage_path: storagePath,
+      public_url: this.normalizeOptionalText(input.public_url),
+      file_name: this.extractFileNameFromStoragePath(storagePath),
+      mime_type: this.inferMimeTypeFromPath(storagePath),
+      status: 'ACTIVE',
+      metadata: input.metadata ?? {},
+    });
+  }
+
+  private async resolveDigitalAssetMediaAsset(
+    input: {
+      media_asset_id?: string;
+      file_name?: string;
+      storage_path?: string;
+      public_url?: string | null;
+      mime_type?: string;
+      file_size?: number;
+      checksum?: string | null;
+      metadata?: Record<string, unknown>;
+    },
+    current?: any,
+  ): Promise<any> {
+    const mediaAssetId = this.normalizeOptionalText(input.media_asset_id);
+    if (mediaAssetId) {
+      return this.getMediaAssetById(mediaAssetId);
+    }
+
+    const hasInlineOverride =
+      input.storage_path !== undefined ||
+      input.public_url !== undefined ||
+      input.file_name !== undefined ||
+      input.mime_type !== undefined ||
+      input.file_size !== undefined ||
+      input.checksum !== undefined;
+
+    if (!hasInlineOverride && current?.media_asset_id) {
+      return this.getMediaAssetById(current.media_asset_id as string);
+    }
+
+    const storagePath =
+      this.normalizeOptionalText(input.storage_path) ||
+      this.deriveStoragePathFromPublicUrl(input.public_url) ||
+      this.normalizeOptionalText(current?.storage_path);
+    if (!storagePath) {
+      throw new ApiException(
+        'media_asset_id 또는 storage_path가 필요합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    return this.createMediaAsset({
+      storage_provider: 'R2',
+      storage_path: storagePath,
+      public_url: this.normalizeOptionalText(input.public_url),
+      file_name:
+        this.normalizeOptionalText(input.file_name) ||
+        this.extractFileNameFromStoragePath(storagePath),
+      mime_type:
+        this.normalizeOptionalText(input.mime_type) ||
+        this.normalizeOptionalText(current?.mime_type) ||
+        this.inferMimeTypeFromPath(storagePath),
+      file_size:
+        input.file_size ??
+        ((current?.file_size as number | null | undefined) ?? null),
+      checksum:
+        this.normalizeOptionalText(input.checksum) ||
+        this.normalizeOptionalText(current?.checksum),
+      status: this.mapDigitalAssetStatusToMediaAssetStatus(
+        (current?.status as V2DigitalAssetStatus | undefined) ?? 'DRAFT',
+      ),
+      metadata: input.metadata ?? {},
+    });
   }
 
   private async clearPrimaryMedia(
@@ -9058,6 +9487,35 @@ export class V2CatalogService {
     }
   }
 
+  private assertMediaAssetKind(value: string): void {
+    const allowed: V2MediaAssetKind[] = [
+      'IMAGE',
+      'VIDEO',
+      'AUDIO',
+      'DOCUMENT',
+      'ARCHIVE',
+      'FILE',
+    ];
+    if (!allowed.includes(value as V2MediaAssetKind)) {
+      throw new ApiException(
+        'media asset kind 값이 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  private assertMediaAssetStatus(value: string): void {
+    const allowed: V2MediaAssetStatus[] = ['ACTIVE', 'INACTIVE', 'ARCHIVED'];
+    if (!allowed.includes(value as V2MediaAssetStatus)) {
+      throw new ApiException(
+        'media asset status 값이 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
   private assertProjectStatusTransition(current: V2ProjectStatus, next: V2ProjectStatus): void {
     const allowed: Record<V2ProjectStatus, V2ProjectStatus[]> = {
       DRAFT: ['DRAFT', 'ACTIVE', 'ARCHIVED'],
@@ -9133,6 +9591,114 @@ export class V2CatalogService {
         'VALIDATION_ERROR',
       );
     }
+  }
+
+  private inferMediaAssetKind(
+    mimeType: string | null | undefined,
+    storagePath: string,
+  ): V2MediaAssetKind {
+    const normalizedMime = (mimeType || '').toLowerCase();
+    const lowerPath = storagePath.toLowerCase();
+    if (normalizedMime.startsWith('image/')) {
+      return 'IMAGE';
+    }
+    if (normalizedMime.startsWith('video/')) {
+      return 'VIDEO';
+    }
+    if (normalizedMime.startsWith('audio/')) {
+      return 'AUDIO';
+    }
+    if (normalizedMime === 'application/pdf') {
+      return 'DOCUMENT';
+    }
+    if (lowerPath.endsWith('.zip')) {
+      return 'ARCHIVE';
+    }
+    return 'FILE';
+  }
+
+  private inferMimeTypeFromPath(storagePath: string): string {
+    const lower = storagePath.toLowerCase();
+    if (lower.endsWith('.png')) {
+      return 'image/png';
+    }
+    if (lower.endsWith('.webp')) {
+      return 'image/webp';
+    }
+    if (lower.endsWith('.gif')) {
+      return 'image/gif';
+    }
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+      return 'image/jpeg';
+    }
+    if (lower.endsWith('.svg')) {
+      return 'image/svg+xml';
+    }
+    if (lower.endsWith('.mp4')) {
+      return 'video/mp4';
+    }
+    if (lower.endsWith('.mov')) {
+      return 'video/quicktime';
+    }
+    if (lower.endsWith('.mp3')) {
+      return 'audio/mpeg';
+    }
+    if (lower.endsWith('.wav')) {
+      return 'audio/wav';
+    }
+    if (lower.endsWith('.flac')) {
+      return 'audio/flac';
+    }
+    if (lower.endsWith('.m4a')) {
+      return 'audio/mp4';
+    }
+    if (lower.endsWith('.pdf')) {
+      return 'application/pdf';
+    }
+    if (lower.endsWith('.zip')) {
+      return 'application/zip';
+    }
+    return 'application/octet-stream';
+  }
+
+  private extractFileNameFromStoragePath(storagePath: string): string {
+    const normalized = storagePath.trim();
+    if (!normalized) {
+      return 'file';
+    }
+    const segments = normalized.split('/');
+    const candidate = segments[segments.length - 1]?.trim();
+    if (!candidate) {
+      return normalized;
+    }
+    return candidate;
+  }
+
+  private deriveStoragePathFromPublicUrl(url: string | null | undefined): string | null {
+    const normalized = this.normalizeOptionalText(url);
+    if (!normalized) {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(normalized);
+      const storagePath = parsed.pathname.replace(/^\/+/, '');
+      return storagePath || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private mapDigitalAssetStatusToMediaAssetStatus(
+    status: V2DigitalAssetStatus,
+  ): V2MediaAssetStatus {
+    if (status === 'READY') {
+      return 'ACTIVE';
+    }
+    if (status === 'RETIRED') {
+      return 'INACTIVE';
+    }
+    return 'INACTIVE';
   }
 
   private assertWeight(value: number | null | undefined): void {
