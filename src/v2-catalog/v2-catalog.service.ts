@@ -162,8 +162,6 @@ interface CreateV2MediaInput {
   media_type?: V2MediaType;
   media_role?: V2MediaRole;
   media_asset_id?: string;
-  storage_path?: string;
-  public_url?: string | null;
   alt_text?: string | null;
   sort_order?: number;
   is_primary?: boolean;
@@ -175,8 +173,6 @@ interface UpdateV2MediaInput {
   media_type?: V2MediaType;
   media_role?: V2MediaRole;
   media_asset_id?: string;
-  storage_path?: string;
-  public_url?: string | null;
   alt_text?: string | null;
   sort_order?: number;
   is_primary?: boolean;
@@ -188,8 +184,6 @@ interface CreateV2DigitalAssetInput {
   asset_role?: V2AssetRole;
   media_asset_id?: string;
   file_name?: string;
-  storage_path?: string;
-  public_url?: string | null;
   mime_type?: string;
   file_size?: number;
   version_no?: number;
@@ -201,8 +195,6 @@ interface CreateV2DigitalAssetInput {
 interface UpdateV2DigitalAssetInput {
   media_asset_id?: string;
   file_name?: string;
-  storage_path?: string;
-  public_url?: string | null;
   mime_type?: string;
   file_size?: number;
   checksum?: string | null;
@@ -1964,7 +1956,7 @@ export class V2CatalogService {
     });
   }
 
-  async createMediaAsset(input: CreateMediaAssetInput): Promise<any> {
+  private async createMediaAsset(input: CreateMediaAssetInput): Promise<any> {
     const rawStoragePath = this.normalizeRequiredText(
       input.storage_path,
       'storage_path는 필수입니다',
@@ -2096,6 +2088,13 @@ export class V2CatalogService {
 
   async updateMediaAsset(mediaAssetId: string, input: UpdateMediaAssetInput): Promise<any> {
     const current = await this.getMediaAssetById(mediaAssetId);
+    if (input.storage_path !== undefined || input.public_url !== undefined) {
+      throw new ApiException(
+        'storage_path/public_url은 수정할 수 없습니다. 파일 업로드를 통해 관리하세요.',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
     const updateData: Record<string, unknown> = {};
 
     if (input.asset_kind !== undefined) {
@@ -2105,19 +2104,6 @@ export class V2CatalogService {
     if (input.status !== undefined) {
       this.assertMediaAssetStatus(input.status);
       updateData.status = input.status;
-    }
-    if (input.storage_path !== undefined) {
-      const nextPath = this.normalizeRequiredText(
-        input.storage_path,
-        'storage_path는 필수입니다',
-      );
-      updateData.storage_path =
-        current.storage_provider === 'R2'
-          ? this.normalizeV2R2StoragePath(nextPath)
-          : nextPath;
-    }
-    if (input.public_url !== undefined) {
-      updateData.public_url = this.normalizeOptionalText(input.public_url);
     }
     if (input.file_name !== undefined) {
       updateData.file_name = this.normalizeRequiredText(
@@ -2196,6 +2182,7 @@ export class V2CatalogService {
 
   async createProductMedia(productId: string, input: CreateV2MediaInput): Promise<any> {
     await this.ensureProductExists(productId);
+    this.assertNoInlineStorageOverride(input as Record<string, unknown>);
     const mediaType = input.media_type ?? 'IMAGE';
     const mediaRole = input.media_role ?? 'GALLERY';
     this.assertMediaType(mediaType);
@@ -2240,6 +2227,7 @@ export class V2CatalogService {
 
   async updateProductMedia(mediaId: string, input: UpdateV2MediaInput): Promise<any> {
     const current = await this.getMediaById(mediaId);
+    this.assertNoInlineStorageOverride(input as Record<string, unknown>);
     const updateData: Record<string, unknown> = {};
     let nextMediaType = current.media_type as V2MediaType;
 
@@ -2266,11 +2254,7 @@ export class V2CatalogService {
     if (input.metadata !== undefined) {
       updateData.metadata = input.metadata ?? {};
     }
-    if (
-      input.media_asset_id !== undefined ||
-      input.storage_path !== undefined ||
-      input.public_url !== undefined
-    ) {
+    if (input.media_asset_id !== undefined) {
       const mediaAsset = await this.resolveProductMediaAsset(nextMediaType, input);
       updateData.media_asset_id = mediaAsset.id;
       updateData.storage_path = mediaAsset.storage_path;
@@ -2353,6 +2337,7 @@ export class V2CatalogService {
     input: CreateV2DigitalAssetInput,
   ): Promise<any> {
     const variant = await this.getVariantById(variantId);
+    this.assertNoInlineStorageOverride(input as Record<string, unknown>);
     if (variant.fulfillment_type !== 'DIGITAL') {
       throw new ApiException(
         'DIGITAL variant에만 digital asset을 등록할 수 있습니다',
@@ -2425,11 +2410,10 @@ export class V2CatalogService {
     input: UpdateV2DigitalAssetInput,
   ): Promise<any> {
     const current = await this.getDigitalAssetById(assetId);
+    this.assertNoInlineStorageOverride(input as Record<string, unknown>);
     const updateData: Record<string, unknown> = {};
     if (
       input.media_asset_id !== undefined ||
-      input.storage_path !== undefined ||
-      input.public_url !== undefined ||
       input.file_name !== undefined ||
       input.mime_type !== undefined ||
       input.file_size !== undefined ||
@@ -9144,49 +9128,52 @@ export class V2CatalogService {
     return data;
   }
 
-  private async resolveProductMediaAsset(
-    mediaType: V2MediaType,
-    input: {
-      media_asset_id?: string;
-      storage_path?: string;
-      public_url?: string | null;
-      metadata?: Record<string, unknown>;
-    },
-  ): Promise<any> {
-    const mediaAssetId = this.normalizeOptionalText(input.media_asset_id);
-    if (mediaAssetId) {
-      return this.getMediaAssetById(mediaAssetId);
-    }
-
-    const storagePath =
-      this.normalizeOptionalText(input.storage_path) ||
-      this.deriveStoragePathFromPublicUrl(input.public_url);
-    if (!storagePath) {
+  private assertNoInlineStorageOverride(
+    input: Record<string, unknown>,
+  ): void {
+    if (
+      input.storage_path !== undefined ||
+      input.public_url !== undefined
+    ) {
       throw new ApiException(
-        'media_asset_id 또는 storage_path/public_url이 필요합니다',
+        'storage_path/public_url 직접 입력은 지원하지 않습니다. media_asset_id를 사용하세요.',
         400,
         'VALIDATION_ERROR',
       );
     }
+  }
 
-    return this.createMediaAsset({
-      asset_kind: mediaType === 'VIDEO' ? 'VIDEO' : 'IMAGE',
-      storage_provider: 'R2',
-      storage_path: storagePath,
-      public_url: this.normalizeOptionalText(input.public_url),
-      file_name: this.extractFileNameFromStoragePath(storagePath),
-      mime_type: this.inferMimeTypeFromPath(storagePath),
-      status: 'ACTIVE',
-      metadata: input.metadata ?? {},
-    });
+  private async resolveProductMediaAsset(
+    mediaType: V2MediaType,
+    input: {
+      media_asset_id?: string;
+      metadata?: Record<string, unknown>;
+    },
+  ): Promise<any> {
+    const mediaAssetId = this.normalizeOptionalText(input.media_asset_id);
+    if (!mediaAssetId) {
+      throw new ApiException(
+        'media_asset_id는 필수입니다. 파일을 먼저 업로드한 뒤 선택하세요.',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    const mediaAsset = await this.getMediaAssetById(mediaAssetId);
+    const expectedKind = mediaType === 'VIDEO' ? 'VIDEO' : 'IMAGE';
+    if (mediaAsset.asset_kind !== expectedKind) {
+      throw new ApiException(
+        `선택한 media_asset은 ${expectedKind} 타입이어야 합니다`,
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    return mediaAsset;
   }
 
   private async resolveDigitalAssetMediaAsset(
     input: {
       media_asset_id?: string;
       file_name?: string;
-      storage_path?: string;
-      public_url?: string | null;
       mime_type?: string;
       file_size?: number;
       checksum?: string | null;
@@ -9200,8 +9187,6 @@ export class V2CatalogService {
     }
 
     const hasInlineOverride =
-      input.storage_path !== undefined ||
-      input.public_url !== undefined ||
       input.file_name !== undefined ||
       input.mime_type !== undefined ||
       input.file_size !== undefined ||
@@ -9211,40 +9196,15 @@ export class V2CatalogService {
       return this.getMediaAssetById(current.media_asset_id as string);
     }
 
-    const storagePath =
-      this.normalizeOptionalText(input.storage_path) ||
-      this.deriveStoragePathFromPublicUrl(input.public_url) ||
-      this.normalizeOptionalText(current?.storage_path);
-    if (!storagePath) {
+    if (!current?.media_asset_id) {
       throw new ApiException(
-        'media_asset_id 또는 storage_path가 필요합니다',
+        'media_asset_id는 필수입니다. 파일을 먼저 업로드한 뒤 선택하세요.',
         400,
         'VALIDATION_ERROR',
       );
     }
 
-    return this.createMediaAsset({
-      storage_provider: 'R2',
-      storage_path: storagePath,
-      public_url: this.normalizeOptionalText(input.public_url),
-      file_name:
-        this.normalizeOptionalText(input.file_name) ||
-        this.extractFileNameFromStoragePath(storagePath),
-      mime_type:
-        this.normalizeOptionalText(input.mime_type) ||
-        this.normalizeOptionalText(current?.mime_type) ||
-        this.inferMimeTypeFromPath(storagePath),
-      file_size:
-        input.file_size ??
-        ((current?.file_size as number | null | undefined) ?? null),
-      checksum:
-        this.normalizeOptionalText(input.checksum) ||
-        this.normalizeOptionalText(current?.checksum),
-      status: this.mapDigitalAssetStatusToMediaAssetStatus(
-        (current?.status as V2DigitalAssetStatus | undefined) ?? 'DRAFT',
-      ),
-      metadata: input.metadata ?? {},
-    });
+    return this.getMediaAssetById(current.media_asset_id as string);
   }
 
   private async clearPrimaryMedia(
@@ -9787,33 +9747,6 @@ export class V2CatalogService {
       return normalized;
     }
     return candidate;
-  }
-
-  private deriveStoragePathFromPublicUrl(url: string | null | undefined): string | null {
-    const normalized = this.normalizeOptionalText(url);
-    if (!normalized) {
-      return null;
-    }
-
-    try {
-      const parsed = new URL(normalized);
-      const storagePath = parsed.pathname.replace(/^\/+/, '');
-      return storagePath || null;
-    } catch {
-      return null;
-    }
-  }
-
-  private mapDigitalAssetStatusToMediaAssetStatus(
-    status: V2DigitalAssetStatus,
-  ): V2MediaAssetStatus {
-    if (status === 'READY') {
-      return 'ACTIVE';
-    }
-    if (status === 'RETIRED') {
-      return 'INACTIVE';
-    }
-    return 'INACTIVE';
   }
 
   private assertWeight(value: number | null | undefined): void {
