@@ -8,10 +8,7 @@ import {
   Patch,
   Post,
   Query,
-  UploadedFile,
-  UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
 import { AuthSessionService } from '../auth/auth-session.service';
 import { successResponse } from '../common/api-response';
 import { ApiException } from '../common/errors/api.exception';
@@ -589,40 +586,6 @@ export class V2CatalogController {
       checksum:
         typeof body.checksum === 'string' ? (body.checksum as string) : undefined,
       metadata: this.parseMetadata(body.metadata),
-    });
-    return successResponse(asset);
-  }
-
-  @Post('media-assets/upload')
-  @UseInterceptors(
-    FileInterceptor('file', {
-      limits: {
-        fileSize: 200 * 1024 * 1024,
-      },
-    }),
-  )
-  async uploadMediaAsset(
-    @Headers('authorization') authorization: string | undefined,
-    @UploadedFile() file: any,
-    @Body() body: Record<string, unknown>,
-  ) {
-    await this.requireAdmin(authorization);
-    if (!file) {
-      throw new ApiException('파일이 제공되지 않았습니다', 400, 'FILE_REQUIRED');
-    }
-
-    const metadata = this.parseMetadata(body.metadata);
-    const asset = await this.v2CatalogService.uploadMediaAssetFile({
-      file: {
-        buffer: file.buffer as Buffer,
-        originalname: file.originalname as string,
-        mimetype: file.mimetype as string,
-        size: file.size as number,
-      },
-      asset_kind:
-        typeof body.asset_kind === 'string' ? (body.asset_kind as string) : undefined,
-      status: typeof body.status === 'string' ? (body.status as string) : undefined,
-      metadata,
     });
     return successResponse(asset);
   }
