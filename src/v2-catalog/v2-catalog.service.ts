@@ -9790,10 +9790,11 @@ export class V2CatalogService {
       );
     }
 
-    const maxSize = 200 * 1024 * 1024;
+    const maxSizeInMb = 500;
+    const maxSize = maxSizeInMb * 1024 * 1024;
     if (file.size > maxSize) {
       throw new ApiException(
-        '파일 크기는 200MB를 초과할 수 없습니다',
+        `파일 크기는 ${maxSizeInMb}MB를 초과할 수 없습니다`,
         400,
         'FILE_TOO_LARGE',
       );
