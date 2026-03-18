@@ -1,7 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { ApiException } from '../common/errors/api.exception';
-import { uploadFileToR2 } from '../images/r2.util';
+import {
+  buildR2PublicUrl,
+  createPresignedUploadUrlToR2,
+  getR2ObjectMetadata,
+  uploadFileToR2,
+} from '../images/r2.util';
 import { getSupabaseClient } from '../supabase/supabase.client';
 
 type V2ProjectStatus = 'DRAFT' | 'ACTIVE' | 'ARCHIVED';
@@ -301,6 +306,26 @@ interface UploadMediaAssetFileInput {
   };
   asset_kind?: string;
   status?: string;
+  metadata?: Record<string, unknown>;
+}
+
+interface PrepareMediaAssetUploadInput {
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+  asset_kind?: string;
+  status?: string;
+  metadata?: Record<string, unknown>;
+}
+
+interface CompleteMediaAssetUploadInput {
+  storage_path?: string;
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+  asset_kind?: string;
+  status?: string;
+  checksum?: string | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -1952,6 +1977,120 @@ export class V2CatalogService {
       file_name: input.file.originalname,
       mime_type: input.file.mimetype,
       file_size: input.file.size,
+      metadata: input.metadata ?? {},
+    });
+  }
+
+  async prepareMediaAssetUpload(input: PrepareMediaAssetUploadInput): Promise<any> {
+    const fileName = this.normalizeRequiredText(input.file_name, 'file_name은 필수입니다');
+    const mimeType = this.normalizeRequiredText(input.mime_type, 'mime_type은 필수입니다');
+    const fileSize = input.file_size;
+    this.validateMediaAssetUploadFile({
+      originalname: fileName,
+      mimetype: mimeType,
+      size: fileSize as number,
+    });
+
+    const inferredKind = this.inferMediaAssetKind(mimeType, fileName);
+    const assetKind = (input.asset_kind as V2MediaAssetKind | undefined) ?? inferredKind;
+    this.assertMediaAssetKind(assetKind);
+    const status = (input.status as V2MediaAssetStatus | undefined) ?? 'ACTIVE';
+    this.assertMediaAssetStatus(status);
+
+    const r2Key = this.generateMediaAssetR2Key(assetKind, fileName);
+    const upload = await createPresignedUploadUrlToR2({
+      key: r2Key,
+      contentType: mimeType,
+    });
+
+    return {
+      asset_kind: assetKind,
+      status,
+      storage_provider: 'R2',
+      storage_bucket: process.env.R2_BUCKET_NAME || null,
+      storage_path: r2Key,
+      public_url: buildR2PublicUrl(r2Key),
+      file_name: fileName,
+      mime_type: mimeType,
+      file_size: fileSize,
+      upload_url: upload.uploadUrl,
+      upload_method: 'PUT',
+      upload_headers: {
+        'Content-Type': mimeType,
+      },
+      expires_in_seconds: upload.expiresInSeconds,
+      expires_at: upload.expiresAt,
+    };
+  }
+
+  async completeMediaAssetUpload(input: CompleteMediaAssetUploadInput): Promise<any> {
+    const rawStoragePath = this.normalizeRequiredText(
+      input.storage_path,
+      'storage_path는 필수입니다',
+    );
+    const storagePath = this.normalizeV2R2StoragePath(rawStoragePath);
+    const fileName =
+      this.normalizeOptionalText(input.file_name) ||
+      this.extractFileNameFromStoragePath(storagePath);
+    const status = (input.status as V2MediaAssetStatus | undefined) ?? 'ACTIVE';
+    this.assertMediaAssetStatus(status);
+
+    let objectMetadata: {
+      contentType: string | null;
+      contentLength: number | null;
+      eTag: string | null;
+    };
+
+    try {
+      objectMetadata = await getR2ObjectMetadata(storagePath);
+    } catch {
+      throw new ApiException(
+        'R2에서 업로드된 파일을 확인할 수 없습니다',
+        400,
+        'UPLOADED_FILE_NOT_FOUND',
+      );
+    }
+
+    const mimeType =
+      this.normalizeOptionalText(input.mime_type) || objectMetadata.contentType;
+    if (!mimeType) {
+      throw new ApiException('mime_type은 필수입니다', 400, 'VALIDATION_ERROR');
+    }
+
+    const fileSize = input.file_size ?? objectMetadata.contentLength;
+    this.assertPositiveInteger(fileSize ?? undefined, 'file_size');
+
+    if (
+      typeof input.file_size === 'number' &&
+      typeof objectMetadata.contentLength === 'number' &&
+      input.file_size !== objectMetadata.contentLength
+    ) {
+      throw new ApiException(
+        '업로드된 파일 크기가 요청 값과 일치하지 않습니다',
+        400,
+        'UPLOAD_FILE_SIZE_MISMATCH',
+      );
+    }
+
+    const inferredKind = this.inferMediaAssetKind(mimeType, storagePath);
+    const assetKind = (input.asset_kind as V2MediaAssetKind | undefined) ?? inferredKind;
+    this.assertMediaAssetKind(assetKind);
+
+    const checksum =
+      this.normalizeOptionalText(input.checksum) ??
+      this.normalizeOptionalText(objectMetadata.eTag)?.replace(/^"+|"+$/g, '');
+
+    return this.createMediaAsset({
+      asset_kind: assetKind,
+      status,
+      storage_provider: 'R2',
+      storage_bucket: process.env.R2_BUCKET_NAME || null,
+      storage_path: storagePath,
+      public_url: buildR2PublicUrl(storagePath),
+      file_name: fileName,
+      mime_type: mimeType,
+      file_size: fileSize ?? null,
+      checksum,
       metadata: input.metadata ?? {},
     });
   }

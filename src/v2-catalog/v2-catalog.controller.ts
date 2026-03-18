@@ -544,6 +544,55 @@ export class V2CatalogController {
     return successResponse(assets);
   }
 
+  @Post('media-assets/presign-upload')
+  async presignMediaAssetUpload(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const upload = await this.v2CatalogService.prepareMediaAssetUpload({
+      file_name:
+        typeof body.file_name === 'string' ? (body.file_name as string) : undefined,
+      mime_type:
+        typeof body.mime_type === 'string' ? (body.mime_type as string) : undefined,
+      file_size: this.parsePositiveInteger(body.file_size, 'file_size'),
+      asset_kind:
+        typeof body.asset_kind === 'string' ? (body.asset_kind as string) : undefined,
+      status: typeof body.status === 'string' ? (body.status as string) : undefined,
+      metadata: this.parseMetadata(body.metadata),
+    });
+    return successResponse(upload);
+  }
+
+  @Post('media-assets/complete-upload')
+  async completeMediaAssetUpload(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const asset = await this.v2CatalogService.completeMediaAssetUpload({
+      storage_path:
+        typeof body.storage_path === 'string'
+          ? (body.storage_path as string)
+          : undefined,
+      file_name:
+        typeof body.file_name === 'string' ? (body.file_name as string) : undefined,
+      mime_type:
+        typeof body.mime_type === 'string' ? (body.mime_type as string) : undefined,
+      file_size:
+        body.file_size === undefined
+          ? undefined
+          : this.parsePositiveInteger(body.file_size, 'file_size'),
+      asset_kind:
+        typeof body.asset_kind === 'string' ? (body.asset_kind as string) : undefined,
+      status: typeof body.status === 'string' ? (body.status as string) : undefined,
+      checksum:
+        typeof body.checksum === 'string' ? (body.checksum as string) : undefined,
+      metadata: this.parseMetadata(body.metadata),
+    });
+    return successResponse(asset);
+  }
+
   @Post('media-assets/upload')
   @UseInterceptors(
     FileInterceptor('file', {
@@ -1193,9 +1242,40 @@ export class V2CatalogController {
     return undefined;
   }
 
+  private parsePositiveInteger(value: unknown, fieldName: string): number {
+    if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+      return value;
+    }
+
+    if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+      const parsed = Number.parseInt(value.trim(), 10);
+      if (parsed > 0) {
+        return parsed;
+      }
+    }
+
+    throw new ApiException(
+      `${fieldName}는 1 이상의 정수여야 합니다`,
+      400,
+      'VALIDATION_ERROR',
+    );
+  }
+
   private parseMetadata(value: unknown): Record<string, unknown> {
-    if (typeof value !== 'string' || !value.trim()) {
+    if (value == null || value === '') {
       return {};
+    }
+
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+
+    if (typeof value !== 'string' || !value.trim()) {
+      throw new ApiException(
+        'metadata는 JSON object 문자열 또는 object여야 합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
     }
 
     try {
@@ -1206,7 +1286,7 @@ export class V2CatalogController {
       throw new Error('invalid');
     } catch {
       throw new ApiException(
-        'metadata는 JSON object 문자열이어야 합니다',
+        'metadata는 JSON object 문자열 또는 object여야 합니다',
         400,
         'VALIDATION_ERROR',
       );
