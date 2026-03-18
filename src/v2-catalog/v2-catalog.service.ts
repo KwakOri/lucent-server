@@ -5,7 +5,6 @@ import {
   buildR2PublicUrl,
   createPresignedUploadUrlToR2,
   getR2ObjectMetadata,
-  uploadFileToR2,
 } from '../images/r2.util';
 import { getSupabaseClient } from '../supabase/supabase.client';
 
@@ -294,18 +293,6 @@ interface UpdateMediaAssetInput {
   file_size?: number | null;
   checksum?: string | null;
   status?: V2MediaAssetStatus;
-  metadata?: Record<string, unknown>;
-}
-
-interface UploadMediaAssetFileInput {
-  file: {
-    buffer: Buffer;
-    originalname: string;
-    mimetype: string;
-    size: number;
-  };
-  asset_kind?: string;
-  status?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -1946,39 +1933,6 @@ export class V2CatalogService {
     }
 
     return data || [];
-  }
-
-  async uploadMediaAssetFile(input: UploadMediaAssetFileInput): Promise<any> {
-    this.validateMediaAssetUploadFile(input.file);
-
-    const inferredKind = this.inferMediaAssetKind(
-      input.file.mimetype,
-      input.file.originalname,
-    );
-    const assetKind = (input.asset_kind as V2MediaAssetKind | undefined) ?? inferredKind;
-    this.assertMediaAssetKind(assetKind);
-    const status = (input.status as V2MediaAssetStatus | undefined) ?? 'ACTIVE';
-    this.assertMediaAssetStatus(status);
-
-    const r2Key = this.generateMediaAssetR2Key(assetKind, input.file.originalname);
-    const publicUrl = await uploadFileToR2({
-      key: r2Key,
-      body: input.file.buffer,
-      contentType: input.file.mimetype,
-    });
-
-    return this.createMediaAsset({
-      asset_kind: assetKind,
-      status,
-      storage_provider: 'R2',
-      storage_bucket: process.env.R2_BUCKET_NAME || null,
-      storage_path: r2Key,
-      public_url: publicUrl,
-      file_name: input.file.originalname,
-      mime_type: input.file.mimetype,
-      file_size: input.file.size,
-      metadata: input.metadata ?? {},
-    });
   }
 
   async prepareMediaAssetUpload(input: PrepareMediaAssetUploadInput): Promise<any> {
