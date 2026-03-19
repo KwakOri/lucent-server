@@ -10,6 +10,9 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
+const DEFAULT_SINGLE_UPLOAD_URL_EXPIRES_IN_SECONDS = 900;
+const DEFAULT_MULTIPART_UPLOAD_PART_URL_EXPIRES_IN_SECONDS = 3 * 60 * 60;
+
 function getRequiredEnv(key: string): string {
   const value = process.env[key];
   if (!value) {
@@ -68,7 +71,8 @@ export async function createPresignedUploadUrlToR2(options: {
   expiresAt: string;
 }> {
   const client = createR2Client();
-  const expiresInSeconds = options.expiresInSeconds ?? 900;
+  const expiresInSeconds =
+    options.expiresInSeconds ?? DEFAULT_SINGLE_UPLOAD_URL_EXPIRES_IN_SECONDS;
   const command = new PutObjectCommand({
     Bucket: getBucketName(),
     Key: options.key,
@@ -120,7 +124,9 @@ export async function createPresignedMultipartUploadPartUrlToR2(options: {
   expiresAt: string;
 }> {
   const client = createR2Client();
-  const expiresInSeconds = options.expiresInSeconds ?? 900;
+  const expiresInSeconds =
+    options.expiresInSeconds ??
+    DEFAULT_MULTIPART_UPLOAD_PART_URL_EXPIRES_IN_SECONDS;
   const command = new UploadPartCommand({
     Bucket: getBucketName(),
     Key: options.key,
