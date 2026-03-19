@@ -2141,7 +2141,7 @@ export class V2CatalogService {
         // If DB insert fails we still prefer surfacing the original error.
       }
       throw new ApiException(
-        'multipart 업로드 세션 생성 실패',
+        `multipart 업로드 세션 생성 실패${this.formatSupabaseErrorSuffix(error)}`,
         500,
         'MEDIA_ASSET_MULTIPART_SESSION_CREATE_FAILED',
       );
@@ -10040,6 +10040,35 @@ export class V2CatalogService {
     return partSize;
   }
 
+  private formatSupabaseErrorSuffix(
+    error:
+      | {
+          message?: string | null;
+          details?: string | null;
+          hint?: string | null;
+          code?: string | null;
+        }
+      | null
+      | undefined,
+  ): string {
+    if (!error) {
+      return '';
+    }
+
+    const detailParts = [
+      error.message?.trim(),
+      error.details?.trim(),
+      error.hint?.trim(),
+      error.code?.trim() ? `code=${error.code.trim()}` : null,
+    ].filter((value): value is string => !!value);
+
+    if (detailParts.length === 0) {
+      return '';
+    }
+
+    return ` (${detailParts.join(' | ')})`;
+  }
+
   private getMultipartSessionExpiresAt(): string {
     return new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   }
@@ -10076,7 +10105,7 @@ export class V2CatalogService {
 
     if (error || !data) {
       throw new ApiException(
-        'multipart 업로드 세션 갱신 실패',
+        `multipart 업로드 세션 갱신 실패${this.formatSupabaseErrorSuffix(error)}`,
         500,
         'MEDIA_ASSET_MULTIPART_SESSION_UPDATE_FAILED',
       );
