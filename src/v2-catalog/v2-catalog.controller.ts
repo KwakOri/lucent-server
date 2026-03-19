@@ -590,6 +590,66 @@ export class V2CatalogController {
     return successResponse(asset);
   }
 
+  @Post('media-assets/multipart/init')
+  async initiateMultipartMediaAssetUpload(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const session = await this.v2CatalogService.initiateMultipartMediaAssetUpload({
+      file_name:
+        typeof body.file_name === 'string' ? (body.file_name as string) : undefined,
+      mime_type:
+        typeof body.mime_type === 'string' ? (body.mime_type as string) : undefined,
+      file_size: this.parsePositiveInteger(body.file_size, 'file_size'),
+      asset_kind:
+        typeof body.asset_kind === 'string' ? (body.asset_kind as string) : undefined,
+      status: typeof body.status === 'string' ? (body.status as string) : undefined,
+      metadata: this.parseMetadata(body.metadata),
+    });
+    return successResponse(session);
+  }
+
+  @Post('media-assets/multipart/sign-parts')
+  async signMultipartMediaAssetUploadParts(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const signed = await this.v2CatalogService.signMultipartMediaAssetUploadParts({
+      session_id:
+        typeof body.session_id === 'string' ? (body.session_id as string) : undefined,
+      part_numbers: this.parsePositiveIntegerArray(body.part_numbers, 'part_numbers'),
+    });
+    return successResponse(signed);
+  }
+
+  @Post('media-assets/multipart/complete')
+  async completeMultipartMediaAssetUpload(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const asset = await this.v2CatalogService.completeMultipartMediaAssetUpload({
+      session_id:
+        typeof body.session_id === 'string' ? (body.session_id as string) : undefined,
+      parts: this.parseMultipartParts(body.parts),
+    });
+    return successResponse(asset);
+  }
+
+  @Post('media-assets/multipart/abort')
+  async abortMultipartMediaAssetUpload(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const session = await this.v2CatalogService.abortMultipartMediaAssetUpload(
+      typeof body.session_id === 'string' ? (body.session_id as string) : undefined,
+    );
+    return successResponse(session, 'multipart 업로드가 중단되었습니다');
+  }
+
   @Patch('media-assets/:id')
   async updateMediaAsset(
     @Headers('authorization') authorization: string | undefined,
@@ -1222,6 +1282,101 @@ export class V2CatalogController {
       400,
       'VALIDATION_ERROR',
     );
+  }
+
+  private parsePositiveIntegerArray(
+    value: unknown,
+    fieldName: string,
+  ): number[] | undefined {
+    if (value == null) {
+      return undefined;
+    }
+
+    const rawArray =
+      typeof value === 'string'
+        ? (() => {
+            try {
+              return JSON.parse(value);
+            } catch {
+              throw new ApiException(
+                `${fieldName}는 숫자 배열이어야 합니다`,
+                400,
+                'VALIDATION_ERROR',
+              );
+            }
+          })()
+        : value;
+
+    if (!Array.isArray(rawArray)) {
+      throw new ApiException(
+        `${fieldName}는 숫자 배열이어야 합니다`,
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    return rawArray.map((item, index) =>
+      this.parsePositiveInteger(item, `${fieldName}[${index}]`),
+    );
+  }
+
+  private parseMultipartParts(
+    value: unknown,
+  ): Array<{ part_number: number; etag: string }> | undefined {
+    if (value == null) {
+      return undefined;
+    }
+
+    const rawArray =
+      typeof value === 'string'
+        ? (() => {
+            try {
+              return JSON.parse(value);
+            } catch {
+              throw new ApiException(
+                'parts는 part_number와 etag를 가진 배열이어야 합니다',
+                400,
+                'VALIDATION_ERROR',
+              );
+            }
+          })()
+        : value;
+
+    if (!Array.isArray(rawArray)) {
+      throw new ApiException(
+        'parts는 part_number와 etag를 가진 배열이어야 합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    return rawArray.map((item, index) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        throw new ApiException(
+          `parts[${index}]는 object여야 합니다`,
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+
+      const part = item as Record<string, unknown>;
+      return {
+        part_number: this.parsePositiveInteger(
+          part.part_number,
+          `parts[${index}].part_number`,
+        ),
+        etag:
+          typeof part.etag === 'string' && part.etag.trim()
+            ? part.etag.trim()
+            : (() => {
+                throw new ApiException(
+                  `parts[${index}].etag는 필수입니다`,
+                  400,
+                  'VALIDATION_ERROR',
+                );
+              })(),
+      };
+    });
   }
 
   private parseMetadata(value: unknown): Record<string, unknown> {

@@ -2,7 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { ApiException } from '../common/errors/api.exception';
 import {
+  abortMultipartUploadToR2,
   buildR2PublicUrl,
+  completeMultipartUploadToR2,
+  createMultipartUploadToR2,
+  createPresignedMultipartUploadPartUrlToR2,
   createPresignedUploadUrlToR2,
   getR2ObjectMetadata,
 } from '../images/r2.util';
@@ -21,6 +25,14 @@ type V2AssetRole = 'PRIMARY' | 'BONUS';
 type V2DigitalAssetStatus = 'DRAFT' | 'READY' | 'RETIRED';
 type V2MediaAssetKind = 'IMAGE' | 'VIDEO' | 'AUDIO' | 'DOCUMENT' | 'ARCHIVE' | 'FILE';
 type V2MediaAssetStatus = 'ACTIVE' | 'INACTIVE' | 'ARCHIVED';
+type V2MediaAssetUploadSessionStatus =
+  | 'INITIATED'
+  | 'UPLOADING'
+  | 'COMPLETING'
+  | 'COMPLETED'
+  | 'ABORTED'
+  | 'FAILED'
+  | 'EXPIRED';
 type V2BundleMode = 'FIXED' | 'CUSTOMIZABLE';
 type V2BundleStatus = 'DRAFT' | 'ACTIVE' | 'ARCHIVED';
 type V2BundlePricingStrategy = 'WEIGHTED' | 'FIXED_AMOUNT';
@@ -314,6 +326,28 @@ interface CompleteMediaAssetUploadInput {
   status?: string;
   checksum?: string | null;
   metadata?: Record<string, unknown>;
+}
+
+interface InitiateMultipartMediaAssetUploadInput {
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+  asset_kind?: string;
+  status?: string;
+  metadata?: Record<string, unknown>;
+}
+
+interface SignMultipartMediaAssetUploadPartsInput {
+  session_id?: string;
+  part_numbers?: number[];
+}
+
+interface CompleteMultipartMediaAssetUploadInput {
+  session_id?: string;
+  parts?: Array<{
+    part_number: number;
+    etag: string;
+  }>;
 }
 
 interface BundleComponentSelectionInput {
@@ -2046,6 +2080,230 @@ export class V2CatalogService {
       file_size: fileSize ?? null,
       checksum,
       metadata: input.metadata ?? {},
+    });
+  }
+
+  async initiateMultipartMediaAssetUpload(
+    input: InitiateMultipartMediaAssetUploadInput,
+  ): Promise<any> {
+    const fileName = this.normalizeRequiredText(input.file_name, 'file_name은 필수입니다');
+    const mimeType = this.normalizeRequiredText(input.mime_type, 'mime_type은 필수입니다');
+    const fileSize = input.file_size;
+    this.validateMediaAssetUploadFile({
+      originalname: fileName,
+      mimetype: mimeType,
+      size: fileSize as number,
+    });
+
+    const inferredKind = this.inferMediaAssetKind(mimeType, fileName);
+    const assetKind = (input.asset_kind as V2MediaAssetKind | undefined) ?? inferredKind;
+    this.assertMediaAssetKind(assetKind);
+    const assetStatus = (input.status as V2MediaAssetStatus | undefined) ?? 'ACTIVE';
+    this.assertMediaAssetStatus(assetStatus);
+
+    const storagePath = this.generateMediaAssetR2Key(assetKind, fileName);
+    const { uploadId } = await createMultipartUploadToR2({
+      key: storagePath,
+      contentType: mimeType,
+    });
+
+    const partSize = this.getMultipartUploadPartSize(fileSize as number);
+    const totalParts = Math.ceil((fileSize as number) / partSize);
+    const expiresAt = this.getMultipartSessionExpiresAt();
+
+    const { data, error } = await this.supabase
+      .from('media_asset_upload_sessions')
+      .insert({
+        upload_id: uploadId,
+        storage_path: storagePath,
+        file_name: fileName,
+        mime_type: mimeType,
+        file_size: fileSize,
+        asset_kind: assetKind,
+        asset_status: assetStatus,
+        part_size: partSize,
+        total_parts: totalParts,
+        status: 'INITIATED',
+        uploaded_parts_json: [],
+        metadata: input.metadata ?? {},
+        expires_at: expiresAt,
+      })
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      try {
+        await abortMultipartUploadToR2({
+          key: storagePath,
+          uploadId,
+        });
+      } catch {
+        // If DB insert fails we still prefer surfacing the original error.
+      }
+      throw new ApiException(
+        'multipart 업로드 세션 생성 실패',
+        500,
+        'MEDIA_ASSET_MULTIPART_SESSION_CREATE_FAILED',
+      );
+    }
+
+    return {
+      session_id: data.id,
+      asset_kind: data.asset_kind,
+      status: data.asset_status,
+      storage_provider: 'R2',
+      storage_bucket: process.env.R2_BUCKET_NAME || null,
+      storage_path: data.storage_path,
+      public_url: buildR2PublicUrl(data.storage_path),
+      file_name: data.file_name,
+      mime_type: data.mime_type,
+      file_size: data.file_size,
+      part_size: data.part_size,
+      total_parts: data.total_parts,
+      expires_at: data.expires_at,
+    };
+  }
+
+  async signMultipartMediaAssetUploadParts(
+    input: SignMultipartMediaAssetUploadPartsInput,
+  ): Promise<any> {
+    const sessionId = this.normalizeRequiredText(
+      input.session_id,
+      'session_id는 필수입니다',
+    );
+    const session = await this.getMediaAssetUploadSessionById(sessionId);
+    this.assertMultipartSessionAvailable(session);
+    if (session.status === 'COMPLETED' || session.status === 'COMPLETING') {
+      throw new ApiException(
+        '이미 마무리 중이거나 완료된 multipart 업로드 세션입니다',
+        400,
+        'MEDIA_ASSET_MULTIPART_SESSION_FINALIZED',
+      );
+    }
+
+    const partNumbers = this.normalizeMultipartPartNumbers(
+      input.part_numbers,
+      session.total_parts,
+    );
+
+    const signedParts = await Promise.all(
+      partNumbers.map(async (partNumber) => {
+        const signed = await createPresignedMultipartUploadPartUrlToR2({
+          key: session.storage_path,
+          uploadId: session.upload_id,
+          partNumber,
+        });
+
+        return {
+          part_number: partNumber,
+          upload_url: signed.uploadUrl,
+          expires_in_seconds: signed.expiresInSeconds,
+          expires_at: signed.expiresAt,
+        };
+      }),
+    );
+
+    if (session.status === 'INITIATED') {
+      await this.updateMediaAssetUploadSession(session.id, {
+        status: 'UPLOADING',
+      });
+    }
+
+    return {
+      session_id: session.id,
+      part_size: session.part_size,
+      total_parts: session.total_parts,
+      parts: signedParts,
+    };
+  }
+
+  async completeMultipartMediaAssetUpload(
+    input: CompleteMultipartMediaAssetUploadInput,
+  ): Promise<any> {
+    const sessionId = this.normalizeRequiredText(
+      input.session_id,
+      'session_id는 필수입니다',
+    );
+    const session = await this.getMediaAssetUploadSessionById(sessionId);
+    this.assertMultipartSessionAvailable(session);
+
+    if (session.status === 'COMPLETED' && session.media_asset_id) {
+      return this.getMediaAssetById(session.media_asset_id);
+    }
+
+    const parts = this.normalizeMultipartCompletedParts(
+      input.parts,
+      session.total_parts,
+    );
+
+    await this.updateMediaAssetUploadSession(session.id, {
+      status: 'COMPLETING',
+      uploaded_parts_json: parts,
+    });
+
+    try {
+      await completeMultipartUploadToR2({
+        key: session.storage_path,
+        uploadId: session.upload_id,
+        parts: parts.map((part) => ({
+          partNumber: part.part_number,
+          eTag: part.etag,
+        })),
+      });
+
+      const asset = await this.completeMediaAssetUpload({
+        storage_path: session.storage_path,
+        file_name: session.file_name,
+        mime_type: session.mime_type,
+        file_size: session.file_size,
+        asset_kind: session.asset_kind,
+        status: session.asset_status,
+        metadata: session.metadata ?? {},
+      });
+
+      await this.updateMediaAssetUploadSession(session.id, {
+        status: 'COMPLETED',
+        media_asset_id: asset.id,
+        completed_at: new Date().toISOString(),
+      });
+
+      return asset;
+    } catch (error) {
+      await this.updateMediaAssetUploadSession(session.id, {
+        status: 'FAILED',
+        uploaded_parts_json: parts,
+      });
+      throw error;
+    }
+  }
+
+  async abortMultipartMediaAssetUpload(sessionId: string | undefined): Promise<any> {
+    const normalizedSessionId = this.normalizeRequiredText(
+      sessionId,
+      'session_id는 필수입니다',
+    );
+    const session = await this.getMediaAssetUploadSessionById(normalizedSessionId);
+
+    if (session.status === 'ABORTED') {
+      return session;
+    }
+
+    if (session.status === 'COMPLETED') {
+      return session;
+    }
+
+    try {
+      await abortMultipartUploadToR2({
+        key: session.storage_path,
+        uploadId: session.upload_id,
+      });
+    } catch {
+      // R2 already cleaned up or invalid upload ID can be treated as aborted.
+    }
+
+    return this.updateMediaAssetUploadSession(session.id, {
+      status: 'ABORTED',
+      aborted_at: new Date().toISOString(),
     });
   }
 
@@ -9767,6 +10025,174 @@ export class V2CatalogService {
       return 'application/zip';
     }
     return 'application/octet-stream';
+  }
+
+  private getMultipartUploadPartSize(fileSize: number): number {
+    const defaultPartSize = 16 * 1024 * 1024;
+    const minimumPartSize = 5 * 1024 * 1024;
+    const maxPartCount = 10_000;
+
+    let partSize = Math.max(defaultPartSize, minimumPartSize);
+    while (Math.ceil(fileSize / partSize) > maxPartCount) {
+      partSize += 5 * 1024 * 1024;
+    }
+
+    return partSize;
+  }
+
+  private getMultipartSessionExpiresAt(): string {
+    return new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  }
+
+  private async getMediaAssetUploadSessionById(sessionId: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('media_asset_upload_sessions')
+      .select('*')
+      .eq('id', sessionId)
+      .is('deleted_at', null)
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'multipart 업로드 세션을 찾을 수 없습니다',
+        404,
+        'MEDIA_ASSET_MULTIPART_SESSION_NOT_FOUND',
+      );
+    }
+
+    return data;
+  }
+
+  private async updateMediaAssetUploadSession(
+    sessionId: string,
+    patch: Record<string, unknown>,
+  ): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('media_asset_upload_sessions')
+      .update(patch)
+      .eq('id', sessionId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'multipart 업로드 세션 갱신 실패',
+        500,
+        'MEDIA_ASSET_MULTIPART_SESSION_UPDATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  private assertMultipartSessionAvailable(session: {
+    status: V2MediaAssetUploadSessionStatus;
+    expires_at?: string | null;
+  }): void {
+    if (session.status === 'ABORTED') {
+      throw new ApiException(
+        '중단된 multipart 업로드 세션입니다',
+        400,
+        'MEDIA_ASSET_MULTIPART_SESSION_ABORTED',
+      );
+    }
+
+    if (session.status === 'FAILED') {
+      throw new ApiException(
+        '실패한 multipart 업로드 세션입니다. 새 업로드를 시작해 주세요.',
+        400,
+        'MEDIA_ASSET_MULTIPART_SESSION_FAILED',
+      );
+    }
+
+    if (session.expires_at && new Date(session.expires_at).getTime() < Date.now()) {
+      throw new ApiException(
+        '만료된 multipart 업로드 세션입니다. 새 업로드를 시작해 주세요.',
+        400,
+        'MEDIA_ASSET_MULTIPART_SESSION_EXPIRED',
+      );
+    }
+  }
+
+  private normalizeMultipartPartNumbers(
+    partNumbers: number[] | undefined,
+    totalParts: number,
+  ): number[] {
+    if (!Array.isArray(partNumbers) || partNumbers.length === 0) {
+      throw new ApiException(
+        'part_numbers는 비어 있지 않은 배열이어야 합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const normalized = [...new Set(partNumbers)].map((value) => {
+      if (!Number.isInteger(value) || value <= 0 || value > totalParts) {
+        throw new ApiException(
+          `part_number는 1 이상 ${totalParts} 이하의 정수여야 합니다`,
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+      return value;
+    });
+
+    normalized.sort((left, right) => left - right);
+    return normalized;
+  }
+
+  private normalizeMultipartCompletedParts(
+    parts: Array<{ part_number: number; etag: string }> | undefined,
+    totalParts: number,
+  ): Array<{ part_number: number; etag: string }> {
+    if (!Array.isArray(parts) || parts.length === 0) {
+      throw new ApiException(
+        'parts는 비어 있지 않은 배열이어야 합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const seen = new Set<number>();
+    const normalized = parts.map((part) => {
+      if (!part || typeof part !== 'object') {
+        throw new ApiException(
+          '각 part는 object여야 합니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+
+      if (
+        !Number.isInteger(part.part_number) ||
+        part.part_number <= 0 ||
+        part.part_number > totalParts
+      ) {
+        throw new ApiException(
+          `part_number는 1 이상 ${totalParts} 이하의 정수여야 합니다`,
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+
+      if (seen.has(part.part_number)) {
+        throw new ApiException(
+          '중복된 part_number가 포함되어 있습니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+      seen.add(part.part_number);
+
+      const etag = this.normalizeRequiredText(part.etag, 'etag는 필수입니다');
+      return {
+        part_number: part.part_number,
+        etag: etag.startsWith('"') ? etag : `"${etag}"`,
+      };
+    });
+
+    normalized.sort((left, right) => left.part_number - right.part_number);
+    return normalized;
   }
 
   private validateMediaAssetUploadFile(file: {
