@@ -8,6 +8,7 @@ import {
   createMultipartUploadToR2,
   createPresignedMultipartUploadPartUrlToR2,
   createPresignedUploadUrlToR2,
+  deleteFileFromR2,
   getR2ObjectMetadata,
 } from '../images/r2.util';
 import { getSupabaseClient } from '../supabase/supabase.client';
@@ -1966,7 +1967,24 @@ export class V2CatalogService {
       );
     }
 
-    return data || [];
+    const assets = data || [];
+    if (assets.length === 0) {
+      return [];
+    }
+
+    const referenceSummaryByAssetId = await this.getMediaAssetReferenceSummaryMap(
+      assets.map((asset) => asset.id),
+    );
+
+    return assets.map((asset) => ({
+      ...asset,
+      reference_summary: referenceSummaryByAssetId.get(asset.id) ?? {
+        product_media_count: 0,
+        digital_asset_count: 0,
+        total_reference_count: 0,
+        is_orphan: true,
+      },
+    }));
   }
 
   async prepareMediaAssetUpload(input: PrepareMediaAssetUploadInput): Promise<any> {
@@ -2509,6 +2527,71 @@ export class V2CatalogService {
     }
 
     return data;
+  }
+
+  async deleteMediaAsset(mediaAssetId: string): Promise<any> {
+    const current = await this.getMediaAssetById(mediaAssetId);
+    const referenceSummaryByAssetId = await this.getMediaAssetReferenceSummaryMap([
+      mediaAssetId,
+    ]);
+    const referenceSummary = referenceSummaryByAssetId.get(mediaAssetId) ?? {
+      product_media_count: 0,
+      digital_asset_count: 0,
+      total_reference_count: 0,
+      is_orphan: true,
+    };
+
+    if (referenceSummary.total_reference_count > 0) {
+      throw new ApiException(
+        '다른 상품/디지털 에셋에서 참조 중인 media asset은 삭제할 수 없습니다',
+        400,
+        'MEDIA_ASSET_IN_USE',
+      );
+    }
+
+    if (
+      current.storage_provider?.toUpperCase() === 'R2' &&
+      this.normalizeOptionalText(current.storage_path)
+    ) {
+      try {
+        await deleteFileFromR2(current.storage_path);
+      } catch (error) {
+        if (!this.isIgnorableR2MissingObjectError(error)) {
+          throw new ApiException(
+            'R2 파일 삭제에 실패했습니다',
+            500,
+            'MEDIA_ASSET_FILE_DELETE_FAILED',
+          );
+        }
+      }
+    }
+
+    const { data, error } = await this.supabase
+      .from('media_assets')
+      .update({
+        status: 'ARCHIVED',
+        deleted_at: new Date().toISOString(),
+        metadata: {
+          ...(current.metadata || {}),
+          removed_from_registry_at: new Date().toISOString(),
+        },
+      })
+      .eq('id', mediaAssetId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'media asset 삭제 실패',
+        500,
+        'MEDIA_ASSET_DELETE_FAILED',
+      );
+    }
+
+    return {
+      ...data,
+      reference_summary: referenceSummary,
+    };
   }
 
   async getProductMedia(productId: string): Promise<any[]> {
@@ -9477,6 +9560,112 @@ export class V2CatalogService {
     }
 
     return data;
+  }
+
+  private async getMediaAssetReferenceSummaryMap(
+    mediaAssetIds: string[],
+  ): Promise<
+    Map<
+      string,
+      {
+        product_media_count: number;
+        digital_asset_count: number;
+        total_reference_count: number;
+        is_orphan: boolean;
+      }
+    >
+  > {
+    const uniqueMediaAssetIds = [...new Set(mediaAssetIds.filter(Boolean))];
+    const summaryByAssetId = new Map<
+      string,
+      {
+        product_media_count: number;
+        digital_asset_count: number;
+        total_reference_count: number;
+        is_orphan: boolean;
+      }
+    >();
+
+    uniqueMediaAssetIds.forEach((mediaAssetId) => {
+      summaryByAssetId.set(mediaAssetId, {
+        product_media_count: 0,
+        digital_asset_count: 0,
+        total_reference_count: 0,
+        is_orphan: true,
+      });
+    });
+
+    if (uniqueMediaAssetIds.length === 0) {
+      return summaryByAssetId;
+    }
+
+    const [
+      { data: productMediaRows, error: productMediaError },
+      { data: digitalAssetRows, error: digitalAssetError },
+    ] = await Promise.all([
+      this.supabase
+        .from('v2_product_media')
+        .select('media_asset_id')
+        .in('media_asset_id', uniqueMediaAssetIds)
+        .is('deleted_at', null),
+      this.supabase
+        .from('v2_digital_assets')
+        .select('media_asset_id')
+        .in('media_asset_id', uniqueMediaAssetIds)
+        .is('deleted_at', null),
+    ]);
+
+    if (productMediaError || digitalAssetError) {
+      throw new ApiException(
+        'media asset 참조 현황 조회 실패',
+        500,
+        'MEDIA_ASSET_REFERENCE_FETCH_FAILED',
+      );
+    }
+
+    (productMediaRows || []).forEach((row) => {
+      const mediaAssetId = row.media_asset_id as string | null;
+      if (!mediaAssetId || !summaryByAssetId.has(mediaAssetId)) {
+        return;
+      }
+      const current = summaryByAssetId.get(mediaAssetId)!;
+      current.product_media_count += 1;
+      current.total_reference_count += 1;
+      current.is_orphan = false;
+    });
+
+    (digitalAssetRows || []).forEach((row) => {
+      const mediaAssetId = row.media_asset_id as string | null;
+      if (!mediaAssetId || !summaryByAssetId.has(mediaAssetId)) {
+        return;
+      }
+      const current = summaryByAssetId.get(mediaAssetId)!;
+      current.digital_asset_count += 1;
+      current.total_reference_count += 1;
+      current.is_orphan = false;
+    });
+
+    return summaryByAssetId;
+  }
+
+  private isIgnorableR2MissingObjectError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') {
+      return false;
+    }
+
+    const maybeError = error as {
+      name?: string;
+      Code?: string;
+      code?: string;
+      $metadata?: { httpStatusCode?: number };
+    };
+
+    return (
+      maybeError.name === 'NotFound' ||
+      maybeError.Code === 'NoSuchKey' ||
+      maybeError.code === 'NoSuchKey' ||
+      maybeError.$metadata?.httpStatusCode === 404
+    );
   }
 
   private assertNoInlineStorageOverride(

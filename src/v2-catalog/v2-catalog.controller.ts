@@ -661,6 +661,16 @@ export class V2CatalogController {
     return successResponse(asset);
   }
 
+  @Delete('media-assets/:id')
+  async deleteMediaAsset(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') mediaAssetId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const asset = await this.v2CatalogService.deleteMediaAsset(mediaAssetId);
+    return successResponse(asset, 'media asset가 레지스트리에서 제거되었습니다');
+  }
+
   @Get('products/:productId/media')
   async getProductMedia(
     @Headers('authorization') authorization: string | undefined,
