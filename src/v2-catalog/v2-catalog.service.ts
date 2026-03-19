@@ -128,6 +128,7 @@ interface LinkArtistInput {
 interface CreateV2ProductInput {
   project_id?: string;
   product_kind?: V2ProductKind;
+  fulfillment_type?: V2FulfillmentType | null;
   title?: string;
   slug?: string;
   short_description?: string | null;
@@ -140,6 +141,7 @@ interface CreateV2ProductInput {
 interface UpdateV2ProductInput {
   project_id?: string;
   product_kind?: V2ProductKind;
+  fulfillment_type?: V2FulfillmentType | null;
   title?: string;
   slug?: string;
   short_description?: string | null;
@@ -1631,6 +1633,17 @@ export class V2CatalogService {
     const slug = this.normalizeRequiredText(input.slug, '상품 slug는 필수입니다');
     const productKind = input.product_kind ?? 'STANDARD';
     this.assertProductKind(productKind);
+    const fulfillmentType = input.fulfillment_type ?? null;
+    if (productKind === 'STANDARD') {
+      if (!fulfillmentType) {
+        throw new ApiException(
+          'STANDARD 상품은 fulfillment_type이 필수입니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+      this.assertFulfillmentType(fulfillmentType);
+    }
     this.assertSortOrder(input.sort_order);
     if (input.status !== undefined) {
       this.assertProductStatus(input.status);
@@ -1644,6 +1657,7 @@ export class V2CatalogService {
       .insert({
         project_id: projectId,
         product_kind: productKind,
+        fulfillment_type: productKind === 'STANDARD' ? fulfillmentType : null,
         title,
         slug,
         short_description: this.normalizeOptionalText(input.short_description),
@@ -1669,6 +1683,8 @@ export class V2CatalogService {
   async updateProduct(productId: string, input: UpdateV2ProductInput): Promise<any> {
     const current = await this.getProductById(productId);
     const updateData: Record<string, unknown> = {};
+    let nextProductKind = current.product_kind as V2ProductKind;
+    let nextFulfillmentType = (current.fulfillment_type as V2FulfillmentType | null) ?? null;
 
     let projectIdForSlug = current.project_id as string;
     if (input.project_id !== undefined) {
@@ -1692,6 +1708,17 @@ export class V2CatalogService {
     if (input.product_kind !== undefined) {
       this.assertProductKind(input.product_kind);
       updateData.product_kind = input.product_kind;
+      nextProductKind = input.product_kind;
+    }
+    if (input.fulfillment_type !== undefined) {
+      if (input.fulfillment_type === null) {
+        updateData.fulfillment_type = null;
+        nextFulfillmentType = null;
+      } else {
+        this.assertFulfillmentType(input.fulfillment_type);
+        updateData.fulfillment_type = input.fulfillment_type;
+        nextFulfillmentType = input.fulfillment_type;
+      }
     }
     if (input.short_description !== undefined) {
       updateData.short_description = this.normalizeOptionalText(
@@ -1712,6 +1739,34 @@ export class V2CatalogService {
     }
     if (input.metadata !== undefined) {
       updateData.metadata = input.metadata ?? {};
+    }
+
+    if (nextProductKind === 'STANDARD') {
+      if (!nextFulfillmentType) {
+        throw new ApiException(
+          'STANDARD 상품은 fulfillment_type이 필수입니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+
+      const variants = await this.getVariants(productId);
+      const mismatchedVariants = variants.filter(
+        (variant) => variant.fulfillment_type !== nextFulfillmentType,
+      );
+      if (mismatchedVariants.length > 0) {
+        throw new ApiException(
+          '현재 옵션의 fulfillment_type이 상품 fulfillment_type과 일치하지 않습니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+
+      updateData.fulfillment_type = nextFulfillmentType;
+    }
+
+    if (nextProductKind === 'BUNDLE') {
+      updateData.fulfillment_type = null;
     }
 
     if (Object.keys(updateData).length === 0) {
@@ -1776,11 +1831,46 @@ export class V2CatalogService {
   }
 
   async createVariant(productId: string, input: CreateV2VariantInput): Promise<any> {
-    await this.ensureProductExists(productId);
+    const product = await this.getProductById(productId);
 
     const sku = this.normalizeRequiredText(input.sku, 'sku는 필수입니다');
     const title = this.normalizeRequiredText(input.title, 'variant title은 필수입니다');
-    const fulfillmentType = input.fulfillment_type;
+    const inputFulfillmentType = input.fulfillment_type;
+    let fulfillmentType = inputFulfillmentType;
+    if (product.product_kind === 'STANDARD') {
+      const lockedFulfillmentType =
+        (product.fulfillment_type as V2FulfillmentType | null) ?? null;
+      if (lockedFulfillmentType) {
+        if (inputFulfillmentType && inputFulfillmentType !== lockedFulfillmentType) {
+          throw new ApiException(
+            'STANDARD 상품의 옵션 fulfillment_type은 상품 설정과 같아야 합니다',
+            400,
+            'VALIDATION_ERROR',
+          );
+        }
+        fulfillmentType = lockedFulfillmentType;
+      } else {
+        if (!inputFulfillmentType) {
+          throw new ApiException(
+            'fulfillment_type은 필수입니다',
+            400,
+            'VALIDATION_ERROR',
+          );
+        }
+        fulfillmentType = inputFulfillmentType;
+        const { error: productUpdateError } = await this.supabase
+          .from('v2_products')
+          .update({ fulfillment_type: inputFulfillmentType })
+          .eq('id', productId);
+        if (productUpdateError) {
+          throw new ApiException(
+            '상품 fulfillment_type 동기화 실패',
+            500,
+            'V2_PRODUCT_UPDATE_FAILED',
+          );
+        }
+      }
+    }
     if (!fulfillmentType) {
       throw new ApiException(
         'fulfillment_type은 필수입니다',
@@ -1835,10 +1925,39 @@ export class V2CatalogService {
 
   async updateVariant(variantId: string, input: UpdateV2VariantInput): Promise<any> {
     const current = await this.getVariantById(variantId);
+    const product = await this.getProductById(current.product_id as string);
     const updateData: Record<string, unknown> = {};
 
     let nextFulfillmentType = current.fulfillment_type as V2FulfillmentType;
-    if (input.fulfillment_type !== undefined) {
+    if (product.product_kind === 'STANDARD') {
+      const lockedFulfillmentType =
+        (product.fulfillment_type as V2FulfillmentType | null) ??
+        (current.fulfillment_type as V2FulfillmentType);
+      if (input.fulfillment_type !== undefined && input.fulfillment_type !== lockedFulfillmentType) {
+        throw new ApiException(
+          'STANDARD 상품의 옵션 fulfillment_type은 상품 설정과 같아야 합니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+      nextFulfillmentType = lockedFulfillmentType;
+      if (current.fulfillment_type !== lockedFulfillmentType) {
+        updateData.fulfillment_type = lockedFulfillmentType;
+      }
+      if (!product.fulfillment_type) {
+        const { error: productUpdateError } = await this.supabase
+          .from('v2_products')
+          .update({ fulfillment_type: lockedFulfillmentType })
+          .eq('id', product.id);
+        if (productUpdateError) {
+          throw new ApiException(
+            '상품 fulfillment_type 동기화 실패',
+            500,
+            'V2_PRODUCT_UPDATE_FAILED',
+          );
+        }
+      }
+    } else if (input.fulfillment_type !== undefined) {
       this.assertFulfillmentType(input.fulfillment_type);
       updateData.fulfillment_type = input.fulfillment_type;
       nextFulfillmentType = input.fulfillment_type;
