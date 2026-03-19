@@ -1,8 +1,12 @@
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
   S3Client,
+  UploadPartCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
@@ -80,6 +84,96 @@ export async function createPresignedUploadUrlToR2(options: {
     expiresInSeconds,
     expiresAt: new Date(Date.now() + expiresInSeconds * 1000).toISOString(),
   };
+}
+
+export async function createMultipartUploadToR2(options: {
+  key: string;
+  contentType: string;
+}): Promise<{
+  uploadId: string;
+}> {
+  const client = createR2Client();
+  const command = new CreateMultipartUploadCommand({
+    Bucket: getBucketName(),
+    Key: options.key,
+    ContentType: options.contentType,
+  });
+
+  const response = await client.send(command);
+  if (!response.UploadId) {
+    throw new Error('R2 multipart upload ID를 생성하지 못했습니다');
+  }
+
+  return {
+    uploadId: response.UploadId,
+  };
+}
+
+export async function createPresignedMultipartUploadPartUrlToR2(options: {
+  key: string;
+  uploadId: string;
+  partNumber: number;
+  expiresInSeconds?: number;
+}): Promise<{
+  uploadUrl: string;
+  expiresInSeconds: number;
+  expiresAt: string;
+}> {
+  const client = createR2Client();
+  const expiresInSeconds = options.expiresInSeconds ?? 900;
+  const command = new UploadPartCommand({
+    Bucket: getBucketName(),
+    Key: options.key,
+    UploadId: options.uploadId,
+    PartNumber: options.partNumber,
+  });
+
+  const uploadUrl = await getSignedUrl(client, command, {
+    expiresIn: expiresInSeconds,
+  });
+
+  return {
+    uploadUrl,
+    expiresInSeconds,
+    expiresAt: new Date(Date.now() + expiresInSeconds * 1000).toISOString(),
+  };
+}
+
+export async function completeMultipartUploadToR2(options: {
+  key: string;
+  uploadId: string;
+  parts: Array<{ partNumber: number; eTag: string }>;
+}): Promise<void> {
+  const client = createR2Client();
+  const command = new CompleteMultipartUploadCommand({
+    Bucket: getBucketName(),
+    Key: options.key,
+    UploadId: options.uploadId,
+    MultipartUpload: {
+      Parts: [...options.parts]
+        .sort((left, right) => left.partNumber - right.partNumber)
+        .map((part) => ({
+          ETag: part.eTag,
+          PartNumber: part.partNumber,
+        })),
+    },
+  });
+
+  await client.send(command);
+}
+
+export async function abortMultipartUploadToR2(options: {
+  key: string;
+  uploadId: string;
+}): Promise<void> {
+  const client = createR2Client();
+  const command = new AbortMultipartUploadCommand({
+    Bucket: getBucketName(),
+    Key: options.key,
+    UploadId: options.uploadId,
+  });
+
+  await client.send(command);
 }
 
 export async function getR2ObjectMetadata(key: string): Promise<{
