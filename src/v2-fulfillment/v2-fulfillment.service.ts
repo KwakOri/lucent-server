@@ -163,6 +163,8 @@ interface UpsertInventoryLevelInput {
 @Injectable()
 export class V2FulfillmentService {
   private readonly logger = new Logger(V2FulfillmentService.name);
+  private readonly fallbackStockLocationCode = 'DEFAULT';
+  private readonly fallbackStockLocationName = '기본 재고 위치';
 
   private get supabase(): any {
     return getSupabaseClient() as any;
@@ -2992,15 +2994,97 @@ export class V2FulfillmentService {
         'STOCK_LOCATION_FETCH_FAILED',
       );
     }
-    if (!data?.id || !this.isUuid(data.id)) {
+    if (data?.id && this.isUuid(data.id)) {
+      return data.id;
+    }
+
+    const { data: fallbackRow, error: fallbackFetchError } = await this.supabase
+      .from('v2_stock_locations')
+      .select('id, is_active, priority')
+      .eq('code', this.fallbackStockLocationCode)
+      .maybeSingle();
+
+    if (fallbackFetchError) {
       throw new ApiException(
-        '활성 stock location이 없습니다. 먼저 stock location을 구성해주세요',
-        409,
-        'STOCK_LOCATION_NOT_FOUND',
+        '기본 stock location 조회 실패',
+        500,
+        'STOCK_LOCATION_FETCH_FAILED',
       );
     }
 
-    return data.id;
+    if (fallbackRow?.id && this.isUuid(fallbackRow.id)) {
+      if (fallbackRow.is_active !== true || Number(fallbackRow.priority || 0) > 0) {
+        const { error: activateError } = await this.supabase
+          .from('v2_stock_locations')
+          .update({
+            is_active: true,
+            priority: 0,
+          })
+          .eq('id', fallbackRow.id);
+
+        if (activateError) {
+          throw new ApiException(
+            '기본 stock location 활성화 실패',
+            500,
+            'STOCK_LOCATION_UPSERT_FAILED',
+          );
+        }
+      }
+
+      return fallbackRow.id;
+    }
+
+    const { data: createdRow, error: createError } = await this.supabase
+      .from('v2_stock_locations')
+      .insert({
+        code: this.fallbackStockLocationCode,
+        name: this.fallbackStockLocationName,
+        location_type: 'WAREHOUSE',
+        country_code: 'KR',
+        is_active: true,
+        priority: 0,
+        metadata: {
+          source: 'system-default',
+        },
+      })
+      .select('id')
+      .maybeSingle();
+
+    if (createError) {
+      if (createError.code === '23505') {
+        const { data: concurrentRow, error: concurrentError } = await this.supabase
+          .from('v2_stock_locations')
+          .select('id')
+          .eq('code', this.fallbackStockLocationCode)
+          .maybeSingle();
+
+        if (concurrentError || !concurrentRow?.id || !this.isUuid(concurrentRow.id)) {
+          throw new ApiException(
+            '기본 stock location 조회 실패',
+            500,
+            'STOCK_LOCATION_FETCH_FAILED',
+          );
+        }
+
+        return concurrentRow.id;
+      }
+
+      throw new ApiException(
+        '기본 stock location 생성 실패',
+        500,
+        'STOCK_LOCATION_UPSERT_FAILED',
+      );
+    }
+
+    if (!createdRow?.id || !this.isUuid(createdRow.id)) {
+      throw new ApiException(
+        '기본 stock location 생성 결과가 비어 있습니다',
+        500,
+        'STOCK_LOCATION_UPSERT_FAILED',
+      );
+    }
+
+    return createdRow.id;
   }
 
   private async getVariantForInventoryOrThrow(variantId: string): Promise<any> {
