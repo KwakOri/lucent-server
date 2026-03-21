@@ -3463,6 +3463,7 @@ export class V2CatalogService {
   async activateCampaign(campaignId: string): Promise<any> {
     const current = await this.getCampaignById(campaignId);
     this.assertCampaignStatusTransition(current.status as V2CampaignStatus, 'ACTIVE');
+    const nowIso = new Date().toISOString();
 
     if ((current.campaign_type as V2CampaignType) === 'ALWAYS_ON') {
       const projectIds = await this.resolveCampaignIncludedProjectIds(campaignId);
@@ -3479,11 +3480,19 @@ export class V2CatalogService {
       });
     }
 
+    const endsAt = this.normalizeOptionalTimestamp(
+      current.ends_at as string | null | undefined,
+      'ends_at',
+    );
+    const shouldClearEndsAt =
+      endsAt !== null && new Date(endsAt).getTime() <= new Date(nowIso).getTime();
+
     const { data, error } = await this.supabase
       .from('v2_campaigns')
       .update({
         status: 'ACTIVE',
-        starts_at: current.starts_at ?? new Date().toISOString(),
+        starts_at: current.starts_at ?? nowIso,
+        ends_at: shouldClearEndsAt ? null : endsAt,
       })
       .eq('id', campaignId)
       .select('*')
@@ -8892,7 +8901,7 @@ export class V2CatalogService {
       DRAFT: ['DRAFT', 'ACTIVE', 'ARCHIVED'],
       ACTIVE: ['ACTIVE', 'SUSPENDED', 'CLOSED', 'ARCHIVED'],
       SUSPENDED: ['SUSPENDED', 'ACTIVE', 'CLOSED', 'ARCHIVED'],
-      CLOSED: ['CLOSED', 'ARCHIVED'],
+      CLOSED: ['CLOSED', 'ACTIVE', 'ARCHIVED'],
       ARCHIVED: ['ARCHIVED'],
     };
     if (!allowed[current].includes(next)) {
