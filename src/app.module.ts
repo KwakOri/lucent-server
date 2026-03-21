@@ -9,7 +9,6 @@ import { AppConfigModule } from './config/app-config.module';
 import { ImagesModule } from './images/images.module';
 import { LogsModule } from './logs/logs.module';
 import { NotificationsModule } from './notifications/notifications.module';
-import { OrdersModule } from './orders/orders.module';
 import { ProfilesModule } from './profiles/profiles.module';
 import { ProductsModule } from './products/products.module';
 import { ProjectsModule } from './projects/projects.module';
@@ -26,7 +25,6 @@ import { V2FulfillmentModule } from './v2-fulfillment/v2-fulfillment.module';
     NotificationsModule,
     ImagesModule,
     LogsModule,
-    OrdersModule,
     ProductsModule,
     ProjectsModule,
     ArtistsModule,
