@@ -79,6 +79,18 @@ type V2CouponRedemptionStatus =
   | 'CANCELED'
   | 'EXPIRED';
 
+interface CampaignTargetEligibilityBucket {
+  projectIds: Set<string>;
+  productIds: Set<string>;
+  variantIds: Set<string>;
+}
+
+interface CampaignTargetEligibilityScope {
+  include: CampaignTargetEligibilityBucket;
+  exclude: CampaignTargetEligibilityBucket;
+  hasIncludeTargets: boolean;
+}
+
 interface CreateV2ProjectInput {
   name?: string;
   slug?: string;
@@ -1554,19 +1566,26 @@ export class V2CatalogService {
     const campaignId = this.normalizeOptionalText(input.campaign_id);
     const evaluatedAt = new Date().toISOString();
 
-    const { variantsByProductId, mediaByProductId, inventoryByVariantId, priceItems } =
-      await this.loadShopContext([productId]);
+    const {
+      variantsByProductId,
+      mediaByProductId,
+      inventoryByVariantId,
+      priceItems,
+      campaignTargetEligibilityByCampaignId,
+    } = await this.loadShopContext([productId]);
     const variants = variantsByProductId.get(productId) || [];
     const media = mediaByProductId.get(productId) || [];
 
     const variantViews = variants.map((variant: any, index: number) => {
       const priceSelection = this.selectShopPriceItem({
         productId,
+        projectId: product.project_id as string | null,
         variantId: variant.id as string,
         priceItems,
         evaluatedAt,
         campaignId,
         channel,
+        campaignTargetEligibilityByCampaignId,
       });
       const inventoryQuantity = variant.track_inventory
         ? (inventoryByVariantId.get(variant.id as string) ?? null)
@@ -5893,6 +5912,14 @@ export class V2CatalogService {
       );
     }
 
+    const normalizedPriceItems = (priceItems || []) as any[];
+    const campaignTargetEligibilityByCampaignId =
+      await this.loadCampaignTargetEligibilityByCampaignIds(
+        normalizedPriceItems.map(
+          (item) => item?.price_list?.campaign_id as string | null | undefined,
+        ),
+      );
+
     const nowIso = evaluatedAt;
     const lineResults: any[] = [];
     const priceCandidates: any[] = [];
@@ -5911,10 +5938,12 @@ export class V2CatalogService {
 
       const candidates = this.filterShopPriceCandidates({
         productId: product.id as string,
+        projectId: product.project_id as string | null,
         variantId: line.variant_id,
-        priceItems: (priceItems || []) as any[],
+        priceItems: normalizedPriceItems,
         evaluatedAt: nowIso,
         channel,
+        campaignTargetEligibilityByCampaignId,
       });
 
       const priceSelection = this.buildShopPriceSelectionFromCandidates({
@@ -9435,12 +9464,197 @@ export class V2CatalogService {
     return this.matchesChannelScope(campaign.channel_scope_json, channel);
   }
 
+  private createEmptyCampaignTargetEligibilityBucket(): CampaignTargetEligibilityBucket {
+    return {
+      projectIds: new Set<string>(),
+      productIds: new Set<string>(),
+      variantIds: new Set<string>(),
+    };
+  }
+
+  private createEmptyCampaignTargetEligibilityScope(): CampaignTargetEligibilityScope {
+    return {
+      include: this.createEmptyCampaignTargetEligibilityBucket(),
+      exclude: this.createEmptyCampaignTargetEligibilityBucket(),
+      hasIncludeTargets: false,
+    };
+  }
+
+  private extractCampaignTargetProductIdFromSnapshot(snapshot: unknown): string | null {
+    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+      return null;
+    }
+
+    const payload = snapshot as Record<string, unknown>;
+    const productId = this.normalizeOptionalText(payload.product_id as string | null | undefined);
+    if (productId) {
+      return productId;
+    }
+    const bundleProductId = this.normalizeOptionalText(
+      payload.bundle_product_id as string | null | undefined,
+    );
+    if (bundleProductId) {
+      return bundleProductId;
+    }
+    const targetProductId = this.normalizeOptionalText(
+      payload.target_product_id as string | null | undefined,
+    );
+    if (targetProductId) {
+      return targetProductId;
+    }
+
+    return null;
+  }
+
+  private applyCampaignTargetToEligibilityBucket(params: {
+    bucket: CampaignTargetEligibilityBucket;
+    targetType: V2CampaignTargetType;
+    targetId: string;
+    sourceSnapshot: unknown;
+  }): void {
+    if (params.targetType === 'PROJECT') {
+      params.bucket.projectIds.add(params.targetId);
+      return;
+    }
+    if (params.targetType === 'PRODUCT') {
+      params.bucket.productIds.add(params.targetId);
+      return;
+    }
+    if (params.targetType === 'VARIANT') {
+      params.bucket.variantIds.add(params.targetId);
+      return;
+    }
+    if (params.targetType === 'BUNDLE_DEFINITION') {
+      const bundleProductId = this.extractCampaignTargetProductIdFromSnapshot(
+        params.sourceSnapshot,
+      );
+      if (bundleProductId) {
+        params.bucket.productIds.add(bundleProductId);
+      }
+    }
+  }
+
+  private async loadCampaignTargetEligibilityByCampaignIds(
+    campaignIds: Array<string | null | undefined>,
+  ): Promise<Map<string, CampaignTargetEligibilityScope>> {
+    const normalizedCampaignIds = Array.from(
+      new Set(
+        campaignIds
+          .map((campaignId) => this.normalizeOptionalText(campaignId))
+          .filter((campaignId): campaignId is string => !!campaignId),
+      ),
+    );
+
+    const eligibilityByCampaignId = new Map<string, CampaignTargetEligibilityScope>();
+    if (normalizedCampaignIds.length === 0) {
+      return eligibilityByCampaignId;
+    }
+
+    normalizedCampaignIds.forEach((campaignId) => {
+      eligibilityByCampaignId.set(
+        campaignId,
+        this.createEmptyCampaignTargetEligibilityScope(),
+      );
+    });
+
+    const { data, error } = await this.supabase
+      .from('v2_campaign_targets')
+      .select('campaign_id,target_type,target_id,is_excluded,source_snapshot_json')
+      .in('campaign_id', normalizedCampaignIds)
+      .is('deleted_at', null);
+
+    if (error) {
+      throw new ApiException(
+        'shop pricing campaign target 조회 실패',
+        500,
+        'V2_CAMPAIGN_TARGETS_FETCH_FAILED',
+      );
+    }
+
+    for (const row of data || []) {
+      const campaignId = this.normalizeOptionalText(
+        row.campaign_id as string | null | undefined,
+      );
+      const targetType = row.target_type as V2CampaignTargetType | null;
+      const targetId = this.normalizeOptionalText(
+        row.target_id as string | null | undefined,
+      );
+      if (!campaignId || !targetType || !targetId) {
+        continue;
+      }
+
+      const scope =
+        eligibilityByCampaignId.get(campaignId) ??
+        this.createEmptyCampaignTargetEligibilityScope();
+      const isExcluded = (row.is_excluded as boolean | null | undefined) ?? false;
+      const bucket = isExcluded ? scope.exclude : scope.include;
+      this.applyCampaignTargetToEligibilityBucket({
+        bucket,
+        targetType,
+        targetId,
+        sourceSnapshot: row.source_snapshot_json,
+      });
+      if (!isExcluded) {
+        scope.hasIncludeTargets = true;
+      }
+      eligibilityByCampaignId.set(campaignId, scope);
+    }
+
+    return eligibilityByCampaignId;
+  }
+
+  private isCampaignTargetEligibleForShopPricing(params: {
+    campaignId: string | null | undefined;
+    projectId: string | null | undefined;
+    productId: string;
+    variantId: string | null;
+    campaignTargetEligibilityByCampaignId: Map<
+      string,
+      CampaignTargetEligibilityScope
+    >;
+  }): boolean {
+    const campaignId = this.normalizeOptionalText(params.campaignId);
+    if (!campaignId) {
+      return false;
+    }
+
+    const eligibility = params.campaignTargetEligibilityByCampaignId.get(campaignId);
+    if (!eligibility || !eligibility.hasIncludeTargets) {
+      return false;
+    }
+
+    const projectId = this.normalizeOptionalText(params.projectId);
+    const includedByProject = !!projectId && eligibility.include.projectIds.has(projectId);
+    const includedByProduct = eligibility.include.productIds.has(params.productId);
+    const includedByVariant =
+      !!params.variantId && eligibility.include.variantIds.has(params.variantId);
+    const included = includedByProject || includedByProduct || includedByVariant;
+    if (!included) {
+      return false;
+    }
+
+    const excludedByProject = !!projectId && eligibility.exclude.projectIds.has(projectId);
+    const excludedByProduct = eligibility.exclude.productIds.has(params.productId);
+    const excludedByVariant =
+      !!params.variantId && eligibility.exclude.variantIds.has(params.variantId);
+    if (excludedByProject || excludedByProduct || excludedByVariant) {
+      return false;
+    }
+
+    return true;
+  }
+
   private filterShopPriceCandidates(params: {
     productId: string;
+    projectId: string | null;
     variantId: string;
     priceItems: any[];
     evaluatedAt: string;
     channel: string | null;
+    campaignTargetEligibilityByCampaignId: Map<
+      string,
+      CampaignTargetEligibilityScope
+    >;
   }): any[] {
     return (params.priceItems || [])
       .filter((item) => item.product_id === params.productId)
@@ -9475,11 +9689,24 @@ export class V2CatalogService {
         }
 
         const linkedCampaign = priceList.campaign;
-        return this.isCampaignApplicableForShopPricing(
-          linkedCampaign,
-          params.evaluatedAt,
-          params.channel,
-        );
+        if (
+          !this.isCampaignApplicableForShopPricing(
+            linkedCampaign,
+            params.evaluatedAt,
+            params.channel,
+          )
+        ) {
+          return false;
+        }
+
+        return this.isCampaignTargetEligibleForShopPricing({
+          campaignId: priceList.campaign_id as string | null | undefined,
+          projectId: params.projectId,
+          productId: params.productId,
+          variantId: params.variantId,
+          campaignTargetEligibilityByCampaignId:
+            params.campaignTargetEligibilityByCampaignId,
+        });
       });
   }
 
@@ -9649,8 +9876,13 @@ export class V2CatalogService {
     }
 
     const productIds = products.map((product) => product.id as string);
-    const { variantsByProductId, mediaByProductId, inventoryByVariantId, priceItems } =
-      await this.loadShopContext(productIds);
+    const {
+      variantsByProductId,
+      mediaByProductId,
+      inventoryByVariantId,
+      priceItems,
+      campaignTargetEligibilityByCampaignId,
+    } = await this.loadShopContext(productIds);
 
     return products.map((product) => {
       const productId = product.id as string;
@@ -9661,11 +9893,13 @@ export class V2CatalogService {
       const priceSelection = primaryVariant
         ? this.selectShopPriceItem({
             productId,
+            projectId: product.project_id as string | null,
             variantId: primaryVariant.id as string,
             priceItems,
             evaluatedAt: context.evaluatedAt,
             campaignId: context.campaignId,
             channel: context.channel,
+            campaignTargetEligibilityByCampaignId,
           })
         : { selected: null };
       const inventoryQuantity = primaryVariant?.track_inventory
@@ -9710,10 +9944,18 @@ export class V2CatalogService {
     mediaByProductId: Map<string, any[]>;
     inventoryByVariantId: Map<string, number>;
     priceItems: any[];
+    campaignTargetEligibilityByCampaignId: Map<
+      string,
+      CampaignTargetEligibilityScope
+    >;
   }> {
     const variantsByProductId = new Map<string, any[]>();
     const mediaByProductId = new Map<string, any[]>();
     const inventoryByVariantId = new Map<string, number>();
+    const campaignTargetEligibilityByCampaignId = new Map<
+      string,
+      CampaignTargetEligibilityScope
+    >();
 
     if (!productIds || productIds.length === 0) {
       return {
@@ -9721,6 +9963,7 @@ export class V2CatalogService {
         mediaByProductId,
         inventoryByVariantId,
         priceItems: [],
+        campaignTargetEligibilityByCampaignId,
       };
     }
 
@@ -9852,11 +10095,21 @@ export class V2CatalogService {
       );
     }
 
+    const normalizedPriceItems = (priceItems || []) as any[];
+    const loadedCampaignTargetEligibilityByCampaignId =
+      await this.loadCampaignTargetEligibilityByCampaignIds(
+        normalizedPriceItems.map(
+          (item) => item?.price_list?.campaign_id as string | null | undefined,
+        ),
+      );
+
     return {
       variantsByProductId,
       mediaByProductId,
       inventoryByVariantId,
-      priceItems: priceItems || [],
+      priceItems: normalizedPriceItems,
+      campaignTargetEligibilityByCampaignId:
+        loadedCampaignTargetEligibilityByCampaignId,
     };
   }
 
@@ -9931,18 +10184,26 @@ export class V2CatalogService {
 
   private selectShopPriceItem(params: {
     productId: string;
+    projectId: string | null;
     variantId: string;
     priceItems: any[];
     evaluatedAt: string;
     campaignId: string | null;
     channel: string | null;
+    campaignTargetEligibilityByCampaignId: Map<
+      string,
+      CampaignTargetEligibilityScope
+    >;
   }): { selected: any | null; base: any | null; override: any | null } {
     const candidates = this.filterShopPriceCandidates({
       productId: params.productId,
+      projectId: params.projectId,
       variantId: params.variantId,
       priceItems: params.priceItems,
       evaluatedAt: params.evaluatedAt,
       channel: params.channel,
+      campaignTargetEligibilityByCampaignId:
+        params.campaignTargetEligibilityByCampaignId,
     });
 
     return this.buildShopPriceSelectionFromCandidates({
