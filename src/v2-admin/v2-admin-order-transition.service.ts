@@ -20,6 +20,9 @@ type V2OrderLinearStage =
 type V2OrderTransitionActionKey =
   | 'ORDER_PAYMENT_MARK_AUTHORIZED'
   | 'ORDER_PAYMENT_MARK_CAPTURED'
+  | 'ORDER_PAYMENT_MARK_PENDING'
+  | 'FULFILLMENT_SHIPMENT_FORCE_STATUS'
+  | 'FULFILLMENT_ENTITLEMENT_FORCE_STATUS'
   | 'FULFILLMENT_SHIPMENT_DISPATCH'
   | 'FULFILLMENT_SHIPMENT_DELIVER'
   | 'FULFILLMENT_ENTITLEMENT_REISSUE';
@@ -55,6 +58,7 @@ interface OrderLinearTransitionRow {
   action_count: number;
   actions: OrderLinearTransitionAction[];
   blocked_reasons: string[];
+  warning_reasons: string[];
 }
 
 interface OrderLinearTransitionSummary {
@@ -69,6 +73,7 @@ interface EntitlementRow {
   id: string;
   order_id: string;
   status: string;
+  download_count: number;
 }
 
 interface ShipmentRow {
@@ -269,6 +274,7 @@ export class V2AdminOrderTransitionService {
         action_count: 0,
         actions: [],
         blocked_reasons: ['주문이 존재하지 않습니다.'],
+        warning_reasons: [],
       };
     }
 
@@ -294,20 +300,14 @@ export class V2AdminOrderTransitionService {
       entitlements: input.entitlements,
     });
 
+    const warningReasons: string[] = [];
     const blockedReasons: string[] = [];
     const actions: OrderLinearTransitionAction[] = [];
     let sequence = 1;
 
     const currentStageIndex = LINEAR_STAGE_ORDER.indexOf(currentStage);
     const targetStageIndex = LINEAR_STAGE_ORDER.indexOf(input.targetStage);
-
-    if (targetStageIndex < currentStageIndex) {
-      blockedReasons.push(
-        `현재 단계(${this.linearStageLabel(currentStage)})보다 이전 단계(${this.linearStageLabel(
-          input.targetStage,
-        )})로는 전환할 수 없습니다.`,
-      );
-    }
+    const isBackwardTransition = targetStageIndex < currentStageIndex;
 
     const paymentStatus = String(statuses.payment_status || '').toUpperCase();
     const paymentNeedsAuthorize =
@@ -384,7 +384,119 @@ export class V2AdminOrderTransitionService {
       }
     };
 
-    if (blockedReasons.length === 0) {
+    const addForceRollbackActions = () => {
+      if (input.targetStage === 'PAYMENT_PENDING') {
+        if (paymentStatus !== 'PENDING') {
+          addAction({
+            action_key: 'ORDER_PAYMENT_MARK_PENDING',
+            resource_type: 'ORDER',
+            resource_id: input.order.id,
+            from_state: statuses.payment_status,
+            to_state: 'PENDING',
+            requires_approval: false,
+            note: '강제 롤백: 결제 상태를 PENDING으로 되돌립니다.',
+          });
+        }
+      } else if (input.targetStage === 'PAYMENT_CONFIRMED') {
+        if (paymentStatus !== 'AUTHORIZED') {
+          addAction({
+            action_key: 'ORDER_PAYMENT_MARK_AUTHORIZED',
+            resource_type: 'ORDER',
+            resource_id: input.order.id,
+            from_state: statuses.payment_status,
+            to_state: 'AUTHORIZED',
+            requires_approval: false,
+            note: '강제 롤백: 결제 상태를 AUTHORIZED로 되돌립니다.',
+          });
+        }
+      } else if (paymentNeedsCapture) {
+        addPaymentActionsUpToCaptured();
+      }
+
+      if (composition.has_physical) {
+        if (input.shipments.length === 0) {
+          warningReasons.push(
+            '실물 shipment가 없어 배송 상태 롤백은 적용되지 않습니다.',
+          );
+        } else {
+          const desiredShipmentStatus =
+            input.targetStage === 'DELIVERED'
+              ? 'DELIVERED'
+              : input.targetStage === 'IN_TRANSIT'
+                ? 'IN_TRANSIT'
+                : input.targetStage === 'PRODUCTION'
+                  ? 'CANCELED'
+                  : 'READY_TO_PACK';
+
+          for (const shipment of input.shipments) {
+            const status = shipmentStatus(shipment);
+            if (status === desiredShipmentStatus) {
+              continue;
+            }
+            addAction({
+              action_key: 'FULFILLMENT_SHIPMENT_FORCE_STATUS',
+              resource_type: 'SHIPMENT',
+              resource_id: shipment.shipment_id,
+              from_state: status,
+              to_state: desiredShipmentStatus,
+              requires_approval: false,
+              note: `강제 롤백: shipment 상태를 ${desiredShipmentStatus}로 조정합니다.`,
+            });
+          }
+        }
+      }
+
+      if (composition.has_digital) {
+        if (input.entitlements.length === 0) {
+          warningReasons.push(
+            '디지털 entitlement가 없어 권한 상태 롤백은 적용되지 않습니다.',
+          );
+        } else {
+          const desiredEntitlementStatus =
+            input.targetStage === 'DELIVERED' || input.targetStage === 'IN_TRANSIT'
+              ? 'GRANTED'
+              : 'PENDING';
+
+          for (const entitlement of input.entitlements) {
+            const status = entitlementStatus(entitlement);
+            if (status === desiredEntitlementStatus) {
+              continue;
+            }
+            addAction({
+              action_key: 'FULFILLMENT_ENTITLEMENT_FORCE_STATUS',
+              resource_type: 'DIGITAL_ENTITLEMENT',
+              resource_id: entitlement.id,
+              from_state: status,
+              to_state: desiredEntitlementStatus,
+              requires_approval: false,
+              note: `강제 롤백: entitlement 상태를 ${desiredEntitlementStatus}로 조정합니다.`,
+            });
+          }
+        }
+      }
+    };
+
+    if (isBackwardTransition) {
+      const deliveredShipmentCount = input.shipments.filter(
+        (shipment) => shipmentStatus(shipment) === 'DELIVERED',
+      ).length;
+      if (deliveredShipmentCount > 0) {
+        warningReasons.push(
+          `배송완료 이력이 있는 shipment ${deliveredShipmentCount}건이 롤백 대상입니다.`,
+        );
+      }
+
+      const downloadedEntitlementCount = input.entitlements.filter(
+        (entitlement) => Number(entitlement.download_count || 0) > 0,
+      ).length;
+      if (downloadedEntitlementCount > 0) {
+        warningReasons.push(
+          `다운로드 이력이 있는 entitlement ${downloadedEntitlementCount}건이 롤백 대상입니다.`,
+        );
+      }
+
+      addForceRollbackActions();
+    } else {
       if (paymentStatus === 'CANCELED' && input.targetStage !== 'PAYMENT_PENDING') {
         blockedReasons.push(
           '결제 상태가 CANCELED인 주문은 선형 단계 전환을 자동 실행할 수 없습니다.',
@@ -553,6 +665,7 @@ export class V2AdminOrderTransitionService {
       action_count: actions.length,
       actions,
       blocked_reasons: blockedReasons,
+      warning_reasons: warningReasons,
     };
   }
 
@@ -735,6 +848,133 @@ export class V2AdminOrderTransitionService {
         };
       }
 
+      if (input.action.action_key === 'ORDER_PAYMENT_MARK_PENDING') {
+        const execution = await this.v2AdminActionExecutorService.execute({
+          actionKey: 'ORDER_PAYMENT_MARK_PENDING',
+          domain: 'ORDER',
+          actor: input.actor,
+          resourceType: 'ORDER',
+          resourceId: input.action.resource_id,
+          requestId: actionRequestId,
+          inputPayload: {
+            source: 'ORDER_LINEAR_STAGE_TRANSITION',
+            order_id: input.row.order_id,
+            order_no: input.row.order_no,
+            target_stage: input.targetStage,
+            reason: input.reason,
+            metadata: input.metadata,
+          },
+          transition: () => ({
+            transitionKey: 'ORDER_PAYMENT_ROLLBACK_PENDING',
+            fromState: input.action.from_state,
+            toState: input.action.to_state,
+            reason: input.reason,
+          }),
+          execute: () =>
+            this.forceSetOrderPaymentPending({
+              orderId: input.row.order_id,
+              reason: input.reason,
+              targetStage: input.targetStage,
+              metadata: input.metadata,
+            }),
+        });
+        return {
+          status: 'SUCCEEDED',
+          order_id: input.row.order_id,
+          order_no: input.row.order_no,
+          action_key: input.action.action_key,
+          resource_type: input.action.resource_type,
+          resource_id: input.action.resource_id,
+          action_log_id: execution.action_log_id,
+        };
+      }
+
+      if (input.action.action_key === 'FULFILLMENT_SHIPMENT_FORCE_STATUS') {
+        const execution = await this.v2AdminActionExecutorService.execute({
+          actionKey: 'FULFILLMENT_SHIPMENT_FORCE_STATUS',
+          domain: 'FULFILLMENT',
+          actor: input.actor,
+          requiredPermissionCode: 'FULFILLMENT_EXECUTE',
+          resourceType: 'SHIPMENT',
+          resourceId: input.action.resource_id,
+          requestId: actionRequestId,
+          inputPayload: {
+            source: 'ORDER_LINEAR_STAGE_TRANSITION',
+            order_id: input.row.order_id,
+            order_no: input.row.order_no,
+            target_stage: input.targetStage,
+            reason: input.reason,
+            metadata: input.metadata,
+          },
+          transition: () => ({
+            transitionKey: 'SHIPMENT_FORCE_STATUS',
+            fromState: input.action.from_state,
+            toState: input.action.to_state,
+            reason: input.reason,
+          }),
+          execute: () =>
+            this.forceSetShipmentStatus({
+              shipmentId: input.action.resource_id,
+              nextStatus: input.action.to_state,
+              reason: input.reason,
+              targetStage: input.targetStage,
+              metadata: input.metadata,
+            }),
+        });
+        return {
+          status: 'SUCCEEDED',
+          order_id: input.row.order_id,
+          order_no: input.row.order_no,
+          action_key: input.action.action_key,
+          resource_type: input.action.resource_type,
+          resource_id: input.action.resource_id,
+          action_log_id: execution.action_log_id,
+        };
+      }
+
+      if (input.action.action_key === 'FULFILLMENT_ENTITLEMENT_FORCE_STATUS') {
+        const execution = await this.v2AdminActionExecutorService.execute({
+          actionKey: 'FULFILLMENT_ENTITLEMENT_FORCE_STATUS',
+          domain: 'FULFILLMENT',
+          actor: input.actor,
+          requiredPermissionCode: 'ENTITLEMENT_REISSUE',
+          resourceType: 'DIGITAL_ENTITLEMENT',
+          resourceId: input.action.resource_id,
+          requestId: actionRequestId,
+          inputPayload: {
+            source: 'ORDER_LINEAR_STAGE_TRANSITION',
+            order_id: input.row.order_id,
+            order_no: input.row.order_no,
+            target_stage: input.targetStage,
+            reason: input.reason,
+            metadata: input.metadata,
+          },
+          transition: () => ({
+            transitionKey: 'ENTITLEMENT_FORCE_STATUS',
+            fromState: input.action.from_state,
+            toState: input.action.to_state,
+            reason: input.reason,
+          }),
+          execute: () =>
+            this.forceSetEntitlementStatus({
+              entitlementId: input.action.resource_id,
+              nextStatus: input.action.to_state,
+              reason: input.reason,
+              targetStage: input.targetStage,
+              metadata: input.metadata,
+            }),
+        });
+        return {
+          status: 'SUCCEEDED',
+          order_id: input.row.order_id,
+          order_no: input.row.order_no,
+          action_key: input.action.action_key,
+          resource_type: input.action.resource_type,
+          resource_id: input.action.resource_id,
+          action_log_id: execution.action_log_id,
+        };
+      }
+
       if (input.action.action_key === 'FULFILLMENT_SHIPMENT_DISPATCH') {
         const execution = await this.v2AdminActionExecutorService.execute({
           actionKey: 'FULFILLMENT_SHIPMENT_DISPATCH',
@@ -893,6 +1133,237 @@ export class V2AdminOrderTransitionService {
     }
   }
 
+  private async forceSetOrderPaymentPending(input: {
+    orderId: string;
+    reason: string | null;
+    targetStage: V2OrderLinearStage;
+    metadata: Record<string, unknown>;
+  }): Promise<{ order_id: string; payment_status: string }> {
+    const { data: currentOrder, error: orderError } = await this.supabase
+      .from('v2_orders')
+      .select('id, metadata')
+      .eq('id', input.orderId)
+      .maybeSingle();
+
+    if (orderError || !currentOrder?.id) {
+      throw new ApiException(
+        '롤백 대상 order 조회 실패',
+        500,
+        'V2_ADMIN_ORDER_ROLLBACK_FETCH_FAILED',
+      );
+    }
+
+    const now = new Date().toISOString();
+    const { error: updateError } = await this.supabase
+      .from('v2_orders')
+      .update({
+        payment_status: 'PENDING',
+        order_status: 'PENDING',
+        fulfillment_status: 'UNFULFILLED',
+        confirmed_at: null,
+        canceled_at: null,
+        completed_at: null,
+        metadata: this.mergeMetadata(currentOrder.metadata, {
+          last_manual_stage_rollback: {
+            at: now,
+            target_stage: input.targetStage,
+            reason: input.reason,
+            source: 'ORDER_LINEAR_STAGE_TRANSITION',
+            ...input.metadata,
+          },
+        }),
+      })
+      .eq('id', input.orderId);
+
+    if (updateError) {
+      throw new ApiException(
+        'order 결제 상태 롤백 실패',
+        500,
+        'V2_ADMIN_ORDER_ROLLBACK_UPDATE_FAILED',
+      );
+    }
+
+    return {
+      order_id: input.orderId,
+      payment_status: 'PENDING',
+    };
+  }
+
+  private async forceSetShipmentStatus(input: {
+    shipmentId: string;
+    nextStatus: string | null;
+    reason: string | null;
+    targetStage: V2OrderLinearStage;
+    metadata: Record<string, unknown>;
+  }): Promise<{ shipment_id: string; status: string }> {
+    const desiredStatus = this.normalizeRequiredText(
+      input.nextStatus,
+      'shipment next status가 필요합니다',
+    ).toUpperCase();
+
+    if (
+      desiredStatus !== 'READY_TO_PACK' &&
+      desiredStatus !== 'IN_TRANSIT' &&
+      desiredStatus !== 'DELIVERED' &&
+      desiredStatus !== 'CANCELED'
+    ) {
+      throw new ApiException(
+        `지원하지 않는 shipment 강제 상태입니다: ${desiredStatus}`,
+        400,
+        'V2_ADMIN_SHIPMENT_FORCE_STATUS_INVALID',
+      );
+    }
+
+    const { data: shipment, error: shipmentError } = await this.supabase
+      .from('v2_shipments')
+      .select(
+        'id, status, packed_at, shipped_at, in_transit_at, delivered_at, returned_at, canceled_at, metadata',
+      )
+      .eq('id', input.shipmentId)
+      .maybeSingle();
+
+    if (shipmentError || !shipment?.id) {
+      throw new ApiException(
+        '롤백 대상 shipment 조회 실패',
+        500,
+        'V2_ADMIN_SHIPMENT_ROLLBACK_FETCH_FAILED',
+      );
+    }
+
+    const now = new Date().toISOString();
+    const statusPayload: Record<string, unknown> = {
+      status: desiredStatus,
+    };
+
+    if (desiredStatus === 'READY_TO_PACK') {
+      statusPayload.packed_at = null;
+      statusPayload.shipped_at = null;
+      statusPayload.in_transit_at = null;
+      statusPayload.delivered_at = null;
+      statusPayload.returned_at = null;
+      statusPayload.canceled_at = null;
+    } else if (desiredStatus === 'IN_TRANSIT') {
+      statusPayload.packed_at = shipment.packed_at || now;
+      statusPayload.shipped_at = shipment.shipped_at || now;
+      statusPayload.in_transit_at = now;
+      statusPayload.delivered_at = null;
+      statusPayload.returned_at = null;
+      statusPayload.canceled_at = null;
+    } else if (desiredStatus === 'DELIVERED') {
+      statusPayload.packed_at = shipment.packed_at || now;
+      statusPayload.shipped_at = shipment.shipped_at || now;
+      statusPayload.in_transit_at = shipment.in_transit_at || shipment.shipped_at || now;
+      statusPayload.delivered_at = now;
+      statusPayload.returned_at = null;
+      statusPayload.canceled_at = null;
+    } else if (desiredStatus === 'CANCELED') {
+      statusPayload.packed_at = null;
+      statusPayload.shipped_at = null;
+      statusPayload.in_transit_at = null;
+      statusPayload.delivered_at = null;
+      statusPayload.returned_at = null;
+      statusPayload.canceled_at = now;
+    }
+
+    const { error: updateError } = await this.supabase
+      .from('v2_shipments')
+      .update({
+        ...statusPayload,
+        metadata: this.mergeMetadata(shipment.metadata, {
+          last_manual_stage_rollback: {
+            at: now,
+            target_stage: input.targetStage,
+            reason: input.reason,
+            source: 'ORDER_LINEAR_STAGE_TRANSITION',
+            ...input.metadata,
+          },
+        }),
+      })
+      .eq('id', input.shipmentId);
+
+    if (updateError) {
+      throw new ApiException(
+        'shipment 상태 롤백 실패',
+        500,
+        'V2_ADMIN_SHIPMENT_ROLLBACK_UPDATE_FAILED',
+      );
+    }
+
+    return {
+      shipment_id: input.shipmentId,
+      status: desiredStatus,
+    };
+  }
+
+  private async forceSetEntitlementStatus(input: {
+    entitlementId: string;
+    nextStatus: string | null;
+    reason: string | null;
+    targetStage: V2OrderLinearStage;
+    metadata: Record<string, unknown>;
+  }): Promise<{ entitlement_id: string; status: string }> {
+    const desiredStatus = this.normalizeRequiredText(
+      input.nextStatus,
+      'entitlement next status가 필요합니다',
+    ).toUpperCase();
+
+    if (desiredStatus !== 'PENDING' && desiredStatus !== 'GRANTED') {
+      throw new ApiException(
+        `지원하지 않는 entitlement 강제 상태입니다: ${desiredStatus}`,
+        400,
+        'V2_ADMIN_ENTITLEMENT_FORCE_STATUS_INVALID',
+      );
+    }
+
+    const { data: entitlement, error: entitlementError } = await this.supabase
+      .from('v2_digital_entitlements')
+      .select('id, status, metadata, granted_at')
+      .eq('id', input.entitlementId)
+      .maybeSingle();
+
+    if (entitlementError || !entitlement?.id) {
+      throw new ApiException(
+        '롤백 대상 entitlement 조회 실패',
+        500,
+        'V2_ADMIN_ENTITLEMENT_ROLLBACK_FETCH_FAILED',
+      );
+    }
+
+    const now = new Date().toISOString();
+    const { error: updateError } = await this.supabase
+      .from('v2_digital_entitlements')
+      .update({
+        status: desiredStatus,
+        granted_at: desiredStatus === 'GRANTED' ? entitlement.granted_at || now : null,
+        revoked_at: null,
+        revoke_reason: null,
+        failed_at: null,
+        metadata: this.mergeMetadata(entitlement.metadata, {
+          last_manual_stage_rollback: {
+            at: now,
+            target_stage: input.targetStage,
+            reason: input.reason,
+            source: 'ORDER_LINEAR_STAGE_TRANSITION',
+            ...input.metadata,
+          },
+        }),
+      })
+      .eq('id', input.entitlementId);
+
+    if (updateError) {
+      throw new ApiException(
+        'entitlement 상태 롤백 실패',
+        500,
+        'V2_ADMIN_ENTITLEMENT_ROLLBACK_UPDATE_FAILED',
+      );
+    }
+
+    return {
+      entitlement_id: input.entitlementId,
+      status: desiredStatus,
+    };
+  }
+
   private buildActionRequestId(input: {
     requestId: string | null;
     row: OrderLinearTransitionRow;
@@ -1039,7 +1510,7 @@ export class V2AdminOrderTransitionService {
     const { data, error } = await this.supabase
       .from('v2_orders')
       .select(
-        'id, order_no, order_status, payment_status, fulfillment_status, grand_total',
+        'id, order_no, order_status, payment_status, fulfillment_status, grand_total, metadata',
       )
       .in('id', orderIds);
 
@@ -1127,7 +1598,7 @@ export class V2AdminOrderTransitionService {
   ): Promise<Map<string, EntitlementRow[]>> {
     const { data, error } = await this.supabase
       .from('v2_digital_entitlements')
-      .select('id, order_id, status')
+      .select('id, order_id, status, download_count')
       .in('order_id', orderIds)
       .in('status', ['PENDING', 'GRANTED', 'EXPIRED', 'FAILED', 'REVOKED']);
 
@@ -1151,6 +1622,10 @@ export class V2AdminOrderTransitionService {
         id: entitlementId,
         order_id: orderId,
         status: this.normalizeOptionalText(row.status) || 'PENDING',
+        download_count:
+          typeof row.download_count === 'number' && Number.isFinite(row.download_count)
+            ? Math.max(0, Math.floor(row.download_count))
+            : 0,
       });
       map.set(orderId, list);
     }
@@ -1174,6 +1649,20 @@ export class V2AdminOrderTransitionService {
       return '배송 중';
     }
     return '배송 완료';
+  }
+
+  private mergeMetadata(
+    base: unknown,
+    patch: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const safeBase =
+      base && typeof base === 'object' && !Array.isArray(base)
+        ? (base as Record<string, unknown>)
+        : {};
+    return {
+      ...safeBase,
+      ...patch,
+    };
   }
 
   private normalizeRequiredText(
