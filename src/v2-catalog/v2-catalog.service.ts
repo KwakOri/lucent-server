@@ -83,7 +83,7 @@ interface CreateV2ProjectInput {
   name?: string;
   slug?: string;
   description?: string | null;
-  cover_image_url?: string | null;
+  cover_media_asset_id?: string | null;
   sort_order?: number;
   metadata?: Record<string, unknown>;
 }
@@ -92,7 +92,7 @@ interface UpdateV2ProjectInput {
   name?: string;
   slug?: string;
   description?: string | null;
-  cover_image_url?: string | null;
+  cover_media_asset_id?: string | null;
   sort_order?: number;
   metadata?: Record<string, unknown>;
   status?: V2ProjectStatus;
@@ -713,6 +713,8 @@ interface ReadSwitchRemediationTask {
   samples: any[];
 }
 
+const V2_PROJECT_SELECT_COLUMNS = '*, cover_media_asset:media_assets(*)';
+
 @Injectable()
 export class V2CatalogService {
   private get supabase(): any {
@@ -722,7 +724,7 @@ export class V2CatalogService {
   async getProjects(filters: { status?: V2ProjectStatus }): Promise<any[]> {
     let query = this.supabase
       .from('v2_projects')
-      .select('*')
+      .select(V2_PROJECT_SELECT_COLUMNS)
       .is('deleted_at', null)
       .order('sort_order', { ascending: true });
 
@@ -745,7 +747,7 @@ export class V2CatalogService {
   async getProjectById(projectId: string): Promise<any> {
     const { data, error } = await this.supabase
       .from('v2_projects')
-      .select('*')
+      .select(V2_PROJECT_SELECT_COLUMNS)
       .eq('id', projectId)
       .is('deleted_at', null)
       .maybeSingle();
@@ -771,6 +773,9 @@ export class V2CatalogService {
   async createProject(input: CreateV2ProjectInput): Promise<any> {
     const name = this.normalizeRequiredText(input.name, '프로젝트 이름은 필수입니다');
     const slug = this.normalizeRequiredText(input.slug, '프로젝트 slug는 필수입니다');
+    const coverMediaAssetId = await this.resolveProjectCoverMediaAssetId(
+      input.cover_media_asset_id,
+    );
 
     await this.assertProjectSlugAvailable(slug);
     this.assertSortOrder(input.sort_order);
@@ -781,13 +786,13 @@ export class V2CatalogService {
         name,
         slug,
         description: this.normalizeOptionalText(input.description),
-        cover_image_url: this.normalizeOptionalText(input.cover_image_url),
+        cover_media_asset_id: coverMediaAssetId,
         sort_order: input.sort_order ?? 0,
         status: 'DRAFT',
         is_active: false,
         metadata: input.metadata ?? {},
       })
-      .select('*')
+      .select(V2_PROJECT_SELECT_COLUMNS)
       .single();
 
     if (error || !data) {
@@ -816,8 +821,10 @@ export class V2CatalogService {
     if (input.description !== undefined) {
       updateData.description = this.normalizeOptionalText(input.description);
     }
-    if (input.cover_image_url !== undefined) {
-      updateData.cover_image_url = this.normalizeOptionalText(input.cover_image_url);
+    if (input.cover_media_asset_id !== undefined) {
+      updateData.cover_media_asset_id = await this.resolveProjectCoverMediaAssetId(
+        input.cover_media_asset_id,
+      );
     }
     if (input.sort_order !== undefined) {
       this.assertSortOrder(input.sort_order);
@@ -843,7 +850,7 @@ export class V2CatalogService {
       .from('v2_projects')
       .update(updateData)
       .eq('id', projectId)
-      .select('*')
+      .select(V2_PROJECT_SELECT_COLUMNS)
       .single();
 
     if (error || !data) {
@@ -866,7 +873,7 @@ export class V2CatalogService {
         is_active: true,
       })
       .eq('id', projectId)
-      .select('*')
+      .select(V2_PROJECT_SELECT_COLUMNS)
       .single();
 
     if (error || !data) {
@@ -889,7 +896,7 @@ export class V2CatalogService {
         is_active: false,
       })
       .eq('id', projectId)
-      .select('*')
+      .select(V2_PROJECT_SELECT_COLUMNS)
       .single();
 
     if (error || !data) {
@@ -2219,6 +2226,7 @@ export class V2CatalogService {
         product_media_count: 0,
         digital_asset_count: 0,
         campaign_banner_count: 0,
+        project_cover_count: 0,
         total_reference_count: 0,
         is_orphan: true,
       },
@@ -2776,13 +2784,14 @@ export class V2CatalogService {
       product_media_count: 0,
       digital_asset_count: 0,
       campaign_banner_count: 0,
+      project_cover_count: 0,
       total_reference_count: 0,
       is_orphan: true,
     };
 
     if (referenceSummary.total_reference_count > 0) {
       throw new ApiException(
-        '다른 상품/디지털 에셋/캠페인 배너에서 참조 중인 media asset은 삭제할 수 없습니다',
+        '다른 상품/디지털 에셋/캠페인 배너/프로젝트 커버에서 참조 중인 media asset은 삭제할 수 없습니다',
         400,
         'MEDIA_ASSET_IN_USE',
       );
@@ -10358,6 +10367,7 @@ export class V2CatalogService {
         product_media_count: number;
         digital_asset_count: number;
         campaign_banner_count: number;
+        project_cover_count: number;
         total_reference_count: number;
         is_orphan: boolean;
       }
@@ -10370,6 +10380,7 @@ export class V2CatalogService {
         product_media_count: number;
         digital_asset_count: number;
         campaign_banner_count: number;
+        project_cover_count: number;
         total_reference_count: number;
         is_orphan: boolean;
       }
@@ -10380,6 +10391,7 @@ export class V2CatalogService {
         product_media_count: 0,
         digital_asset_count: 0,
         campaign_banner_count: 0,
+        project_cover_count: 0,
         total_reference_count: 0,
         is_orphan: true,
       });
@@ -10393,6 +10405,7 @@ export class V2CatalogService {
       { data: productMediaRows, error: productMediaError },
       { data: digitalAssetRows, error: digitalAssetError },
       { data: campaignRows, error: campaignError },
+      { data: projectRows, error: projectError },
     ] = await Promise.all([
       this.supabase
         .from('v2_product_media')
@@ -10409,9 +10422,14 @@ export class V2CatalogService {
         .select('shop_banner_media_asset_id')
         .in('shop_banner_media_asset_id', uniqueMediaAssetIds)
         .is('deleted_at', null),
+      this.supabase
+        .from('v2_projects')
+        .select('cover_media_asset_id')
+        .in('cover_media_asset_id', uniqueMediaAssetIds)
+        .is('deleted_at', null),
     ]);
 
-    if (productMediaError || digitalAssetError || campaignError) {
+    if (productMediaError || digitalAssetError || campaignError || projectError) {
       throw new ApiException(
         'media asset 참조 현황 조회 실패',
         500,
@@ -10448,6 +10466,17 @@ export class V2CatalogService {
       }
       const current = summaryByAssetId.get(mediaAssetId)!;
       current.campaign_banner_count += 1;
+      current.total_reference_count += 1;
+      current.is_orphan = false;
+    });
+
+    (projectRows || []).forEach((row) => {
+      const mediaAssetId = row.cover_media_asset_id as string | null;
+      if (!mediaAssetId || !summaryByAssetId.has(mediaAssetId)) {
+        return;
+      }
+      const current = summaryByAssetId.get(mediaAssetId)!;
+      current.project_cover_count += 1;
       current.total_reference_count += 1;
       current.is_orphan = false;
     });
@@ -10528,6 +10557,24 @@ export class V2CatalogService {
     if (mediaAsset.asset_kind !== 'IMAGE') {
       throw new ApiException(
         'campaign 배너는 IMAGE 타입 media asset만 연결할 수 있습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    return mediaAsset.id as string;
+  }
+
+  private async resolveProjectCoverMediaAssetId(
+    mediaAssetIdInput: string | null | undefined,
+  ): Promise<string | null> {
+    const mediaAssetId = this.normalizeOptionalText(mediaAssetIdInput);
+    if (!mediaAssetId) {
+      return null;
+    }
+    const mediaAsset = await this.getMediaAssetById(mediaAssetId);
+    if (mediaAsset.asset_kind !== 'IMAGE') {
+      throw new ApiException(
+        'project 커버는 IMAGE 타입 media asset만 연결할 수 있습니다',
         400,
         'VALIDATION_ERROR',
       );
