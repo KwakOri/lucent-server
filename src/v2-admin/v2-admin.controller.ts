@@ -60,6 +60,16 @@ interface InventoryHealthQuery {
   only_low_stock?: string;
 }
 
+interface SalesStatsQuery {
+  from?: string;
+  to?: string;
+  preset?: string;
+  project_id?: string;
+  campaign_id?: string;
+  sales_channel_id?: string;
+  campaign_type?: string;
+}
+
 interface CutoverPolicyCheckBody {
   action_key?: string;
   requires_approval?: boolean;
@@ -635,6 +645,24 @@ export class V2AdminController {
       onlyLowStock: query.only_low_stock,
     });
     return successResponse(health);
+  }
+
+  @Get('ops/sales-stats')
+  async listSalesStats(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: SalesStatsQuery,
+  ) {
+    await this.requireAdmin(authorization);
+    const stats = await this.v2AdminService.listSalesStats({
+      from: query.from,
+      to: query.to,
+      preset: query.preset,
+      projectId: query.project_id,
+      campaignId: query.campaign_id,
+      salesChannelId: query.sales_channel_id,
+      campaignType: query.campaign_type,
+    });
+    return successResponse(stats);
   }
 
   private async requireAdmin(authorization: string | undefined): Promise<any> {
