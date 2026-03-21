@@ -279,6 +279,7 @@ export class V2AdminOrderTransitionService {
       has_digital:
         Boolean(input.queue?.has_digital) || input.entitlements.length > 0,
     };
+    const isDigitalOnlyOrder = composition.has_digital && !composition.has_physical;
 
     const statuses = {
       order_status: String(input.order.order_status || ''),
@@ -351,6 +352,37 @@ export class V2AdminOrderTransitionService {
       String(shipment.shipment_status || '').toUpperCase();
     const entitlementStatus = (entitlement: EntitlementRow) =>
       String(entitlement.status || '').toUpperCase();
+    const addDigitalCompletionActions = () => {
+      if (!composition.has_digital) {
+        return;
+      }
+
+      if (input.entitlements.length === 0) {
+        blockedReasons.push(
+          '디지털 entitlement가 없어 디지털 완료 전환을 수행할 수 없습니다.',
+        );
+        return;
+      }
+
+      for (const entitlement of input.entitlements) {
+        const status = entitlementStatus(entitlement);
+        if (status === 'PENDING' || status === 'EXPIRED') {
+          addAction({
+            action_key: 'FULFILLMENT_ENTITLEMENT_REISSUE',
+            resource_type: 'DIGITAL_ENTITLEMENT',
+            resource_id: entitlement.id,
+            from_state: status,
+            to_state: 'GRANTED',
+            requires_approval: false,
+            note: '디지털 권한 지급(재발급) 처리',
+          });
+        } else if (status === 'FAILED' || status === 'REVOKED') {
+          blockedReasons.push(
+            `entitlement(${entitlement.id}) 상태가 ${status}라 자동 지급 처리할 수 없습니다.`,
+          );
+        }
+      }
+    };
 
     if (blockedReasons.length === 0) {
       if (paymentStatus === 'CANCELED' && input.targetStage !== 'PAYMENT_PENDING') {
@@ -360,7 +392,20 @@ export class V2AdminOrderTransitionService {
       }
 
       if (input.targetStage === 'PAYMENT_CONFIRMED') {
-        if (paymentNeedsAuthorize) {
+        if (isDigitalOnlyOrder) {
+          if (paymentNeedsCapture) {
+            addPaymentActionsUpToCaptured();
+          } else if (
+            paymentStatus !== 'AUTHORIZED' &&
+            !PAYMENT_CAPTURED_STATUSES.has(paymentStatus)
+          ) {
+            blockedReasons.push(
+              `현재 결제 상태(${paymentStatus})에서는 입금 확인 단계로 전환할 수 없습니다.`,
+            );
+          }
+
+          addDigitalCompletionActions();
+        } else if (paymentNeedsAuthorize) {
           addAction({
             action_key: 'ORDER_PAYMENT_MARK_AUTHORIZED',
             resource_type: 'ORDER',
@@ -491,30 +536,7 @@ export class V2AdminOrderTransitionService {
         }
 
         if (composition.has_digital) {
-          if (input.entitlements.length === 0) {
-            blockedReasons.push(
-              '디지털 entitlement가 없어 디지털 완료 전환을 수행할 수 없습니다.',
-            );
-          } else {
-            for (const entitlement of input.entitlements) {
-              const status = entitlementStatus(entitlement);
-              if (status === 'PENDING' || status === 'EXPIRED') {
-                addAction({
-                  action_key: 'FULFILLMENT_ENTITLEMENT_REISSUE',
-                  resource_type: 'DIGITAL_ENTITLEMENT',
-                  resource_id: entitlement.id,
-                  from_state: status,
-                  to_state: 'GRANTED',
-                  requires_approval: false,
-                  note: '디지털 권한 지급(재발급) 처리',
-                });
-              } else if (status === 'FAILED' || status === 'REVOKED') {
-                blockedReasons.push(
-                  `entitlement(${entitlement.id}) 상태가 ${status}라 자동 지급 처리할 수 없습니다.`,
-                );
-              }
-            }
-          }
+          addDigitalCompletionActions();
         }
       }
     }
