@@ -1963,14 +1963,11 @@ export class V2AdminService {
       campaignType: this.normalizeOptionalText(params.campaignType)?.toUpperCase() || null,
     };
 
-    await this.syncFinancialEventsFromPayments();
-    await this.syncOrderItemFinancialAllocations();
-
-    const salesItems = await this.fetchSalesItemFacts(dateRange, filters);
-    const financialAllocations = await this.fetchFinancialAllocationFacts(
-      dateRange,
-      filters,
-    );
+    const {
+      salesItems,
+      financialAllocations,
+      storageMode,
+    } = await this.loadSalesStatsFacts(dateRange, filters);
 
     const activeSalesItems = (salesItems || []).filter(
       (row: any) => row?.order_status !== 'CANCELED',
@@ -2236,8 +2233,69 @@ export class V2AdminService {
         allocation_policy_versions: policyVersions,
         capture_policy_version: this.captureAllocationPolicyVersion,
         refund_policy_version: this.refundAllocationPolicyVersion,
+        stats_storage_mode: storageMode,
       },
     };
+  }
+
+  private async loadSalesStatsFacts(
+    dateRange: {
+      fromDate: string;
+      toDate: string;
+      fromIso: string;
+      toExclusiveIso: string;
+      preset: 'LAST_7_DAYS' | 'LAST_30_DAYS' | 'CUSTOM';
+    },
+    filters: {
+      projectId: string | null;
+      campaignId: string | null;
+      salesChannelId: string | null;
+      campaignType: string | null;
+    },
+  ): Promise<{
+    salesItems: any[];
+    financialAllocations: any[];
+    storageMode: 'PERSISTED' | 'FALLBACK_IN_MEMORY';
+  }> {
+    try {
+      await this.syncFinancialEventsFromPayments();
+      await this.syncOrderItemFinancialAllocations();
+      const salesItems = await this.fetchSalesItemFacts(dateRange, filters);
+      const financialAllocations = await this.fetchFinancialAllocationFacts(
+        dateRange,
+        filters,
+      );
+      return {
+        salesItems,
+        financialAllocations,
+        storageMode: 'PERSISTED',
+      };
+    } catch (error) {
+      if (!this.isStatsStorageDependencyError(error)) {
+        throw error;
+      }
+
+      const salesItems = await this.fetchSalesItemFactsFallback(dateRange, filters);
+      const orderIds = Array.from(
+        new Set(
+          salesItems
+            .map((row: any) => this.normalizeOptionalText(row.order_id))
+            .filter((value: string | null): value is string => Boolean(value)),
+        ),
+      );
+      const payments = await this.fetchPaymentsByOrderIds(orderIds);
+      const financialAllocations = this.buildFinancialAllocationsInMemory({
+        salesItems,
+        payments,
+        dateRange,
+      });
+
+      return {
+        salesItems,
+        financialAllocations,
+        storageMode: 'FALLBACK_IN_MEMORY',
+      };
+    }
   }
 
   private async fetchSalesItemFacts(
@@ -2327,6 +2385,317 @@ export class V2AdminService {
     }
 
     return data || [];
+  }
+
+  private async fetchSalesItemFactsFallback(
+    dateRange: {
+      fromIso: string;
+      toExclusiveIso: string;
+    },
+    filters: {
+      projectId: string | null;
+      campaignId: string | null;
+      salesChannelId: string | null;
+      campaignType: string | null;
+    },
+  ): Promise<any[]> {
+    let query = this.supabase
+      .from('v2_order_items')
+      .select(
+        `
+        id,
+        order_id,
+        line_type,
+        quantity,
+        final_line_total,
+        project_id_snapshot,
+        project_name_snapshot,
+        campaign_id_snapshot,
+        campaign_name_snapshot,
+        order:v2_orders!inner(
+          id,
+          order_no,
+          sales_channel_id,
+          order_status,
+          payment_status,
+          currency_code,
+          placed_at
+        ),
+        campaign:v2_campaigns(
+          campaign_type
+        )
+      `,
+      )
+      .in('line_type', ['STANDARD', 'BUNDLE_PARENT'])
+      .gte('order.placed_at', dateRange.fromIso)
+      .lt('order.placed_at', dateRange.toExclusiveIso)
+      .order('placed_at', { ascending: true, referencedTable: 'order' });
+
+    if (filters.projectId) {
+      query = query.eq('project_id_snapshot', filters.projectId);
+    }
+    if (filters.campaignId) {
+      query = query.eq('campaign_id_snapshot', filters.campaignId);
+    }
+    if (filters.salesChannelId) {
+      query = query.eq('order.sales_channel_id', filters.salesChannelId);
+    }
+    if (filters.campaignType) {
+      query = query.eq('campaign.campaign_type', filters.campaignType);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw new ApiException(
+        'sales item facts fallback 조회 실패',
+        500,
+        'V2_ADMIN_SALES_ITEM_FACTS_FALLBACK_FETCH_FAILED',
+      );
+    }
+
+    return (data || []).map((row: any) => ({
+      order_item_id: row.id,
+      order_id: row.order_id,
+      order_no: row.order?.order_no || null,
+      sales_channel_id: row.order?.sales_channel_id || null,
+      order_status: row.order?.order_status || null,
+      payment_status: row.order?.payment_status || null,
+      currency_code: row.order?.currency_code || 'KRW',
+      placed_at: row.order?.placed_at || null,
+      placed_date: row.order?.placed_at
+        ? new Date(row.order.placed_at).toISOString().slice(0, 10)
+        : null,
+      line_type: row.line_type,
+      quantity: Number(row.quantity || 0),
+      final_line_total: Number(row.final_line_total || 0),
+      project_id_snapshot: row.project_id_snapshot || null,
+      project_name_snapshot: row.project_name_snapshot || null,
+      campaign_id_snapshot: row.campaign_id_snapshot || null,
+      campaign_name_snapshot: row.campaign_name_snapshot || null,
+      campaign_type: row.campaign?.campaign_type || null,
+    }));
+  }
+
+  private async fetchPaymentsByOrderIds(orderIds: string[]): Promise<any[]> {
+    if (orderIds.length === 0) {
+      return [];
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_payments')
+      .select(
+        'id, order_id, status, amount, currency_code, refunded_total, captured_at, updated_at, created_at',
+      )
+      .in('order_id', orderIds)
+      .in('status', ['CAPTURED', 'PARTIALLY_REFUNDED', 'REFUNDED']);
+
+    if (error) {
+      throw new ApiException(
+        'payments fallback 조회 실패',
+        500,
+        'V2_ADMIN_PAYMENTS_FALLBACK_FETCH_FAILED',
+      );
+    }
+    return data || [];
+  }
+
+  private buildFinancialAllocationsInMemory(input: {
+    salesItems: any[];
+    payments: any[];
+    dateRange: {
+      fromIso: string;
+      toExclusiveIso: string;
+    };
+  }): any[] {
+    const itemsByOrderId = new Map<
+      string,
+      Array<{
+        id: string;
+        quantity: number;
+        final_line_total: number;
+        project_id_snapshot: string | null;
+        project_name_snapshot: string | null;
+        campaign_id_snapshot: string | null;
+        campaign_name_snapshot: string | null;
+        campaign_type: string | null;
+        sales_channel_id: string | null;
+      }>
+    >();
+
+    for (const row of input.salesItems || []) {
+      const orderId = this.normalizeOptionalText(row.order_id);
+      const orderItemId = this.normalizeOptionalText(
+        row.order_item_id || row.id,
+      );
+      if (!orderId || !orderItemId) {
+        continue;
+      }
+      const bucket = itemsByOrderId.get(orderId) || [];
+      bucket.push({
+        id: orderItemId,
+        quantity: Number(row.quantity || 0),
+        final_line_total: Number(row.final_line_total || 0),
+        project_id_snapshot: row.project_id_snapshot || null,
+        project_name_snapshot: row.project_name_snapshot || null,
+        campaign_id_snapshot: row.campaign_id_snapshot || null,
+        campaign_name_snapshot: row.campaign_name_snapshot || null,
+        campaign_type: row.campaign_type || null,
+        sales_channel_id: row.sales_channel_id || null,
+      });
+      itemsByOrderId.set(orderId, bucket);
+    }
+
+    const allocations: any[] = [];
+    for (const payment of input.payments || []) {
+      const paymentId = this.normalizeOptionalText(payment.id);
+      const orderId = this.normalizeOptionalText(payment.order_id);
+      if (!paymentId || !orderId) {
+        continue;
+      }
+      const orderItems = itemsByOrderId.get(orderId) || [];
+      if (orderItems.length === 0) {
+        continue;
+      }
+
+      const status = this.normalizeOptionalText(payment.status)?.toUpperCase() || '';
+      const captureAmount = Math.max(0, Number(payment.amount || 0));
+      const refundAmount = Math.max(0, Number(payment.refunded_total || 0));
+      const currencyCode =
+        this.normalizeOptionalText(payment.currency_code)?.toUpperCase() || 'KRW';
+      const capturedAt =
+        this.normalizeOptionalIsoDateTime(payment.captured_at) ||
+        this.normalizeOptionalIsoDateTime(payment.created_at) ||
+        this.normalizeOptionalIsoDateTime(payment.updated_at) ||
+        new Date().toISOString();
+      const refundAt =
+        this.normalizeOptionalIsoDateTime(payment.updated_at) || capturedAt;
+
+      if (
+        captureAmount > 0 &&
+        ['CAPTURED', 'PARTIALLY_REFUNDED', 'REFUNDED'].includes(status)
+      ) {
+        const captureAllocations = this.allocateAmountByOrderItems(
+          captureAmount,
+          orderItems.map((item) => ({
+            id: item.id,
+            quantity: item.quantity,
+            final_line_total: item.final_line_total,
+          })),
+        );
+        for (const row of captureAllocations) {
+          const occurredAt = capturedAt;
+          if (!this.isIsoInRange(occurredAt, input.dateRange)) {
+            continue;
+          }
+          const itemMeta = orderItems.find((item) => item.id === row.order_item_id);
+          allocations.push({
+            financial_event_id: `${paymentId}:CAPTURE`,
+            order_id: orderId,
+            order_item_id: row.order_item_id,
+            event_type: 'CAPTURE',
+            allocated_amount: row.allocated_amount,
+            allocation_policy_version: this.captureAllocationPolicyVersion,
+            currency_code: currencyCode,
+            occurred_at: occurredAt,
+            occurred_date: occurredAt.slice(0, 10),
+            project_id_snapshot: itemMeta?.project_id_snapshot || null,
+            project_name_snapshot: itemMeta?.project_name_snapshot || null,
+            campaign_id_snapshot: itemMeta?.campaign_id_snapshot || null,
+            campaign_name_snapshot: itemMeta?.campaign_name_snapshot || null,
+            campaign_type: itemMeta?.campaign_type || null,
+            sales_channel_id: itemMeta?.sales_channel_id || null,
+          });
+        }
+      }
+
+      if (
+        refundAmount > 0 &&
+        ['PARTIALLY_REFUNDED', 'REFUNDED'].includes(status)
+      ) {
+        const refundAllocations = this.allocateAmountByOrderItems(
+          refundAmount,
+          orderItems.map((item) => ({
+            id: item.id,
+            quantity: item.quantity,
+            final_line_total: item.final_line_total,
+          })),
+        );
+        for (const row of refundAllocations) {
+          const occurredAt = refundAt;
+          if (!this.isIsoInRange(occurredAt, input.dateRange)) {
+            continue;
+          }
+          const itemMeta = orderItems.find((item) => item.id === row.order_item_id);
+          allocations.push({
+            financial_event_id: `${paymentId}:REFUND`,
+            order_id: orderId,
+            order_item_id: row.order_item_id,
+            event_type: 'REFUND',
+            allocated_amount: row.allocated_amount,
+            allocation_policy_version: this.refundAllocationPolicyVersion,
+            currency_code: currencyCode,
+            occurred_at: occurredAt,
+            occurred_date: occurredAt.slice(0, 10),
+            project_id_snapshot: itemMeta?.project_id_snapshot || null,
+            project_name_snapshot: itemMeta?.project_name_snapshot || null,
+            campaign_id_snapshot: itemMeta?.campaign_id_snapshot || null,
+            campaign_name_snapshot: itemMeta?.campaign_name_snapshot || null,
+            campaign_type: itemMeta?.campaign_type || null,
+            sales_channel_id: itemMeta?.sales_channel_id || null,
+          });
+        }
+      }
+    }
+
+    return allocations;
+  }
+
+  private isIsoInRange(
+    isoValue: string,
+    dateRange: { fromIso: string; toExclusiveIso: string },
+  ): boolean {
+    const timestamp = Date.parse(isoValue);
+    const from = Date.parse(dateRange.fromIso);
+    const toExclusive = Date.parse(dateRange.toExclusiveIso);
+    if (
+      Number.isNaN(timestamp) ||
+      Number.isNaN(from) ||
+      Number.isNaN(toExclusive)
+    ) {
+      return false;
+    }
+    return timestamp >= from && timestamp < toExclusive;
+  }
+
+  private isStatsStorageDependencyError(error: unknown): boolean {
+    if (!(error instanceof ApiException)) {
+      return false;
+    }
+    const response = error.getResponse() as
+      | string
+      | {
+          message?: string;
+          errorCode?: string;
+        };
+    if (typeof response === 'string') {
+      return false;
+    }
+    const errorCode = this.normalizeOptionalText(response?.errorCode)?.toUpperCase();
+    if (!errorCode) {
+      return false;
+    }
+
+    return new Set([
+      'V2_ADMIN_FINANCIAL_EVENTS_SYNC_FETCH_FAILED',
+      'V2_ADMIN_FINANCIAL_EVENTS_SYNC_UPSERT_FAILED',
+      'V2_ADMIN_FINANCIAL_ALLOC_SYNC_EVENTS_FETCH_FAILED',
+      'V2_ADMIN_FINANCIAL_ALLOC_SYNC_ITEMS_FETCH_FAILED',
+      'V2_ADMIN_FINANCIAL_ALLOC_SYNC_EXISTING_FETCH_FAILED',
+      'V2_ADMIN_FINANCIAL_ALLOC_SYNC_DELETE_FAILED',
+      'V2_ADMIN_FINANCIAL_ALLOC_SYNC_INSERT_FAILED',
+      'V2_ADMIN_SALES_ITEM_FACTS_FETCH_FAILED',
+      'V2_ADMIN_FINANCIAL_ALLOCATION_FACTS_FETCH_FAILED',
+    ]).has(errorCode);
   }
 
   private async syncFinancialEventsFromPayments(): Promise<void> {
