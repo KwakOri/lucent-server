@@ -123,6 +123,11 @@ curl -X POST http://localhost:3001/api/notifications/kakao/alimtalk \
 - `LOCAL_ADMIN_BYPASS` (local/dev only, `true`면 `/api/v2/catalog/admin/*` 관리자 인증 우회)
 - `FRONTEND_APP_URL` (이메일 인증/비밀번호 재설정 리다이렉트 기준 URL)
 
+권장 운영 예시:
+
+- `CORS_ORIGINS=https://lucentlabel.shop,https://www.lucentlabel.shop`
+- 브라우저는 `lucentlabel.shop/api/*`(Next BFF)로 호출하고, Next 서버에서 backend로 프록시
+
 ### Supabase (type-safe client)
 
 - DB 타입 파일: `src/types/database.ts`
