@@ -3335,6 +3335,20 @@ export class V2CatalogService {
       (current.ends_at as string | null);
     this.assertDateRange(nextStartsAt, nextEndsAt, 'campaign 기간');
 
+    const nextCampaignType =
+      (updateData.campaign_type as V2CampaignType | undefined) ??
+      (current.campaign_type as V2CampaignType);
+    const nextCampaignStatus =
+      (updateData.status as V2CampaignStatus | undefined) ??
+      (current.status as V2CampaignStatus);
+    if (nextCampaignType === 'ALWAYS_ON' && nextCampaignStatus === 'ACTIVE') {
+      const projectIds = await this.resolveCampaignIncludedProjectIds(campaignId);
+      await this.assertNoActiveAlwaysOnCampaignProjectConflicts({
+        campaignId,
+        projectIds,
+      });
+    }
+
     if (Object.keys(updateData).length === 0) {
       return current;
     }
@@ -3360,6 +3374,14 @@ export class V2CatalogService {
   async activateCampaign(campaignId: string): Promise<any> {
     const current = await this.getCampaignById(campaignId);
     this.assertCampaignStatusTransition(current.status as V2CampaignStatus, 'ACTIVE');
+
+    if ((current.campaign_type as V2CampaignType) === 'ALWAYS_ON') {
+      const projectIds = await this.resolveCampaignIncludedProjectIds(campaignId);
+      await this.assertNoActiveAlwaysOnCampaignProjectConflicts({
+        campaignId,
+        projectIds,
+      });
+    }
 
     const { data, error } = await this.supabase
       .from('v2_campaigns')
@@ -3451,11 +3473,173 @@ export class V2CatalogService {
     return data || [];
   }
 
+  private async resolveProjectIdsByCampaignTarget(
+    targetType: V2CampaignTargetType,
+    targetId: string,
+  ): Promise<string[]> {
+    if (targetType === 'PROJECT') {
+      return [targetId];
+    }
+
+    if (targetType === 'PRODUCT') {
+      const { data, error } = await this.supabase
+        .from('v2_products')
+        .select('project_id')
+        .eq('id', targetId)
+        .is('deleted_at', null)
+        .maybeSingle();
+      if (error) {
+        throw new ApiException(
+          'campaign target 프로젝트 매핑 실패',
+          500,
+          'V2_CAMPAIGN_TARGET_PROJECT_RESOLVE_FAILED',
+        );
+      }
+      const projectId = this.normalizeOptionalText(data?.project_id as string | null | undefined);
+      return projectId ? [projectId] : [];
+    }
+
+    if (targetType === 'VARIANT') {
+      const { data, error } = await this.supabase
+        .from('v2_product_variants')
+        .select('product_id')
+        .eq('id', targetId)
+        .is('deleted_at', null)
+        .maybeSingle();
+      if (error) {
+        throw new ApiException(
+          'campaign variant target 프로젝트 매핑 실패',
+          500,
+          'V2_CAMPAIGN_TARGET_PROJECT_RESOLVE_FAILED',
+        );
+      }
+      const productId = this.normalizeOptionalText(data?.product_id as string | null | undefined);
+      if (!productId) {
+        return [];
+      }
+      return this.resolveProjectIdsByCampaignTarget('PRODUCT', productId);
+    }
+
+    if (targetType === 'BUNDLE_DEFINITION') {
+      const { data, error } = await this.supabase
+        .from('v2_bundle_definitions')
+        .select('bundle_product_id')
+        .eq('id', targetId)
+        .is('deleted_at', null)
+        .maybeSingle();
+      if (error) {
+        throw new ApiException(
+          'campaign bundle target 프로젝트 매핑 실패',
+          500,
+          'V2_CAMPAIGN_TARGET_PROJECT_RESOLVE_FAILED',
+        );
+      }
+      const bundleProductId = this.normalizeOptionalText(
+        data?.bundle_product_id as string | null | undefined,
+      );
+      if (!bundleProductId) {
+        return [];
+      }
+      return this.resolveProjectIdsByCampaignTarget('PRODUCT', bundleProductId);
+    }
+
+    return [];
+  }
+
+  private async resolveCampaignIncludedProjectIds(campaignId: string): Promise<string[]> {
+    const { data, error } = await this.supabase
+      .from('v2_campaign_targets')
+      .select('target_type,target_id,is_excluded')
+      .eq('campaign_id', campaignId)
+      .is('deleted_at', null);
+    if (error) {
+      throw new ApiException(
+        'campaign 대상 프로젝트 조회 실패',
+        500,
+        'V2_CAMPAIGN_TARGETS_FETCH_FAILED',
+      );
+    }
+
+    const projectIds = new Set<string>();
+    for (const row of data || []) {
+      if (row.is_excluded) {
+        continue;
+      }
+      const targetType = row.target_type as V2CampaignTargetType | null;
+      const targetId = this.normalizeOptionalText(row.target_id as string | null | undefined);
+      if (!targetType || !targetId) {
+        continue;
+      }
+      const resolvedProjectIds = await this.resolveProjectIdsByCampaignTarget(
+        targetType,
+        targetId,
+      );
+      resolvedProjectIds.forEach((projectId) => {
+        if (projectId) {
+          projectIds.add(projectId);
+        }
+      });
+    }
+
+    return Array.from(projectIds);
+  }
+
+  private async assertNoActiveAlwaysOnCampaignProjectConflicts(params: {
+    campaignId: string;
+    projectIds: string[];
+  }): Promise<void> {
+    const targetProjectIds = Array.from(
+      new Set((params.projectIds || []).filter((projectId) => !!projectId)),
+    );
+    if (targetProjectIds.length === 0) {
+      return;
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_campaigns')
+      .select('id,name')
+      .eq('campaign_type', 'ALWAYS_ON')
+      .eq('status', 'ACTIVE')
+      .is('deleted_at', null)
+      .neq('id', params.campaignId);
+    if (error) {
+      throw new ApiException(
+        '상시 운영 캠페인 충돌 검사 실패',
+        500,
+        'V2_ALWAYS_ON_CAMPAIGN_CONFLICT_CHECK_FAILED',
+      );
+    }
+
+    const conflictedCampaignNames: string[] = [];
+    for (const candidate of data || []) {
+      const candidateProjectIds = await this.resolveCampaignIncludedProjectIds(
+        candidate.id as string,
+      );
+      const hasConflict = candidateProjectIds.some((projectId) =>
+        targetProjectIds.includes(projectId),
+      );
+      if (hasConflict) {
+        conflictedCampaignNames.push(
+          this.normalizeOptionalText(candidate.name as string | null | undefined) ||
+            (candidate.id as string),
+        );
+      }
+    }
+
+    if (conflictedCampaignNames.length > 0) {
+      throw new ApiException(
+        `같은 프로젝트에 ACTIVE 상시 운영 캠페인이 이미 있습니다: ${conflictedCampaignNames.join(', ')}`,
+        409,
+        'V2_ALWAYS_ON_CAMPAIGN_CONFLICT',
+      );
+    }
+  }
+
   async createCampaignTarget(
     campaignId: string,
     input: CreateV2CampaignTargetInput,
   ): Promise<any> {
-    await this.getCampaignById(campaignId);
+    const campaign = await this.getCampaignById(campaignId);
     const targetType = input.target_type;
     if (!targetType) {
       throw new ApiException(
@@ -3471,6 +3655,18 @@ export class V2CatalogService {
       'target_id는 필수입니다',
     );
     await this.ensureCampaignTargetEntityExists(targetType, targetId);
+
+    if (
+      campaign.campaign_type === 'ALWAYS_ON' &&
+      campaign.status === 'ACTIVE' &&
+      !(input.is_excluded ?? false)
+    ) {
+      const projectIds = await this.resolveProjectIdsByCampaignTarget(targetType, targetId);
+      await this.assertNoActiveAlwaysOnCampaignProjectConflicts({
+        campaignId,
+        projectIds,
+      });
+    }
 
     if (input.sort_order !== undefined) {
       this.assertSortOrder(input.sort_order);
@@ -3510,22 +3706,24 @@ export class V2CatalogService {
     input: UpdateV2CampaignTargetInput,
   ): Promise<any> {
     const current = await this.getCampaignTargetById(targetId);
+    const campaign = await this.getCampaignById(current.campaign_id as string);
     const updateData: Record<string, unknown> = {};
+    let nextTargetType = current.target_type as V2CampaignTargetType;
+    let nextTargetId = current.target_id as string;
 
     if (input.target_type !== undefined) {
       this.assertCampaignTargetType(input.target_type);
       updateData.target_type = input.target_type;
+      nextTargetType = input.target_type;
     }
     if (input.target_id !== undefined) {
       const normalizedTargetId = this.normalizeRequiredText(
         input.target_id,
         'target_id는 필수입니다',
       );
-      const nextTargetType =
-        (updateData.target_type as V2CampaignTargetType | undefined) ??
-        (current.target_type as V2CampaignTargetType);
       await this.ensureCampaignTargetEntityExists(nextTargetType, normalizedTargetId);
       updateData.target_id = normalizedTargetId;
+      nextTargetId = normalizedTargetId;
     }
     if (input.sort_order !== undefined) {
       this.assertSortOrder(input.sort_order);
@@ -3547,6 +3745,22 @@ export class V2CatalogService {
     }
     if (input.metadata !== undefined) {
       updateData.metadata = input.metadata ?? {};
+    }
+
+    const nextExcluded = (input.is_excluded ?? current.is_excluded) as boolean;
+    if (
+      campaign.campaign_type === 'ALWAYS_ON' &&
+      campaign.status === 'ACTIVE' &&
+      !nextExcluded
+    ) {
+      const projectIds = await this.resolveProjectIdsByCampaignTarget(
+        nextTargetType,
+        nextTargetId,
+      );
+      await this.assertNoActiveAlwaysOnCampaignProjectConflicts({
+        campaignId: campaign.id as string,
+        projectIds,
+      });
     }
 
     if (Object.keys(updateData).length === 0) {
