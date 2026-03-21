@@ -79,11 +79,23 @@ type V2CouponRedemptionStatus =
   | 'CANCELED'
   | 'EXPIRED';
 
+interface CampaignTargetEligibilityBucket {
+  projectIds: Set<string>;
+  productIds: Set<string>;
+  variantIds: Set<string>;
+}
+
+interface CampaignTargetEligibilityScope {
+  include: CampaignTargetEligibilityBucket;
+  exclude: CampaignTargetEligibilityBucket;
+  hasIncludeTargets: boolean;
+}
+
 interface CreateV2ProjectInput {
   name?: string;
   slug?: string;
   description?: string | null;
-  cover_image_url?: string | null;
+  cover_media_asset_id?: string | null;
   sort_order?: number;
   metadata?: Record<string, unknown>;
 }
@@ -92,7 +104,7 @@ interface UpdateV2ProjectInput {
   name?: string;
   slug?: string;
   description?: string | null;
-  cover_image_url?: string | null;
+  cover_media_asset_id?: string | null;
   sort_order?: number;
   metadata?: Record<string, unknown>;
   status?: V2ProjectStatus;
@@ -713,6 +725,8 @@ interface ReadSwitchRemediationTask {
   samples: any[];
 }
 
+const V2_PROJECT_SELECT_COLUMNS = '*, cover_media_asset:media_assets(*)';
+
 @Injectable()
 export class V2CatalogService {
   private get supabase(): any {
@@ -722,7 +736,7 @@ export class V2CatalogService {
   async getProjects(filters: { status?: V2ProjectStatus }): Promise<any[]> {
     let query = this.supabase
       .from('v2_projects')
-      .select('*')
+      .select(V2_PROJECT_SELECT_COLUMNS)
       .is('deleted_at', null)
       .order('sort_order', { ascending: true });
 
@@ -745,7 +759,7 @@ export class V2CatalogService {
   async getProjectById(projectId: string): Promise<any> {
     const { data, error } = await this.supabase
       .from('v2_projects')
-      .select('*')
+      .select(V2_PROJECT_SELECT_COLUMNS)
       .eq('id', projectId)
       .is('deleted_at', null)
       .maybeSingle();
@@ -771,6 +785,9 @@ export class V2CatalogService {
   async createProject(input: CreateV2ProjectInput): Promise<any> {
     const name = this.normalizeRequiredText(input.name, '프로젝트 이름은 필수입니다');
     const slug = this.normalizeRequiredText(input.slug, '프로젝트 slug는 필수입니다');
+    const coverMediaAssetId = await this.resolveProjectCoverMediaAssetId(
+      input.cover_media_asset_id,
+    );
 
     await this.assertProjectSlugAvailable(slug);
     this.assertSortOrder(input.sort_order);
@@ -781,13 +798,13 @@ export class V2CatalogService {
         name,
         slug,
         description: this.normalizeOptionalText(input.description),
-        cover_image_url: this.normalizeOptionalText(input.cover_image_url),
+        cover_media_asset_id: coverMediaAssetId,
         sort_order: input.sort_order ?? 0,
         status: 'DRAFT',
         is_active: false,
         metadata: input.metadata ?? {},
       })
-      .select('*')
+      .select(V2_PROJECT_SELECT_COLUMNS)
       .single();
 
     if (error || !data) {
@@ -816,8 +833,10 @@ export class V2CatalogService {
     if (input.description !== undefined) {
       updateData.description = this.normalizeOptionalText(input.description);
     }
-    if (input.cover_image_url !== undefined) {
-      updateData.cover_image_url = this.normalizeOptionalText(input.cover_image_url);
+    if (input.cover_media_asset_id !== undefined) {
+      updateData.cover_media_asset_id = await this.resolveProjectCoverMediaAssetId(
+        input.cover_media_asset_id,
+      );
     }
     if (input.sort_order !== undefined) {
       this.assertSortOrder(input.sort_order);
@@ -843,7 +862,7 @@ export class V2CatalogService {
       .from('v2_projects')
       .update(updateData)
       .eq('id', projectId)
-      .select('*')
+      .select(V2_PROJECT_SELECT_COLUMNS)
       .single();
 
     if (error || !data) {
@@ -866,7 +885,7 @@ export class V2CatalogService {
         is_active: true,
       })
       .eq('id', projectId)
-      .select('*')
+      .select(V2_PROJECT_SELECT_COLUMNS)
       .single();
 
     if (error || !data) {
@@ -889,7 +908,7 @@ export class V2CatalogService {
         is_active: false,
       })
       .eq('id', projectId)
-      .select('*')
+      .select(V2_PROJECT_SELECT_COLUMNS)
       .single();
 
     if (error || !data) {
@@ -1547,19 +1566,26 @@ export class V2CatalogService {
     const campaignId = this.normalizeOptionalText(input.campaign_id);
     const evaluatedAt = new Date().toISOString();
 
-    const { variantsByProductId, mediaByProductId, inventoryByVariantId, priceItems } =
-      await this.loadShopContext([productId]);
+    const {
+      variantsByProductId,
+      mediaByProductId,
+      inventoryByVariantId,
+      priceItems,
+      campaignTargetEligibilityByCampaignId,
+    } = await this.loadShopContext([productId]);
     const variants = variantsByProductId.get(productId) || [];
     const media = mediaByProductId.get(productId) || [];
 
     const variantViews = variants.map((variant: any, index: number) => {
       const priceSelection = this.selectShopPriceItem({
         productId,
+        projectId: product.project_id as string | null,
         variantId: variant.id as string,
         priceItems,
         evaluatedAt,
         campaignId,
         channel,
+        campaignTargetEligibilityByCampaignId,
       });
       const inventoryQuantity = variant.track_inventory
         ? (inventoryByVariantId.get(variant.id as string) ?? null)
@@ -2219,6 +2245,7 @@ export class V2CatalogService {
         product_media_count: 0,
         digital_asset_count: 0,
         campaign_banner_count: 0,
+        project_cover_count: 0,
         total_reference_count: 0,
         is_orphan: true,
       },
@@ -2776,13 +2803,14 @@ export class V2CatalogService {
       product_media_count: 0,
       digital_asset_count: 0,
       campaign_banner_count: 0,
+      project_cover_count: 0,
       total_reference_count: 0,
       is_orphan: true,
     };
 
     if (referenceSummary.total_reference_count > 0) {
       throw new ApiException(
-        '다른 상품/디지털 에셋/캠페인 배너에서 참조 중인 media asset은 삭제할 수 없습니다',
+        '다른 상품/디지털 에셋/캠페인 배너/프로젝트 커버에서 참조 중인 media asset은 삭제할 수 없습니다',
         400,
         'MEDIA_ASSET_IN_USE',
       );
@@ -5884,6 +5912,14 @@ export class V2CatalogService {
       );
     }
 
+    const normalizedPriceItems = (priceItems || []) as any[];
+    const campaignTargetEligibilityByCampaignId =
+      await this.loadCampaignTargetEligibilityByCampaignIds(
+        normalizedPriceItems.map(
+          (item) => item?.price_list?.campaign_id as string | null | undefined,
+        ),
+      );
+
     const nowIso = evaluatedAt;
     const lineResults: any[] = [];
     const priceCandidates: any[] = [];
@@ -5902,10 +5938,12 @@ export class V2CatalogService {
 
       const candidates = this.filterShopPriceCandidates({
         productId: product.id as string,
+        projectId: product.project_id as string | null,
         variantId: line.variant_id,
-        priceItems: (priceItems || []) as any[],
+        priceItems: normalizedPriceItems,
         evaluatedAt: nowIso,
         channel,
+        campaignTargetEligibilityByCampaignId,
       });
 
       const priceSelection = this.buildShopPriceSelectionFromCandidates({
@@ -9426,12 +9464,197 @@ export class V2CatalogService {
     return this.matchesChannelScope(campaign.channel_scope_json, channel);
   }
 
+  private createEmptyCampaignTargetEligibilityBucket(): CampaignTargetEligibilityBucket {
+    return {
+      projectIds: new Set<string>(),
+      productIds: new Set<string>(),
+      variantIds: new Set<string>(),
+    };
+  }
+
+  private createEmptyCampaignTargetEligibilityScope(): CampaignTargetEligibilityScope {
+    return {
+      include: this.createEmptyCampaignTargetEligibilityBucket(),
+      exclude: this.createEmptyCampaignTargetEligibilityBucket(),
+      hasIncludeTargets: false,
+    };
+  }
+
+  private extractCampaignTargetProductIdFromSnapshot(snapshot: unknown): string | null {
+    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+      return null;
+    }
+
+    const payload = snapshot as Record<string, unknown>;
+    const productId = this.normalizeOptionalText(payload.product_id as string | null | undefined);
+    if (productId) {
+      return productId;
+    }
+    const bundleProductId = this.normalizeOptionalText(
+      payload.bundle_product_id as string | null | undefined,
+    );
+    if (bundleProductId) {
+      return bundleProductId;
+    }
+    const targetProductId = this.normalizeOptionalText(
+      payload.target_product_id as string | null | undefined,
+    );
+    if (targetProductId) {
+      return targetProductId;
+    }
+
+    return null;
+  }
+
+  private applyCampaignTargetToEligibilityBucket(params: {
+    bucket: CampaignTargetEligibilityBucket;
+    targetType: V2CampaignTargetType;
+    targetId: string;
+    sourceSnapshot: unknown;
+  }): void {
+    if (params.targetType === 'PROJECT') {
+      params.bucket.projectIds.add(params.targetId);
+      return;
+    }
+    if (params.targetType === 'PRODUCT') {
+      params.bucket.productIds.add(params.targetId);
+      return;
+    }
+    if (params.targetType === 'VARIANT') {
+      params.bucket.variantIds.add(params.targetId);
+      return;
+    }
+    if (params.targetType === 'BUNDLE_DEFINITION') {
+      const bundleProductId = this.extractCampaignTargetProductIdFromSnapshot(
+        params.sourceSnapshot,
+      );
+      if (bundleProductId) {
+        params.bucket.productIds.add(bundleProductId);
+      }
+    }
+  }
+
+  private async loadCampaignTargetEligibilityByCampaignIds(
+    campaignIds: Array<string | null | undefined>,
+  ): Promise<Map<string, CampaignTargetEligibilityScope>> {
+    const normalizedCampaignIds = Array.from(
+      new Set(
+        campaignIds
+          .map((campaignId) => this.normalizeOptionalText(campaignId))
+          .filter((campaignId): campaignId is string => !!campaignId),
+      ),
+    );
+
+    const eligibilityByCampaignId = new Map<string, CampaignTargetEligibilityScope>();
+    if (normalizedCampaignIds.length === 0) {
+      return eligibilityByCampaignId;
+    }
+
+    normalizedCampaignIds.forEach((campaignId) => {
+      eligibilityByCampaignId.set(
+        campaignId,
+        this.createEmptyCampaignTargetEligibilityScope(),
+      );
+    });
+
+    const { data, error } = await this.supabase
+      .from('v2_campaign_targets')
+      .select('campaign_id,target_type,target_id,is_excluded,source_snapshot_json')
+      .in('campaign_id', normalizedCampaignIds)
+      .is('deleted_at', null);
+
+    if (error) {
+      throw new ApiException(
+        'shop pricing campaign target 조회 실패',
+        500,
+        'V2_CAMPAIGN_TARGETS_FETCH_FAILED',
+      );
+    }
+
+    for (const row of data || []) {
+      const campaignId = this.normalizeOptionalText(
+        row.campaign_id as string | null | undefined,
+      );
+      const targetType = row.target_type as V2CampaignTargetType | null;
+      const targetId = this.normalizeOptionalText(
+        row.target_id as string | null | undefined,
+      );
+      if (!campaignId || !targetType || !targetId) {
+        continue;
+      }
+
+      const scope =
+        eligibilityByCampaignId.get(campaignId) ??
+        this.createEmptyCampaignTargetEligibilityScope();
+      const isExcluded = (row.is_excluded as boolean | null | undefined) ?? false;
+      const bucket = isExcluded ? scope.exclude : scope.include;
+      this.applyCampaignTargetToEligibilityBucket({
+        bucket,
+        targetType,
+        targetId,
+        sourceSnapshot: row.source_snapshot_json,
+      });
+      if (!isExcluded) {
+        scope.hasIncludeTargets = true;
+      }
+      eligibilityByCampaignId.set(campaignId, scope);
+    }
+
+    return eligibilityByCampaignId;
+  }
+
+  private isCampaignTargetEligibleForShopPricing(params: {
+    campaignId: string | null | undefined;
+    projectId: string | null | undefined;
+    productId: string;
+    variantId: string | null;
+    campaignTargetEligibilityByCampaignId: Map<
+      string,
+      CampaignTargetEligibilityScope
+    >;
+  }): boolean {
+    const campaignId = this.normalizeOptionalText(params.campaignId);
+    if (!campaignId) {
+      return false;
+    }
+
+    const eligibility = params.campaignTargetEligibilityByCampaignId.get(campaignId);
+    if (!eligibility || !eligibility.hasIncludeTargets) {
+      return false;
+    }
+
+    const projectId = this.normalizeOptionalText(params.projectId);
+    const includedByProject = !!projectId && eligibility.include.projectIds.has(projectId);
+    const includedByProduct = eligibility.include.productIds.has(params.productId);
+    const includedByVariant =
+      !!params.variantId && eligibility.include.variantIds.has(params.variantId);
+    const included = includedByProject || includedByProduct || includedByVariant;
+    if (!included) {
+      return false;
+    }
+
+    const excludedByProject = !!projectId && eligibility.exclude.projectIds.has(projectId);
+    const excludedByProduct = eligibility.exclude.productIds.has(params.productId);
+    const excludedByVariant =
+      !!params.variantId && eligibility.exclude.variantIds.has(params.variantId);
+    if (excludedByProject || excludedByProduct || excludedByVariant) {
+      return false;
+    }
+
+    return true;
+  }
+
   private filterShopPriceCandidates(params: {
     productId: string;
+    projectId: string | null;
     variantId: string;
     priceItems: any[];
     evaluatedAt: string;
     channel: string | null;
+    campaignTargetEligibilityByCampaignId: Map<
+      string,
+      CampaignTargetEligibilityScope
+    >;
   }): any[] {
     return (params.priceItems || [])
       .filter((item) => item.product_id === params.productId)
@@ -9466,11 +9689,24 @@ export class V2CatalogService {
         }
 
         const linkedCampaign = priceList.campaign;
-        return this.isCampaignApplicableForShopPricing(
-          linkedCampaign,
-          params.evaluatedAt,
-          params.channel,
-        );
+        if (
+          !this.isCampaignApplicableForShopPricing(
+            linkedCampaign,
+            params.evaluatedAt,
+            params.channel,
+          )
+        ) {
+          return false;
+        }
+
+        return this.isCampaignTargetEligibleForShopPricing({
+          campaignId: priceList.campaign_id as string | null | undefined,
+          projectId: params.projectId,
+          productId: params.productId,
+          variantId: params.variantId,
+          campaignTargetEligibilityByCampaignId:
+            params.campaignTargetEligibilityByCampaignId,
+        });
       });
   }
 
@@ -9640,8 +9876,13 @@ export class V2CatalogService {
     }
 
     const productIds = products.map((product) => product.id as string);
-    const { variantsByProductId, mediaByProductId, inventoryByVariantId, priceItems } =
-      await this.loadShopContext(productIds);
+    const {
+      variantsByProductId,
+      mediaByProductId,
+      inventoryByVariantId,
+      priceItems,
+      campaignTargetEligibilityByCampaignId,
+    } = await this.loadShopContext(productIds);
 
     return products.map((product) => {
       const productId = product.id as string;
@@ -9652,11 +9893,13 @@ export class V2CatalogService {
       const priceSelection = primaryVariant
         ? this.selectShopPriceItem({
             productId,
+            projectId: product.project_id as string | null,
             variantId: primaryVariant.id as string,
             priceItems,
             evaluatedAt: context.evaluatedAt,
             campaignId: context.campaignId,
             channel: context.channel,
+            campaignTargetEligibilityByCampaignId,
           })
         : { selected: null };
       const inventoryQuantity = primaryVariant?.track_inventory
@@ -9701,10 +9944,18 @@ export class V2CatalogService {
     mediaByProductId: Map<string, any[]>;
     inventoryByVariantId: Map<string, number>;
     priceItems: any[];
+    campaignTargetEligibilityByCampaignId: Map<
+      string,
+      CampaignTargetEligibilityScope
+    >;
   }> {
     const variantsByProductId = new Map<string, any[]>();
     const mediaByProductId = new Map<string, any[]>();
     const inventoryByVariantId = new Map<string, number>();
+    const campaignTargetEligibilityByCampaignId = new Map<
+      string,
+      CampaignTargetEligibilityScope
+    >();
 
     if (!productIds || productIds.length === 0) {
       return {
@@ -9712,6 +9963,7 @@ export class V2CatalogService {
         mediaByProductId,
         inventoryByVariantId,
         priceItems: [],
+        campaignTargetEligibilityByCampaignId,
       };
     }
 
@@ -9843,11 +10095,21 @@ export class V2CatalogService {
       );
     }
 
+    const normalizedPriceItems = (priceItems || []) as any[];
+    const loadedCampaignTargetEligibilityByCampaignId =
+      await this.loadCampaignTargetEligibilityByCampaignIds(
+        normalizedPriceItems.map(
+          (item) => item?.price_list?.campaign_id as string | null | undefined,
+        ),
+      );
+
     return {
       variantsByProductId,
       mediaByProductId,
       inventoryByVariantId,
-      priceItems: priceItems || [],
+      priceItems: normalizedPriceItems,
+      campaignTargetEligibilityByCampaignId:
+        loadedCampaignTargetEligibilityByCampaignId,
     };
   }
 
@@ -9922,18 +10184,26 @@ export class V2CatalogService {
 
   private selectShopPriceItem(params: {
     productId: string;
+    projectId: string | null;
     variantId: string;
     priceItems: any[];
     evaluatedAt: string;
     campaignId: string | null;
     channel: string | null;
+    campaignTargetEligibilityByCampaignId: Map<
+      string,
+      CampaignTargetEligibilityScope
+    >;
   }): { selected: any | null; base: any | null; override: any | null } {
     const candidates = this.filterShopPriceCandidates({
       productId: params.productId,
+      projectId: params.projectId,
       variantId: params.variantId,
       priceItems: params.priceItems,
       evaluatedAt: params.evaluatedAt,
       channel: params.channel,
+      campaignTargetEligibilityByCampaignId:
+        params.campaignTargetEligibilityByCampaignId,
     });
 
     return this.buildShopPriceSelectionFromCandidates({
@@ -10358,6 +10628,7 @@ export class V2CatalogService {
         product_media_count: number;
         digital_asset_count: number;
         campaign_banner_count: number;
+        project_cover_count: number;
         total_reference_count: number;
         is_orphan: boolean;
       }
@@ -10370,6 +10641,7 @@ export class V2CatalogService {
         product_media_count: number;
         digital_asset_count: number;
         campaign_banner_count: number;
+        project_cover_count: number;
         total_reference_count: number;
         is_orphan: boolean;
       }
@@ -10380,6 +10652,7 @@ export class V2CatalogService {
         product_media_count: 0,
         digital_asset_count: 0,
         campaign_banner_count: 0,
+        project_cover_count: 0,
         total_reference_count: 0,
         is_orphan: true,
       });
@@ -10393,6 +10666,7 @@ export class V2CatalogService {
       { data: productMediaRows, error: productMediaError },
       { data: digitalAssetRows, error: digitalAssetError },
       { data: campaignRows, error: campaignError },
+      { data: projectRows, error: projectError },
     ] = await Promise.all([
       this.supabase
         .from('v2_product_media')
@@ -10409,9 +10683,14 @@ export class V2CatalogService {
         .select('shop_banner_media_asset_id')
         .in('shop_banner_media_asset_id', uniqueMediaAssetIds)
         .is('deleted_at', null),
+      this.supabase
+        .from('v2_projects')
+        .select('cover_media_asset_id')
+        .in('cover_media_asset_id', uniqueMediaAssetIds)
+        .is('deleted_at', null),
     ]);
 
-    if (productMediaError || digitalAssetError || campaignError) {
+    if (productMediaError || digitalAssetError || campaignError || projectError) {
       throw new ApiException(
         'media asset 참조 현황 조회 실패',
         500,
@@ -10448,6 +10727,17 @@ export class V2CatalogService {
       }
       const current = summaryByAssetId.get(mediaAssetId)!;
       current.campaign_banner_count += 1;
+      current.total_reference_count += 1;
+      current.is_orphan = false;
+    });
+
+    (projectRows || []).forEach((row) => {
+      const mediaAssetId = row.cover_media_asset_id as string | null;
+      if (!mediaAssetId || !summaryByAssetId.has(mediaAssetId)) {
+        return;
+      }
+      const current = summaryByAssetId.get(mediaAssetId)!;
+      current.project_cover_count += 1;
       current.total_reference_count += 1;
       current.is_orphan = false;
     });
@@ -10528,6 +10818,24 @@ export class V2CatalogService {
     if (mediaAsset.asset_kind !== 'IMAGE') {
       throw new ApiException(
         'campaign 배너는 IMAGE 타입 media asset만 연결할 수 있습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    return mediaAsset.id as string;
+  }
+
+  private async resolveProjectCoverMediaAssetId(
+    mediaAssetIdInput: string | null | undefined,
+  ): Promise<string | null> {
+    const mediaAssetId = this.normalizeOptionalText(mediaAssetIdInput);
+    if (!mediaAssetId) {
+      return null;
+    }
+    const mediaAsset = await this.getMediaAssetById(mediaAssetId);
+    if (mediaAsset.asset_kind !== 'IMAGE') {
+      throw new ApiException(
+        'project 커버는 IMAGE 타입 media asset만 연결할 수 있습니다',
         400,
         'VALIDATION_ERROR',
       );
