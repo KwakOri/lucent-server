@@ -1358,7 +1358,22 @@ export class V2CatalogService {
     const { data, error } = await this.supabase
       .from('v2_campaigns')
       .select(
-        'id,code,name,description,campaign_type,status,starts_at,ends_at,channel_scope_json,shop_banner_media_asset_id,shop_banner_alt_text',
+        `
+        id,
+        code,
+        name,
+        description,
+        campaign_type,
+        status,
+        starts_at,
+        ends_at,
+        channel_scope_json,
+        shop_banner_media_asset_id,
+        shop_banner_alt_text,
+        shop_banner_media_asset:media_assets(
+          public_url
+        )
+      `,
       )
       .eq('status', 'ACTIVE')
       .neq('campaign_type', 'ALWAYS_ON')
@@ -1374,23 +1389,39 @@ export class V2CatalogService {
       );
     }
 
-    return (data || []).filter((campaign: any) => {
-      if (!this.matchesChannelScope(campaign.channel_scope_json, channel)) {
-        return false;
-      }
-
-      if (includeUpcoming) {
-        if (
-          campaign.ends_at &&
-          new Date(campaign.ends_at).getTime() < new Date(nowIso).getTime()
-        ) {
+    return (data || [])
+      .filter((campaign: any) => {
+        if (!this.matchesChannelScope(campaign.channel_scope_json, channel)) {
           return false;
         }
-        return true;
-      }
 
-      return this.isTimestampInRange(campaign.starts_at, campaign.ends_at, nowIso);
-    });
+        if (includeUpcoming) {
+          if (
+            campaign.ends_at &&
+            new Date(campaign.ends_at).getTime() < new Date(nowIso).getTime()
+          ) {
+            return false;
+          }
+          return true;
+        }
+
+        return this.isTimestampInRange(campaign.starts_at, campaign.ends_at, nowIso);
+      })
+      .map((campaign: any) => {
+        const shopBannerAsset =
+          campaign.shop_banner_media_asset &&
+          typeof campaign.shop_banner_media_asset === 'object'
+            ? campaign.shop_banner_media_asset
+            : null;
+
+        return {
+          ...campaign,
+          shop_banner_public_url:
+            this.normalizeOptionalText(
+              shopBannerAsset?.public_url as string | null | undefined,
+            ) ?? null,
+        };
+      });
   }
 
   async getShopCoupons(input: GetV2ShopCouponsInput = {}): Promise<any[]> {
