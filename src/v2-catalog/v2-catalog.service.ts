@@ -1497,6 +1497,17 @@ export class V2CatalogService {
       };
     });
 
+    const hasDisplayPrice = variantViews.some(
+      (variant: any) => variant.display_price !== null,
+    );
+    if (!hasDisplayPrice) {
+      throw new ApiException(
+        'v2 shop 상품을 찾을 수 없습니다',
+        404,
+        'V2_SHOP_PRODUCT_NOT_FOUND',
+      );
+    }
+
     const defaultVariant =
       variantViews.find((variant: any) => variant.availability.sellable) ||
       variantViews[0] ||
@@ -9260,13 +9271,14 @@ export class V2CatalogService {
       return false;
     }
 
+    // 상점 노출 기준은 "상시 운영(ALWAYS_ON) 캠페인에 연결된 BASE"만 허용한다.
     if (!priceList.campaign_id) {
-      return true;
+      return false;
     }
 
     const linkedCampaign = priceList.campaign;
     if (!linkedCampaign || typeof linkedCampaign !== 'object') {
-      return true;
+      return false;
     }
     if (linkedCampaign.campaign_type !== 'ALWAYS_ON') {
       return false;
@@ -9290,20 +9302,28 @@ export class V2CatalogService {
       return false;
     }
 
+    const linkedCampaign = priceList.campaign;
+
     if (params.campaignId) {
-      if (priceList.campaign_id && priceList.campaign_id !== params.campaignId) {
+      if (!priceList.campaign_id || priceList.campaign_id !== params.campaignId) {
         return false;
       }
-      return true;
+      if (!linkedCampaign || typeof linkedCampaign !== 'object') {
+        return false;
+      }
+      return this.isCampaignApplicableForShopPricing(
+        linkedCampaign,
+        params.evaluatedAt,
+        params.channel,
+      );
     }
 
     if (!priceList.campaign_id) {
-      return true;
+      return false;
     }
 
-    const linkedCampaign = priceList.campaign;
     if (!linkedCampaign || typeof linkedCampaign !== 'object') {
-      return true;
+      return false;
     }
     if (linkedCampaign.campaign_type === 'ALWAYS_ON') {
       return false;
