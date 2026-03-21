@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { AppConfigService } from '../config/app-config.service';
 import { SendonService } from '../sendon/sendon.service';
 import { SendonAlimtalkRecipient } from '../sendon/sendon.types';
+import { getSupabaseClient } from '../supabase/supabase.client';
 
 type CommerceNotificationEvent =
   | 'ORDER_PLACED'
@@ -15,9 +16,16 @@ interface CommerceNotificationContext {
   shipment?: any;
 }
 
+type NotificationPersistStatus = 'ACCEPTED' | 'FAILED' | 'DISABLED' | 'SKIPPED';
+
 @Injectable()
 export class CommerceNotificationsService {
   private readonly logger = new Logger(CommerceNotificationsService.name);
+  private notificationLogUnavailable = false;
+
+  private get supabase(): any {
+    return getSupabaseClient() as any;
+  }
 
   constructor(
     private readonly configService: AppConfigService,
@@ -55,37 +63,69 @@ export class CommerceNotificationsService {
   }
 
   private async notify(input: CommerceNotificationContext): Promise<void> {
+    const templateId = this.resolveTemplateId(input.event);
+    const phone = this.resolveRecipientPhone(input.order);
+    const variables = this.buildVariables(input);
+
     if (!this.configService.sendon.commerceNotifyEnabled) {
+      await this.persistNotificationLog({
+        input,
+        templateId,
+        phone,
+        variables,
+        status: 'SKIPPED',
+        errorMessage: 'SENDON_COMMERCE_NOTIFY_DISABLED',
+      });
       return;
     }
 
     const sendProfileId = this.configService.sendon.defaultSendProfileId.trim();
     if (!sendProfileId) {
-      this.logger.warn(
-        `Skip ${input.event}: SENDON_SEND_PROFILE_ID is empty.`,
-      );
+      this.logger.warn(`Skip ${input.event}: SENDON_SEND_PROFILE_ID is empty.`);
+      await this.persistNotificationLog({
+        input,
+        templateId,
+        phone,
+        variables,
+        status: 'SKIPPED',
+        errorMessage: 'SENDON_SEND_PROFILE_ID_EMPTY',
+      });
       return;
     }
 
-    const templateId = this.resolveTemplateId(input.event);
     if (!templateId) {
       this.logger.warn(
         `Skip ${input.event}: template id is empty. Set corresponding SENDON_TEMPLATE_* env.`,
       );
+      await this.persistNotificationLog({
+        input,
+        templateId: null,
+        phone,
+        variables,
+        status: 'SKIPPED',
+        errorMessage: 'SENDON_TEMPLATE_ID_EMPTY',
+      });
       return;
     }
 
-    const phone = this.resolveRecipientPhone(input.order);
     if (!phone) {
       this.logger.warn(
         `Skip ${input.event}: recipient phone not found for order=${this.resolveOrderRef(input.order)}.`,
       );
+      await this.persistNotificationLog({
+        input,
+        templateId,
+        phone: null,
+        variables,
+        status: 'SKIPPED',
+        errorMessage: 'RECIPIENT_PHONE_NOT_FOUND',
+      });
       return;
     }
 
     const recipient: SendonAlimtalkRecipient = {
       phone,
-      variables: this.buildVariables(input),
+      variables,
     };
 
     const result = await this.sendonService.sendAlimtalk({
@@ -100,6 +140,19 @@ export class CommerceNotificationsService {
           input.order,
         )}, requestId=${result.requestId ?? 'none'}).`,
       );
+      await this.persistNotificationLog({
+        input,
+        templateId,
+        phone,
+        variables,
+        status: result.status === 'disabled' ? 'DISABLED' : 'FAILED',
+        requestId: result.requestId,
+        responsePayload: result.raw,
+        errorMessage:
+          result.status === 'disabled'
+            ? 'SENDON_DISABLED'
+            : 'SENDON_NOT_ACCEPTED',
+      });
       return;
     }
 
@@ -108,6 +161,17 @@ export class CommerceNotificationsService {
         input.order,
       )}, requestId=${result.requestId ?? 'none'}).`,
     );
+
+    await this.persistNotificationLog({
+      input,
+      templateId,
+      phone,
+      variables,
+      status: 'ACCEPTED',
+      requestId: result.requestId,
+      responsePayload: result.raw,
+      sentAt: new Date().toISOString(),
+    });
   }
 
   private resolveTemplateId(event: CommerceNotificationEvent): string {
@@ -151,7 +215,9 @@ export class CommerceNotificationsService {
     return null;
   }
 
-  private buildVariables(input: CommerceNotificationContext): Record<string, string> {
+  private buildVariables(
+    input: CommerceNotificationContext,
+  ): Record<string, string> {
     const order = input.order || {};
     const shipment = input.shipment || {};
     const customerName = this.resolveCustomerName(order);
@@ -177,7 +243,9 @@ export class CommerceNotificationsService {
     if (input.event === 'SHIPMENT_DISPATCHED') {
       return {
         ...base,
-        '#{배송상태}': this.valueOrDash(shipment.status || order.fulfillment_status),
+        '#{배송상태}': this.valueOrDash(
+          shipment.status || order.fulfillment_status,
+        ),
         '#{택배사}': this.valueOrDash(shipment.carrier),
         '#{송장번호}': this.valueOrDash(shipment.tracking_no),
         '#{송장URL}': this.valueOrDash(shipment.tracking_url),
@@ -188,7 +256,9 @@ export class CommerceNotificationsService {
     if (input.event === 'SHIPMENT_DELIVERED') {
       return {
         ...base,
-        '#{배송상태}': this.valueOrDash(shipment.status || order.fulfillment_status),
+        '#{배송상태}': this.valueOrDash(
+          shipment.status || order.fulfillment_status,
+        ),
         '#{배송완료일시}': this.formatDateTime(shipment.delivered_at),
       };
     }
@@ -285,5 +355,110 @@ export class CommerceNotificationsService {
 
   private resolveOrderRef(order: any): string {
     return this.valueOrDash(order?.order_no || order?.id);
+  }
+
+  private async persistNotificationLog(input: {
+    input: CommerceNotificationContext;
+    templateId: string | null;
+    phone: string | null;
+    variables: Record<string, string>;
+    status: NotificationPersistStatus;
+    requestId?: string | null;
+    responsePayload?: unknown;
+    errorMessage?: string | null;
+    sentAt?: string | null;
+  }): Promise<void> {
+    if (this.notificationLogUnavailable) {
+      return;
+    }
+
+    const orderId = this.resolveUuid(input.input.order?.id);
+    if (!orderId) {
+      this.logger.warn(
+        `Skip v2_order_notifications log: invalid order id (order=${this.resolveOrderRef(
+          input.input.order,
+        )}).`,
+      );
+      return;
+    }
+
+    const shipmentId = this.resolveUuid(input.input.shipment?.id);
+    const payload = {
+      event: input.input.event,
+      order_ref: this.resolveOrderRef(input.input.order),
+      shipment_id: shipmentId,
+    };
+
+    const { error } = await this.supabase
+      .from('v2_order_notifications')
+      .insert({
+        order_id: orderId,
+        shipment_id: shipmentId,
+        event_type: input.input.event,
+        channel: 'KAKAO_ALIMTALK',
+        provider: 'sendon',
+        template_id: input.templateId,
+        recipient_phone: input.phone,
+        variables_json: input.variables || {},
+        payload_json: payload,
+        response_json: this.normalizeJsonObject(input.responsePayload),
+        status: input.status,
+        provider_request_id: input.requestId || null,
+        error_message: this.normalizeOptionalText(input.errorMessage),
+        sent_at: input.sentAt ?? null,
+        metadata: {
+          source: 'CommerceNotificationsService',
+        },
+      });
+
+    if (!error) {
+      return;
+    }
+
+    if ((error as { code?: string }).code === '42P01') {
+      this.notificationLogUnavailable = true;
+      this.logger.warn(
+        'v2_order_notifications table is missing. Notification logging is disabled until schema is applied.',
+      );
+      return;
+    }
+
+    this.logger.warn(
+      `Failed to write v2_order_notifications (order=${this.resolveOrderRef(
+        input.input.order,
+      )}, event=${input.input.event}): ${
+        (error as { message?: string }).message || 'unknown error'
+      }`,
+    );
+  }
+
+  private resolveUuid(value: unknown): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const trimmed = value.trim();
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        trimmed,
+      )
+    ) {
+      return null;
+    }
+    return trimmed;
+  }
+
+  private normalizeOptionalText(value: unknown): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  private normalizeJsonObject(value: unknown): Record<string, unknown> {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+    return {};
   }
 }
