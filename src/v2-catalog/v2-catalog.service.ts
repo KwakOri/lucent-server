@@ -398,6 +398,8 @@ interface CreateV2CampaignInput {
   status?: V2CampaignStatus;
   starts_at?: string | null;
   ends_at?: string | null;
+  shop_banner_media_asset_id?: string | null;
+  shop_banner_alt_text?: string | null;
   channel_scope_json?: unknown;
   purchase_limit_json?: unknown;
   source_type?: string | null;
@@ -414,6 +416,8 @@ interface UpdateV2CampaignInput {
   status?: V2CampaignStatus;
   starts_at?: string | null;
   ends_at?: string | null;
+  shop_banner_media_asset_id?: string | null;
+  shop_banner_alt_text?: string | null;
   channel_scope_json?: unknown;
   purchase_limit_json?: unknown;
   source_type?: string | null;
@@ -1354,7 +1358,7 @@ export class V2CatalogService {
     const { data, error } = await this.supabase
       .from('v2_campaigns')
       .select(
-        'id,code,name,description,campaign_type,status,starts_at,ends_at,channel_scope_json',
+        'id,code,name,description,campaign_type,status,starts_at,ends_at,channel_scope_json,shop_banner_media_asset_id,shop_banner_alt_text',
       )
       .eq('status', 'ACTIVE')
       .neq('campaign_type', 'ALWAYS_ON')
@@ -2183,6 +2187,7 @@ export class V2CatalogService {
       reference_summary: referenceSummaryByAssetId.get(asset.id) ?? {
         product_media_count: 0,
         digital_asset_count: 0,
+        campaign_banner_count: 0,
         total_reference_count: 0,
         is_orphan: true,
       },
@@ -2739,13 +2744,14 @@ export class V2CatalogService {
     const referenceSummary = referenceSummaryByAssetId.get(mediaAssetId) ?? {
       product_media_count: 0,
       digital_asset_count: 0,
+      campaign_banner_count: 0,
       total_reference_count: 0,
       is_orphan: true,
     };
 
     if (referenceSummary.total_reference_count > 0) {
       throw new ApiException(
-        '다른 상품/디지털 에셋에서 참조 중인 media asset은 삭제할 수 없습니다',
+        '다른 상품/디지털 에셋/캠페인 배너에서 참조 중인 media asset은 삭제할 수 없습니다',
         400,
         'MEDIA_ASSET_IN_USE',
       );
@@ -3249,7 +3255,18 @@ export class V2CatalogService {
   }): Promise<any[]> {
     let query = this.supabase
       .from('v2_campaigns')
-      .select('*')
+      .select(
+        `
+        *,
+        shop_banner_media_asset:media_assets(
+          id,
+          asset_kind,
+          status,
+          file_name,
+          public_url
+        )
+      `,
+      )
       .is('deleted_at', null)
       .order('created_at', { ascending: false });
 
@@ -3277,7 +3294,18 @@ export class V2CatalogService {
   async getCampaignById(campaignId: string): Promise<any> {
     const { data, error } = await this.supabase
       .from('v2_campaigns')
-      .select('*')
+      .select(
+        `
+        *,
+        shop_banner_media_asset:media_assets(
+          id,
+          asset_kind,
+          status,
+          file_name,
+          public_url
+        )
+      `,
+      )
       .eq('id', campaignId)
       .is('deleted_at', null)
       .maybeSingle();
@@ -3307,6 +3335,9 @@ export class V2CatalogService {
     const startsAt = this.normalizeOptionalTimestamp(input.starts_at, 'starts_at');
     const endsAt = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
     this.assertDateRange(startsAt, endsAt, 'campaign 기간');
+    const shopBannerMediaAssetId = await this.resolveCampaignBannerMediaAssetId(
+      input.shop_banner_media_asset_id,
+    );
 
     await this.assertCampaignCodeAvailable(code);
 
@@ -3320,6 +3351,10 @@ export class V2CatalogService {
         status,
         starts_at: startsAt,
         ends_at: endsAt,
+        shop_banner_media_asset_id: shopBannerMediaAssetId,
+        shop_banner_alt_text: shopBannerMediaAssetId
+          ? this.normalizeOptionalText(input.shop_banner_alt_text)
+          : null,
         channel_scope_json: this.normalizeOptionalArrayJson(input.channel_scope_json),
         purchase_limit_json: this.normalizeOptionalObjectJson(
           input.purchase_limit_json,
@@ -3383,6 +3418,24 @@ export class V2CatalogService {
     }
     if (input.ends_at !== undefined) {
       updateData.ends_at = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
+    }
+    if (input.shop_banner_media_asset_id !== undefined) {
+      updateData.shop_banner_media_asset_id =
+        await this.resolveCampaignBannerMediaAssetId(
+          input.shop_banner_media_asset_id,
+        );
+    }
+    if (input.shop_banner_alt_text !== undefined) {
+      updateData.shop_banner_alt_text = this.normalizeOptionalText(
+        input.shop_banner_alt_text,
+      );
+    }
+    if (
+      input.shop_banner_media_asset_id !== undefined &&
+      updateData.shop_banner_media_asset_id === null &&
+      input.shop_banner_alt_text === undefined
+    ) {
+      updateData.shop_banner_alt_text = null;
     }
     if (input.channel_scope_json !== undefined) {
       updateData.channel_scope_json = this.normalizeOptionalArrayJson(
@@ -10273,6 +10326,7 @@ export class V2CatalogService {
       {
         product_media_count: number;
         digital_asset_count: number;
+        campaign_banner_count: number;
         total_reference_count: number;
         is_orphan: boolean;
       }
@@ -10284,6 +10338,7 @@ export class V2CatalogService {
       {
         product_media_count: number;
         digital_asset_count: number;
+        campaign_banner_count: number;
         total_reference_count: number;
         is_orphan: boolean;
       }
@@ -10293,6 +10348,7 @@ export class V2CatalogService {
       summaryByAssetId.set(mediaAssetId, {
         product_media_count: 0,
         digital_asset_count: 0,
+        campaign_banner_count: 0,
         total_reference_count: 0,
         is_orphan: true,
       });
@@ -10305,6 +10361,7 @@ export class V2CatalogService {
     const [
       { data: productMediaRows, error: productMediaError },
       { data: digitalAssetRows, error: digitalAssetError },
+      { data: campaignRows, error: campaignError },
     ] = await Promise.all([
       this.supabase
         .from('v2_product_media')
@@ -10316,9 +10373,14 @@ export class V2CatalogService {
         .select('media_asset_id')
         .in('media_asset_id', uniqueMediaAssetIds)
         .is('deleted_at', null),
+      this.supabase
+        .from('v2_campaigns')
+        .select('shop_banner_media_asset_id')
+        .in('shop_banner_media_asset_id', uniqueMediaAssetIds)
+        .is('deleted_at', null),
     ]);
 
-    if (productMediaError || digitalAssetError) {
+    if (productMediaError || digitalAssetError || campaignError) {
       throw new ApiException(
         'media asset 참조 현황 조회 실패',
         500,
@@ -10344,6 +10406,17 @@ export class V2CatalogService {
       }
       const current = summaryByAssetId.get(mediaAssetId)!;
       current.digital_asset_count += 1;
+      current.total_reference_count += 1;
+      current.is_orphan = false;
+    });
+
+    (campaignRows || []).forEach((row) => {
+      const mediaAssetId = row.shop_banner_media_asset_id as string | null;
+      if (!mediaAssetId || !summaryByAssetId.has(mediaAssetId)) {
+        return;
+      }
+      const current = summaryByAssetId.get(mediaAssetId)!;
+      current.campaign_banner_count += 1;
       current.total_reference_count += 1;
       current.is_orphan = false;
     });
@@ -10411,6 +10484,24 @@ export class V2CatalogService {
       );
     }
     return mediaAsset;
+  }
+
+  private async resolveCampaignBannerMediaAssetId(
+    mediaAssetIdInput: string | null | undefined,
+  ): Promise<string | null> {
+    const mediaAssetId = this.normalizeOptionalText(mediaAssetIdInput);
+    if (!mediaAssetId) {
+      return null;
+    }
+    const mediaAsset = await this.getMediaAssetById(mediaAssetId);
+    if (mediaAsset.asset_kind !== 'IMAGE') {
+      throw new ApiException(
+        'campaign 배너는 IMAGE 타입 media asset만 연결할 수 있습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    return mediaAsset.id as string;
   }
 
   private async resolveDigitalAssetMediaAsset(
