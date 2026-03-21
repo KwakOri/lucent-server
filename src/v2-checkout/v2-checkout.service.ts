@@ -3,6 +3,7 @@ import { ApiException } from '../common/errors/api.exception';
 import { CommerceNotificationsService } from '../notifications/commerce-notifications.service';
 import { getSupabaseClient } from '../supabase/supabase.client';
 import { V2CatalogService } from '../v2-catalog/v2-catalog.service';
+import { V2FulfillmentService } from '../v2-fulfillment/v2-fulfillment.service';
 
 type V2OrderStatus = 'PENDING' | 'CONFIRMED' | 'CANCELED' | 'COMPLETED';
 type V2PaymentStatus =
@@ -161,6 +162,7 @@ export class V2CheckoutService {
   constructor(
     private readonly v2CatalogService: V2CatalogService,
     private readonly commerceNotificationsService: CommerceNotificationsService,
+    private readonly v2FulfillmentService: V2FulfillmentService,
   ) {}
 
   async getCartSummary(profileId: string): Promise<any> {
@@ -525,10 +527,19 @@ export class V2CheckoutService {
         quote,
         checkoutPayload.couponCode,
       );
+      await this.reserveTrackedInventoryForOrderItems(
+        insertedOrder.id as string,
+        createdOrderItemContexts,
+      );
       await this.markCartConverted(cart.id, insertedOrder.id as string);
     } catch (error) {
-      await this.supabase.from('v2_orders').delete().eq('id', insertedOrder.id);
-      throw error;
+      const rollbackOrderId = insertedOrder.id as string;
+      await this.releaseActiveReservationsByOrderId(
+        rollbackOrderId,
+        'ORDER_CREATE_ROLLBACK',
+      );
+      await this.deleteOrderForRollback(rollbackOrderId);
+      throw this.mapOrderCreateFailure(error);
     }
 
     const order = await this.getOrderById(
@@ -681,6 +692,8 @@ export class V2CheckoutService {
       );
     }
 
+    await this.releaseActiveReservationsByOrderId(orderId, 'ORDER_CANCELED');
+
     return this.fetchOrderAggregate(orderId);
   }
 
@@ -828,6 +841,10 @@ export class V2CheckoutService {
         500,
         'V2_ORDER_ITEMS_REFUND_FAILED',
       );
+    }
+
+    if (isFullRefund) {
+      await this.releaseActiveReservationsByOrderId(orderId, 'ORDER_REFUNDED');
     }
 
     await this.createManualOrderAdjustment(
@@ -1049,6 +1066,13 @@ export class V2CheckoutService {
 
     const updatedOrder = await this.fetchOrderAggregate(orderId);
 
+    if (callbackStatus === 'CANCELED' || callbackStatus === 'REFUNDED') {
+      await this.releaseActiveReservationsByOrderId(
+        orderId,
+        `PAYMENT_${callbackStatus}`,
+      );
+    }
+
     if (
       callbackStatus === 'CAPTURED' &&
       (order.payment_status as V2PaymentStatus) !== 'CAPTURED'
@@ -1057,6 +1081,218 @@ export class V2CheckoutService {
     }
 
     return updatedOrder;
+  }
+
+  private async reserveTrackedInventoryForOrderItems(
+    orderId: string,
+    createdOrderItemContexts: CreatedOrderItemContext[],
+  ): Promise<void> {
+    const orderItems = (createdOrderItemContexts || [])
+      .map((context) => context.orderItem)
+      .filter(Boolean);
+
+    if (orderItems.length === 0) {
+      return;
+    }
+
+    const physicalCandidates = orderItems
+      .filter((orderItem) => {
+        const lineType = this.normalizeOptionalText(orderItem.line_type);
+        if (lineType === 'BUNDLE_PARENT') {
+          return false;
+        }
+        const variantId = this.normalizeOptionalUuid(orderItem.variant_id);
+        if (!variantId) {
+          return false;
+        }
+        const fulfillmentType = this.normalizeOptionalText(
+          orderItem.fulfillment_type_snapshot,
+        );
+        const requiresShipping = orderItem.requires_shipping_snapshot === true;
+        return fulfillmentType === 'PHYSICAL' || requiresShipping;
+      })
+      .map((orderItem) => ({
+        orderItemId: this.normalizeOptionalUuid(orderItem.id),
+        variantId: this.normalizeOptionalUuid(orderItem.variant_id),
+        quantity: this.normalizePositiveInteger(
+          orderItem.quantity,
+          'order_item.quantity',
+        ),
+      }))
+      .filter(
+        (
+          orderItem,
+        ): orderItem is {
+          orderItemId: string;
+          variantId: string;
+          quantity: number;
+        } => Boolean(orderItem.orderItemId && orderItem.variantId),
+      );
+
+    if (physicalCandidates.length === 0) {
+      return;
+    }
+
+    const variantIds = Array.from(
+      new Set(physicalCandidates.map((item) => item.variantId)),
+    );
+    const { data: variantRows, error: variantRowsError } = await this.supabase
+      .from('v2_product_variants')
+      .select('id, fulfillment_type, track_inventory, deleted_at')
+      .in('id', variantIds);
+
+    if (variantRowsError) {
+      throw new ApiException(
+        '주문 재고 추적 variant 조회 실패',
+        500,
+        'V2_ORDER_VARIANT_INVENTORY_FETCH_FAILED',
+      );
+    }
+
+    const trackedVariantIds = new Set(
+      (variantRows || [])
+        .filter((variant: any) => {
+          if (variant.deleted_at) {
+            return false;
+          }
+          if (variant.fulfillment_type !== 'PHYSICAL') {
+            return false;
+          }
+          return variant.track_inventory === true;
+        })
+        .map((variant: any) => variant.id as string),
+    );
+
+    const reservableItems = physicalCandidates.filter((item) =>
+      trackedVariantIds.has(item.variantId),
+    );
+    if (reservableItems.length === 0) {
+      return;
+    }
+
+    const locationId = await this.resolveCheckoutStockLocationId();
+    for (const item of reservableItems) {
+      await this.v2FulfillmentService.reserveInventory({
+        order_id: orderId,
+        order_item_id: item.orderItemId,
+        variant_id: item.variantId,
+        location_id: locationId,
+        quantity: item.quantity,
+        reason: 'CHECKOUT_ORDER_CREATE',
+        idempotency_key: `CHECKOUT-RESERVE:${orderId}:${item.orderItemId}`,
+        metadata: {
+          source: 'V2_CHECKOUT_CREATE_ORDER',
+        },
+      });
+    }
+  }
+
+  private async resolveCheckoutStockLocationId(): Promise<string> {
+    const locations = await this.v2FulfillmentService.listStockLocations();
+    const locationId = this.normalizeOptionalUuid(
+      Array.isArray(locations) ? locations[0]?.id : null,
+    );
+    if (!locationId) {
+      throw new ApiException(
+        '활성 stock location이 없습니다. 운영자에게 문의해주세요.',
+        409,
+        'STOCK_LOCATION_NOT_FOUND',
+      );
+    }
+    return locationId;
+  }
+
+  private async releaseActiveReservationsByOrderId(
+    orderId: string,
+    reason: string,
+  ): Promise<void> {
+    const { data, error } = await this.supabase
+      .from('v2_inventory_reservations')
+      .select('id')
+      .eq('order_id', orderId)
+      .eq('status', 'ACTIVE')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      throw new ApiException(
+        '주문 재고 예약 조회 실패',
+        500,
+        'V2_ORDER_RESERVATIONS_FETCH_FAILED',
+      );
+    }
+
+    for (const row of data || []) {
+      const reservationId = this.normalizeOptionalUuid(row.id);
+      if (!reservationId) {
+        continue;
+      }
+      try {
+        await this.v2FulfillmentService.releaseReservation(reservationId, {
+          reason,
+          idempotency_key: `CHECKOUT-RELEASE:${reservationId}:${reason}`,
+          metadata: {
+            source: 'V2_CHECKOUT',
+          },
+        });
+      } catch (error) {
+        const code = this.extractApiErrorCode(error);
+        if (
+          code === 'RESERVATION_INVALID_STATE' ||
+          code === 'INVENTORY_RESERVATION_NOT_FOUND'
+        ) {
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  private async deleteOrderForRollback(orderId: string): Promise<void> {
+    const { error } = await this.supabase.from('v2_orders').delete().eq('id', orderId);
+    if (error) {
+      throw new ApiException(
+        '주문 롤백 중 주문 삭제 실패',
+        500,
+        'V2_ORDER_ROLLBACK_FAILED',
+      );
+    }
+  }
+
+  private mapOrderCreateFailure(error: unknown): Error {
+    const errorCode = this.extractApiErrorCode(error);
+    if (
+      errorCode === 'INVENTORY_NOT_ENOUGH' ||
+      errorCode === 'INVENTORY_LEVEL_CONFLICT'
+    ) {
+      return new ApiException(
+        '재고가 부족합니다. 수량을 조정한 뒤 다시 시도해 주세요.',
+        409,
+        'OUT_OF_STOCK',
+      );
+    }
+    if (errorCode === 'INVENTORY_LEVEL_NOT_FOUND') {
+      return new ApiException(
+        '재고 준비 중인 상품입니다. 잠시 후 다시 시도해 주세요.',
+        409,
+        'OUT_OF_STOCK',
+      );
+    }
+    if (error instanceof Error) {
+      return error;
+    }
+    return new ApiException('주문 생성 실패', 500, 'V2_ORDER_CREATE_FAILED');
+  }
+
+  private extractApiErrorCode(error: unknown): string | null {
+    if (!(error instanceof ApiException)) {
+      return null;
+    }
+    const response = error.getResponse();
+    if (!response || typeof response !== 'object') {
+      return null;
+    }
+    const errorCode = (response as { errorCode?: unknown }).errorCode;
+    return typeof errorCode === 'string' ? errorCode : null;
   }
 
   private async getOrCreateActiveCart(profileId: string): Promise<any> {
