@@ -659,6 +659,7 @@ interface GetV2ShopProductsInput {
   sort?: string;
   channel?: string | null;
   campaign_id?: string | null;
+  include_unsellable?: boolean;
 }
 
 interface GetV2ShopCampaignsInput {
@@ -1217,58 +1218,128 @@ export class V2CatalogService {
     const sort = this.normalizeShopSort(input.sort);
     const channel = this.normalizeOptionalText(input.channel);
     const campaignId = this.normalizeOptionalText(input.campaign_id);
+    const includeUnsellable = input.include_unsellable ?? false;
     const evaluatedAt = new Date().toISOString();
 
-    let query = this.supabase
-      .from('v2_products')
-      .select('*', { count: 'exact' })
-      .eq('status', 'ACTIVE')
-      .is('deleted_at', null);
-
-    if (sort === 'LATEST') {
-      query = query
-        .order('created_at', { ascending: false })
-        .order('id', { ascending: false });
-    } else if (sort === 'OLDEST') {
-      query = query
-        .order('created_at', { ascending: true })
-        .order('id', { ascending: true });
-    } else if (sort === 'TITLE_ASC') {
-      query = query
-        .order('title', { ascending: true })
-        .order('id', { ascending: true });
-    } else if (sort === 'TITLE_DESC') {
-      query = query
-        .order('title', { ascending: false })
-        .order('id', { ascending: false });
-    } else {
-      query = query
+    const applyShopProductOrder = (query: any) => {
+      if (sort === 'LATEST') {
+        return query
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: false });
+      }
+      if (sort === 'OLDEST') {
+        return query
+          .order('created_at', { ascending: true })
+          .order('id', { ascending: true });
+      }
+      if (sort === 'TITLE_ASC') {
+        return query
+          .order('title', { ascending: true })
+          .order('id', { ascending: true });
+      }
+      if (sort === 'TITLE_DESC') {
+        return query
+          .order('title', { ascending: false })
+          .order('id', { ascending: false });
+      }
+      return query
         .order('sort_order', { ascending: true })
         .order('created_at', { ascending: true })
         .order('id', { ascending: true });
-    }
+    };
 
-    const { data, error, count } = await query.range(offset, offset + limit - 1);
-    if (error) {
-      throw new ApiException(
-        'v2 shop 상품 목록 조회 실패',
-        500,
-        'V2_SHOP_PRODUCTS_FETCH_FAILED',
+    if (includeUnsellable) {
+      const query = applyShopProductOrder(
+        this.supabase
+          .from('v2_products')
+          .select('*', { count: 'exact' })
+          .eq('status', 'ACTIVE')
+          .is('deleted_at', null),
       );
+
+      const { data, error, count } = await query.range(offset, offset + limit - 1);
+      if (error) {
+        throw new ApiException(
+          'v2 shop 상품 목록 조회 실패',
+          500,
+          'V2_SHOP_PRODUCTS_FETCH_FAILED',
+        );
+      }
+
+      const products = data || [];
+      const items = await this.buildShopListItems(products, {
+        channel,
+        campaignId,
+        evaluatedAt,
+      });
+      const total = count ?? items.length;
+      const nextOffset = offset + limit;
+
+      return {
+        items,
+        next_cursor: nextOffset < total ? String(nextOffset) : null,
+        summary: {
+          total,
+        },
+      };
     }
 
-    const products = data || [];
-    const items = await this.buildShopListItems(products, {
-      channel,
-      campaignId,
-      evaluatedAt,
-    });
-    const total = count ?? items.length;
-    const nextOffset = offset + limit;
+    const batchSize = Math.max(limit * 2, 40);
+    let rawOffset = offset;
+    let rawTotal: number | null = null;
+    let reachedEnd = false;
+    const exposedItems: any[] = [];
 
+    while (exposedItems.length < limit && !reachedEnd) {
+      const query = applyShopProductOrder(
+        this.supabase
+          .from('v2_products')
+          .select('*', { count: 'exact' })
+          .eq('status', 'ACTIVE')
+          .is('deleted_at', null),
+      );
+
+      const { data, error, count } = await query.range(
+        rawOffset,
+        rawOffset + batchSize - 1,
+      );
+      if (error) {
+        throw new ApiException(
+          'v2 shop 상품 목록 조회 실패',
+          500,
+          'V2_SHOP_PRODUCTS_FETCH_FAILED',
+        );
+      }
+
+      if (rawTotal === null) {
+        rawTotal = count ?? 0;
+      }
+
+      const products = data || [];
+      if (products.length === 0) {
+        reachedEnd = true;
+        break;
+      }
+
+      const chunkItems = await this.buildShopListItems(products, {
+        channel,
+        campaignId,
+        evaluatedAt,
+      });
+      const visibleItems = chunkItems.filter((item) => item.display_price !== null);
+      const remaining = limit - exposedItems.length;
+      exposedItems.push(...visibleItems.slice(0, remaining));
+
+      rawOffset += products.length;
+      if (products.length < batchSize) {
+        reachedEnd = true;
+      }
+    }
+
+    const total = rawTotal ?? 0;
     return {
-      items,
-      next_cursor: nextOffset < total ? String(nextOffset) : null,
+      items: exposedItems,
+      next_cursor: !reachedEnd && rawOffset < total ? String(rawOffset) : null,
       summary: {
         total,
       },
@@ -3354,6 +3425,13 @@ export class V2CatalogService {
       (current.status as V2CampaignStatus);
     if (nextCampaignType === 'ALWAYS_ON' && nextCampaignStatus === 'ACTIVE') {
       const projectIds = await this.resolveCampaignIncludedProjectIds(campaignId);
+      if (projectIds.length === 0) {
+        throw new ApiException(
+          '상시 운영 캠페인을 ACTIVE로 전환하려면 대상 프로젝트를 1개 이상 포함해야 합니다',
+          400,
+          'V2_ALWAYS_ON_CAMPAIGN_TARGET_REQUIRED',
+        );
+      }
       await this.assertNoActiveAlwaysOnCampaignProjectConflicts({
         campaignId,
         projectIds,
@@ -3388,6 +3466,13 @@ export class V2CatalogService {
 
     if ((current.campaign_type as V2CampaignType) === 'ALWAYS_ON') {
       const projectIds = await this.resolveCampaignIncludedProjectIds(campaignId);
+      if (projectIds.length === 0) {
+        throw new ApiException(
+          '상시 운영 캠페인을 ACTIVE로 전환하려면 대상 프로젝트를 1개 이상 포함해야 합니다',
+          400,
+          'V2_ALWAYS_ON_CAMPAIGN_TARGET_REQUIRED',
+        );
+      }
       await this.assertNoActiveAlwaysOnCampaignProjectConflicts({
         campaignId,
         projectIds,
@@ -3590,6 +3675,41 @@ export class V2CatalogService {
           projectIds.add(projectId);
         }
       });
+    }
+
+    if (projectIds.size === 0) {
+      const campaign = await this.getCampaignById(campaignId);
+      const sourceType = this.normalizeOptionalText(
+        campaign.source_type as string | null | undefined,
+      );
+      const sourceId = this.normalizeOptionalText(
+        campaign.source_id as string | null | undefined,
+      );
+
+      if (
+        sourceId &&
+        (!sourceType || sourceType.toUpperCase() === 'PROJECT')
+      ) {
+        const { data: sourceProject, error: sourceProjectError } = await this.supabase
+          .from('v2_projects')
+          .select('id')
+          .eq('id', sourceId)
+          .is('deleted_at', null)
+          .maybeSingle();
+        if (sourceProjectError) {
+          throw new ApiException(
+            'campaign source 프로젝트 매핑 실패',
+            500,
+            'V2_CAMPAIGN_SOURCE_PROJECT_RESOLVE_FAILED',
+          );
+        }
+        const sourceProjectId = this.normalizeOptionalText(
+          sourceProject?.id as string | null | undefined,
+        );
+        if (sourceProjectId) {
+          projectIds.add(sourceProjectId);
+        }
+      }
     }
 
     return Array.from(projectIds);

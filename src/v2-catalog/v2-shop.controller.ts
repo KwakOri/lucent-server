@@ -53,6 +53,8 @@ export class V2ShopController {
     @Query('channel') channel?: string,
     @Query('campaign_id') campaignIdSnake?: string,
     @Query('campaignId') campaignIdCamel?: string,
+    @Query('include_unsellable') includeUnsellableSnake?: string,
+    @Query('includeUnsellable') includeUnsellableCamel?: string,
   ) {
     const products = await this.v2CatalogService.getShopProducts({
       cursor,
@@ -60,6 +62,9 @@ export class V2ShopController {
       sort,
       channel,
       campaign_id: campaignIdSnake ?? campaignIdCamel,
+      include_unsellable: this.parseBoolean(
+        includeUnsellableSnake ?? includeUnsellableCamel,
+      ),
     });
     return successResponse(products);
   }
