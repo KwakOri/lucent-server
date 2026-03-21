@@ -1286,6 +1286,7 @@ export class V2CatalogService {
         'id,code,name,description,campaign_type,status,starts_at,ends_at,channel_scope_json',
       )
       .eq('status', 'ACTIVE')
+      .neq('campaign_type', 'ALWAYS_ON')
       .is('deleted_at', null)
       .order('starts_at', { ascending: true, nullsFirst: true })
       .order('created_at', { ascending: false });
@@ -3656,10 +3657,12 @@ export class V2CatalogService {
 
   async createPriceList(input: CreateV2PriceListInput): Promise<any> {
     const name = this.normalizeRequiredText(input.name, 'price list name은 필수입니다');
-    const scopeType = input.scope_type ?? 'BASE';
+    const requestedScopeType = input.scope_type;
     const status = input.status ?? 'DRAFT';
     const currencyCode = this.normalizeCurrencyCode(input.currency_code ?? 'KRW');
-    this.assertPriceListScope(scopeType);
+    if (requestedScopeType !== undefined) {
+      this.assertPriceListScope(requestedScopeType);
+    }
     this.assertPriceListStatus(status);
     this.assertSortOrder(input.priority);
 
@@ -3668,8 +3671,10 @@ export class V2CatalogService {
     this.assertDateRange(startsAt, endsAt, 'price list 기간');
 
     const campaignId = this.normalizeOptionalText(input.campaign_id);
+    let scopeType: V2PriceListScope = requestedScopeType ?? 'BASE';
     if (campaignId) {
-      await this.getCampaignById(campaignId);
+      const campaign = await this.getCampaignById(campaignId);
+      scopeType = this.resolvePriceListScopeForCampaign(campaign, requestedScopeType);
     }
 
     const { data, error } = await this.supabase
@@ -3708,12 +3713,17 @@ export class V2CatalogService {
   async updatePriceList(priceListId: string, input: UpdateV2PriceListInput): Promise<any> {
     const current = await this.getPriceListById(priceListId);
     const updateData: Record<string, unknown> = {};
+    let nextCampaign: any | null = null;
+    let nextCampaignId =
+      this.normalizeOptionalText(current.campaign_id as string | null | undefined) ?? null;
+    let requestedScopeType: V2PriceListScope | undefined;
 
     if (input.campaign_id !== undefined) {
       const campaignId = this.normalizeOptionalText(input.campaign_id);
       if (campaignId) {
-        await this.getCampaignById(campaignId);
+        nextCampaign = await this.getCampaignById(campaignId);
       }
+      nextCampaignId = campaignId;
       updateData.campaign_id = campaignId;
     }
     if (input.rollback_of_price_list_id !== undefined) {
@@ -3731,7 +3741,7 @@ export class V2CatalogService {
     }
     if (input.scope_type !== undefined) {
       this.assertPriceListScope(input.scope_type);
-      updateData.scope_type = input.scope_type;
+      requestedScopeType = input.scope_type;
     }
     if (input.status !== undefined) {
       this.assertPriceListStatus(input.status);
@@ -3781,6 +3791,26 @@ export class V2CatalogService {
     }
     if (input.metadata !== undefined) {
       updateData.metadata = input.metadata ?? {};
+    }
+
+    let nextScopeType =
+      requestedScopeType ??
+      (current.scope_type as V2PriceListScope);
+    if (nextCampaignId) {
+      if (!nextCampaign) {
+        nextCampaign = await this.getCampaignById(nextCampaignId);
+      }
+      nextScopeType = this.resolvePriceListScopeForCampaign(
+        nextCampaign,
+        requestedScopeType ?? nextScopeType,
+      );
+    }
+    if (
+      nextScopeType !== (current.scope_type as V2PriceListScope) ||
+      requestedScopeType !== undefined ||
+      input.campaign_id !== undefined
+    ) {
+      updateData.scope_type = nextScopeType;
     }
 
     const nextStartsAt =
@@ -5390,7 +5420,18 @@ export class V2CatalogService {
       .select(
         `
         *,
-        price_list:v2_price_lists(*)
+        price_list:v2_price_lists(
+          *,
+          campaign:v2_campaigns(
+            id,
+            campaign_type,
+            status,
+            starts_at,
+            ends_at,
+            channel_scope_json,
+            deleted_at
+          )
+        )
       `,
       )
       .in('product_id', productIds)
@@ -5421,43 +5462,23 @@ export class V2CatalogService {
         );
       }
 
-      const candidates = ((priceItems || []) as any[])
-        .filter((item) => item.product_id === product.id)
-        .filter((item) => item.variant_id === line.variant_id || item.variant_id === null)
-        .filter((item) => this.isTimestampInRange(item.starts_at, item.ends_at, nowIso))
-        .filter((item) => {
-          const priceList = item.price_list;
-          if (!priceList || priceList.deleted_at) {
-            return false;
-          }
-          if (priceList.status !== 'PUBLISHED') {
-            return false;
-          }
-          if (!this.isTimestampInRange(priceList.starts_at, priceList.ends_at, nowIso)) {
-            return false;
-          }
-          if (!this.matchesChannelScope(priceList.channel_scope_json, channel)) {
-            return false;
-          }
-          if (!this.matchesChannelScope(item.channel_scope_json, channel)) {
-            return false;
-          }
-          return true;
-        });
+      const candidates = this.filterShopPriceCandidates({
+        productId: product.id as string,
+        variantId: line.variant_id,
+        priceItems: (priceItems || []) as any[],
+        evaluatedAt: nowIso,
+        channel,
+      });
 
-      const baseCandidates = candidates.filter(
-        (item) => item.price_list?.scope_type === 'BASE',
-      );
-      const overrideCandidates = candidates.filter(
-        (item) =>
-          item.price_list?.scope_type === 'OVERRIDE' &&
-          (!item.price_list?.campaign_id ||
-            item.price_list?.campaign_id === campaignId),
-      );
-
-      const selectedBase = this.pickBestPriceItem(baseCandidates);
-      const selectedOverride = this.pickBestPriceItem(overrideCandidates);
-      const selectedItem = selectedOverride || selectedBase;
+      const priceSelection = this.buildShopPriceSelectionFromCandidates({
+        candidates,
+        campaignId,
+        evaluatedAt: nowIso,
+        channel,
+      });
+      const selectedBase = priceSelection.base;
+      const selectedOverride = priceSelection.override;
+      const selectedItem = priceSelection.selected;
 
       if (!selectedItem) {
         throw new ApiException(
@@ -8565,6 +8586,22 @@ export class V2CatalogService {
     }
   }
 
+  private resolvePriceListScopeForCampaign(
+    campaign: any,
+    requestedScope: V2PriceListScope | undefined,
+  ): V2PriceListScope {
+    const expectedScope: V2PriceListScope =
+      campaign?.campaign_type === 'ALWAYS_ON' ? 'BASE' : 'OVERRIDE';
+    if (requestedScope && requestedScope !== expectedScope) {
+      throw new ApiException(
+        `campaign 유형(${campaign?.campaign_type})에는 ${expectedScope} scope만 허용됩니다`,
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    return expectedScope;
+  }
+
   private assertPriceListStatus(value: string): void {
     const allowed: V2PriceListStatus[] = [
       'DRAFT',
@@ -8931,6 +8968,218 @@ export class V2CatalogService {
     return sorted[0];
   }
 
+  private isCampaignApplicableForShopPricing(
+    campaign: any,
+    evaluatedAt: string,
+    channel: string | null,
+  ): boolean {
+    if (!campaign || typeof campaign !== 'object') {
+      return true;
+    }
+    if (campaign.deleted_at) {
+      return false;
+    }
+    if (campaign.status !== 'ACTIVE') {
+      return false;
+    }
+    if (!this.isTimestampInRange(campaign.starts_at, campaign.ends_at, evaluatedAt)) {
+      return false;
+    }
+    return this.matchesChannelScope(campaign.channel_scope_json, channel);
+  }
+
+  private filterShopPriceCandidates(params: {
+    productId: string;
+    variantId: string;
+    priceItems: any[];
+    evaluatedAt: string;
+    channel: string | null;
+  }): any[] {
+    return (params.priceItems || [])
+      .filter((item) => item.product_id === params.productId)
+      .filter(
+        (item) => item.variant_id === params.variantId || item.variant_id === null,
+      )
+      .filter((item) =>
+        this.isTimestampInRange(item.starts_at, item.ends_at, params.evaluatedAt),
+      )
+      .filter((item) => {
+        const priceList = item.price_list;
+        if (!priceList || priceList.deleted_at) {
+          return false;
+        }
+        if (priceList.status !== 'PUBLISHED') {
+          return false;
+        }
+        if (
+          !this.isTimestampInRange(
+            priceList.starts_at,
+            priceList.ends_at,
+            params.evaluatedAt,
+          )
+        ) {
+          return false;
+        }
+        if (!this.matchesChannelScope(priceList.channel_scope_json, params.channel)) {
+          return false;
+        }
+        if (!this.matchesChannelScope(item.channel_scope_json, params.channel)) {
+          return false;
+        }
+
+        const linkedCampaign = priceList.campaign;
+        return this.isCampaignApplicableForShopPricing(
+          linkedCampaign,
+          params.evaluatedAt,
+          params.channel,
+        );
+      });
+  }
+
+  private isBasePriceItemCandidate(params: {
+    item: any;
+    evaluatedAt: string;
+    channel: string | null;
+  }): boolean {
+    const priceList = params.item?.price_list;
+    if (!priceList || priceList.scope_type !== 'BASE') {
+      return false;
+    }
+
+    if (!priceList.campaign_id) {
+      return true;
+    }
+
+    const linkedCampaign = priceList.campaign;
+    if (!linkedCampaign || typeof linkedCampaign !== 'object') {
+      return true;
+    }
+    if (linkedCampaign.campaign_type !== 'ALWAYS_ON') {
+      return false;
+    }
+
+    return this.isCampaignApplicableForShopPricing(
+      linkedCampaign,
+      params.evaluatedAt,
+      params.channel,
+    );
+  }
+
+  private isOverridePriceItemCandidate(params: {
+    item: any;
+    campaignId: string | null;
+    evaluatedAt: string;
+    channel: string | null;
+  }): boolean {
+    const priceList = params.item?.price_list;
+    if (!priceList || priceList.scope_type !== 'OVERRIDE') {
+      return false;
+    }
+
+    if (params.campaignId) {
+      if (priceList.campaign_id && priceList.campaign_id !== params.campaignId) {
+        return false;
+      }
+      return true;
+    }
+
+    if (!priceList.campaign_id) {
+      return true;
+    }
+
+    const linkedCampaign = priceList.campaign;
+    if (!linkedCampaign || typeof linkedCampaign !== 'object') {
+      return true;
+    }
+    if (linkedCampaign.campaign_type === 'ALWAYS_ON') {
+      return false;
+    }
+
+    return this.isCampaignApplicableForShopPricing(
+      linkedCampaign,
+      params.evaluatedAt,
+      params.channel,
+    );
+  }
+
+  private getOverrideCampaignStartMs(item: any): number {
+    const candidateStart =
+      item?.price_list?.campaign?.starts_at ??
+      item?.price_list?.starts_at ??
+      item?.starts_at ??
+      null;
+    if (!candidateStart) {
+      return 0;
+    }
+    const parsed = new Date(candidateStart).getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  private pickBestOverridePriceItemStrict(items: any[]): any | null {
+    if (!items || items.length === 0) {
+      return null;
+    }
+
+    const sorted = [...items].sort((a, b) => {
+      const startDiff = this.getOverrideCampaignStartMs(b) - this.getOverrideCampaignStartMs(a);
+      if (startDiff !== 0) {
+        return startDiff;
+      }
+      const priorityDiff = (b.price_list?.priority ?? 0) - (a.price_list?.priority ?? 0);
+      if (priorityDiff !== 0) {
+        return priorityDiff;
+      }
+      const publishedA = a.price_list?.published_at
+        ? new Date(a.price_list.published_at).getTime()
+        : 0;
+      const publishedB = b.price_list?.published_at
+        ? new Date(b.price_list.published_at).getTime()
+        : 0;
+      if (publishedA !== publishedB) {
+        return publishedB - publishedA;
+      }
+      const createdA = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const createdB = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return createdB - createdA;
+    });
+
+    return sorted[0] ?? null;
+  }
+
+  private buildShopPriceSelectionFromCandidates(params: {
+    candidates: any[];
+    campaignId: string | null;
+    evaluatedAt: string;
+    channel: string | null;
+  }): { selected: any | null; base: any | null; override: any | null } {
+    const base = this.pickBestPriceItem(
+      params.candidates.filter((item) =>
+        this.isBasePriceItemCandidate({
+          item,
+          evaluatedAt: params.evaluatedAt,
+          channel: params.channel,
+        }),
+      ),
+    );
+    const overrideCandidates = params.candidates.filter((item) =>
+      this.isOverridePriceItemCandidate({
+        item,
+        campaignId: params.campaignId,
+        evaluatedAt: params.evaluatedAt,
+        channel: params.channel,
+      }),
+    );
+    const override = params.campaignId
+      ? this.pickBestPriceItem(overrideCandidates)
+      : this.pickBestOverridePriceItemStrict(overrideCandidates);
+
+    return {
+      selected: override || base,
+      base,
+      override,
+    };
+  }
+
   private async buildShopListItems(
     products: any[],
     context: {
@@ -9122,7 +9371,16 @@ export class V2CatalogService {
           starts_at,
           ends_at,
           channel_scope_json,
-          deleted_at
+          deleted_at,
+          campaign:v2_campaigns(
+            id,
+            campaign_type,
+            status,
+            starts_at,
+            ends_at,
+            channel_scope_json,
+            deleted_at
+          )
         )
       `,
       )
@@ -9223,57 +9481,20 @@ export class V2CatalogService {
     campaignId: string | null;
     channel: string | null;
   }): { selected: any | null; base: any | null; override: any | null } {
-    const candidates = (params.priceItems || [])
-      .filter((item) => item.product_id === params.productId)
-      .filter(
-        (item) => item.variant_id === params.variantId || item.variant_id === null,
-      )
-      .filter((item) =>
-        this.isTimestampInRange(item.starts_at, item.ends_at, params.evaluatedAt),
-      )
-      .filter((item) => {
-        const priceList = item.price_list;
-        if (!priceList || priceList.deleted_at) {
-          return false;
-        }
-        if (priceList.status !== 'PUBLISHED') {
-          return false;
-        }
-        if (
-          !this.isTimestampInRange(
-            priceList.starts_at,
-            priceList.ends_at,
-            params.evaluatedAt,
-          )
-        ) {
-          return false;
-        }
-        if (!this.matchesChannelScope(priceList.channel_scope_json, params.channel)) {
-          return false;
-        }
-        if (!this.matchesChannelScope(item.channel_scope_json, params.channel)) {
-          return false;
-        }
-        return true;
-      });
+    const candidates = this.filterShopPriceCandidates({
+      productId: params.productId,
+      variantId: params.variantId,
+      priceItems: params.priceItems,
+      evaluatedAt: params.evaluatedAt,
+      channel: params.channel,
+    });
 
-    const base = this.pickBestPriceItem(
-      candidates.filter((item) => item.price_list?.scope_type === 'BASE'),
-    );
-    const override = this.pickBestPriceItem(
-      candidates.filter(
-        (item) =>
-          item.price_list?.scope_type === 'OVERRIDE' &&
-          (!item.price_list?.campaign_id ||
-            item.price_list?.campaign_id === params.campaignId),
-      ),
-    );
-
-    return {
-      selected: override || base,
-      base,
-      override,
-    };
+    return this.buildShopPriceSelectionFromCandidates({
+      candidates,
+      campaignId: params.campaignId,
+      evaluatedAt: params.evaluatedAt,
+      channel: params.channel,
+    });
   }
 
   private normalizeShopLimit(value?: number): number {
