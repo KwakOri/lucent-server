@@ -1,3 +1,10 @@
+export interface SendonTemplateRuntimeConfig {
+  orderPlaced: string;
+  paymentCaptured: string;
+  shipmentDispatched: string;
+  shipmentDelivered: string;
+}
+
 export interface SendonRuntimeConfig {
   enabled: boolean;
   mock: boolean;
@@ -5,6 +12,8 @@ export interface SendonRuntimeConfig {
   apiKey: string;
   defaultSendProfileId: string;
   sdkPackage: string;
+  commerceNotifyEnabled: boolean;
+  templates: SendonTemplateRuntimeConfig;
 }
 
 export interface AppRuntimeConfig {

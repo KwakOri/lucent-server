@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ApiException } from '../common/errors/api.exception';
+import { CommerceNotificationsService } from '../notifications/commerce-notifications.service';
 import { getSupabaseClient } from '../supabase/supabase.client';
 import { V2CatalogService } from '../v2-catalog/v2-catalog.service';
 
@@ -157,7 +158,10 @@ export class V2CheckoutService {
     return getSupabaseClient() as any;
   }
 
-  constructor(private readonly v2CatalogService: V2CatalogService) {}
+  constructor(
+    private readonly v2CatalogService: V2CatalogService,
+    private readonly commerceNotificationsService: CommerceNotificationsService,
+  ) {}
 
   async getCartSummary(profileId: string): Promise<any> {
     const cart = await this.getOrCreateActiveCart(profileId);
@@ -531,6 +535,9 @@ export class V2CheckoutService {
       insertedOrder.id as string,
       profileId,
     );
+
+    void this.commerceNotificationsService.notifyOrderPlaced(order);
+
     return {
       idempotent_replayed: false,
       quote_reference: quote?.quote_reference || null,
@@ -1040,7 +1047,16 @@ export class V2CheckoutService {
       );
     }
 
-    return this.fetchOrderAggregate(orderId);
+    const updatedOrder = await this.fetchOrderAggregate(orderId);
+
+    if (
+      callbackStatus === 'CAPTURED' &&
+      (order.payment_status as V2PaymentStatus) !== 'CAPTURED'
+    ) {
+      void this.commerceNotificationsService.notifyPaymentCaptured(updatedOrder);
+    }
+
+    return updatedOrder;
   }
 
   private async getOrCreateActiveCart(profileId: string): Promise<any> {

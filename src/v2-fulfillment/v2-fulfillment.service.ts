@@ -1,5 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ApiException } from '../common/errors/api.exception';
+import { CommerceNotificationsService } from '../notifications/commerce-notifications.service';
 import { getSupabaseClient } from '../supabase/supabase.client';
 
 type ReservationStatus = 'ACTIVE' | 'RELEASED' | 'CONSUMED' | 'CANCELED';
@@ -147,9 +148,15 @@ interface CutoverCheckInput {
 
 @Injectable()
 export class V2FulfillmentService {
+  private readonly logger = new Logger(V2FulfillmentService.name);
+
   private get supabase(): any {
     return getSupabaseClient() as any;
   }
+
+  constructor(
+    private readonly commerceNotificationsService: CommerceNotificationsService,
+  ) {}
 
   async reserveInventory(input: ReserveInventoryInput): Promise<any> {
     const orderId = this.requireUuid(input.order_id, 'order_id는 필수입니다');
@@ -1153,6 +1160,8 @@ export class V2FulfillmentService {
     }
 
     await this.markFulfillmentInProgress(updated.fulfillment_id);
+    void this.notifyShipmentDispatchedSafely(updated);
+
     return {
       idempotent_replayed: false,
       shipment: updated,
@@ -1350,6 +1359,8 @@ export class V2FulfillmentService {
     }
 
     await this.markFulfillmentCompleted(updated.fulfillment_id);
+    void this.notifyShipmentDeliveredSafely(updated);
+
     return {
       idempotent_replayed: false,
       shipment: updated,
@@ -2176,6 +2187,76 @@ export class V2FulfillmentService {
       return null;
     }
     return data[0];
+  }
+
+  private async notifyShipmentDispatchedSafely(shipment: any): Promise<void> {
+    try {
+      const order = await this.fetchOrderForNotificationByFulfillment(
+        shipment.fulfillment_id,
+      );
+      await this.commerceNotificationsService.notifyShipmentDispatched(
+        order,
+        shipment,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Failed to dispatch shipment notification (shipment=${shipment?.id ?? '-'}): ${
+          error instanceof Error ? error.message : 'Unknown error'
+        }`,
+      );
+    }
+  }
+
+  private async notifyShipmentDeliveredSafely(shipment: any): Promise<void> {
+    try {
+      const order = await this.fetchOrderForNotificationByFulfillment(
+        shipment.fulfillment_id,
+      );
+      await this.commerceNotificationsService.notifyShipmentDelivered(
+        order,
+        shipment,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Failed to deliver shipment notification (shipment=${shipment?.id ?? '-'}): ${
+          error instanceof Error ? error.message : 'Unknown error'
+        }`,
+      );
+    }
+  }
+
+  private async fetchOrderForNotificationByFulfillment(
+    fulfillmentId: string,
+  ): Promise<any> {
+    const fulfillment = await this.getFulfillmentByIdOrThrow(fulfillmentId);
+    const group = await this.getFulfillmentGroupByIdOrThrow(
+      fulfillment.fulfillment_group_id,
+    );
+
+    const { data: order, error: orderError } = await this.supabase
+      .from('v2_orders')
+      .select(
+        'id, order_no, order_status, payment_status, fulfillment_status, grand_total, customer_snapshot, shipping_address_snapshot, placed_at, confirmed_at',
+      )
+      .eq('id', group.order_id)
+      .maybeSingle();
+
+    if (orderError) {
+      throw new ApiException(
+        '알림용 order 조회 실패',
+        500,
+        'V2_ORDER_FETCH_FAILED',
+      );
+    }
+    if (!order) {
+      throw new ApiException(
+        '알림용 order를 찾을 수 없습니다',
+        404,
+        'V2_ORDER_NOT_FOUND',
+      );
+    }
+
+    return order;
   }
 
   private async fetchOrderForCutover(orderId: string): Promise<any> {

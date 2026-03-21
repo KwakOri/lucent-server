@@ -112,6 +112,11 @@ curl -X POST http://localhost:3001/api/notifications/kakao/alimtalk \
 - `SENDON_ID` (센드온 계정 아이디)
 - `SENDON_API_KEY`
 - `SENDON_SEND_PROFILE_ID` (optional, 요청 본문에서 `sendProfileId` 생략 시 기본값)
+- `SENDON_COMMERCE_NOTIFY_ENABLED` (`true`/`false`, 주문/결제/배송 자동 알림 on/off)
+- `SENDON_TEMPLATE_ORDER_PLACED` (주문 생성 알림 템플릿 ID)
+- `SENDON_TEMPLATE_PAYMENT_CAPTURED` (결제 완료 알림 템플릿 ID)
+- `SENDON_TEMPLATE_SHIPMENT_DISPATCHED` (출고 알림 템플릿 ID)
+- `SENDON_TEMPLATE_SHIPMENT_DELIVERED` (배송 완료 알림 템플릿 ID)
 - `SENDON_SDK_PACKAGE` (default: `@alipeople/sendon-sdk-typescript`)
 - `KAKAO_REST_API_KEY` (주소 검색 API 사용 시)
 - `ADMIN_EMAILS` (comma-separated, 세션 응답의 관리자 판별)
@@ -159,6 +164,21 @@ npm install @alipeople/sendon-sdk-typescript
 3. `SENDON_ID`, `SENDON_API_KEY`를 설정한다.
 4. 필요하면 `SENDON_SEND_PROFILE_ID`를 기본 발신 프로필로 설정한다.
 5. 알림톡 요청은 SDK 공식 스키마(`sendProfileId`, `templateId`, `to[]`)를 사용한다.
+6. 자동 커머스 알림을 사용할 경우 `SENDON_TEMPLATE_*`를 이벤트별로 설정한다.
+
+### Commerce auto notifications
+
+아래 이벤트에서 Sendon 알림톡 자동 발송을 시도한다.
+
+- 주문 생성: `v2-checkout.createOrder` (idempotent replay 제외)
+- 결제 완료: `v2-checkout.applyPaymentCallback` (`CAPTURED` 전환 시)
+- 출고: `v2-fulfillment.dispatchShipment`
+- 배송 완료: `v2-fulfillment.deliverShipment`
+
+안전 원칙:
+
+- 템플릿 ID가 없거나 수신 번호를 추출하지 못하면 발송을 건너뛰고 경고 로그만 남긴다.
+- 알림 발송 실패가 주문/배송 상태 전환 자체를 실패시키지는 않는다.
 
 ## 4) Docker (local / deploy split)
 
@@ -238,6 +258,11 @@ SENDON_ID=replace-me
 SENDON_API_KEY=replace-me
 # Optional
 # SENDON_SEND_PROFILE_ID=pfid-1234567890
+# SENDON_COMMERCE_NOTIFY_ENABLED=true
+# SENDON_TEMPLATE_ORDER_PLACED=ALIM_ORDER_PLACED
+# SENDON_TEMPLATE_PAYMENT_CAPTURED=ALIM_PAYMENT_CAPTURED
+# SENDON_TEMPLATE_SHIPMENT_DISPATCHED=ALIM_SHIPMENT_DISPATCHED
+# SENDON_TEMPLATE_SHIPMENT_DELIVERED=ALIM_SHIPMENT_DELIVERED
 # SENDON_SDK_PACKAGE=@alipeople/sendon-sdk-typescript
 ENV
 ```

@@ -37,6 +37,25 @@ export class AppConfigService {
           'SENDON_SDK_PACKAGE',
           '@alipeople/sendon-sdk-typescript',
         ),
+        commerceNotifyEnabled: this.readBoolean(
+          'SENDON_COMMERCE_NOTIFY_ENABLED',
+          true,
+        ),
+        templates: {
+          orderPlaced: this.readString('SENDON_TEMPLATE_ORDER_PLACED', ''),
+          paymentCaptured: this.readString(
+            'SENDON_TEMPLATE_PAYMENT_CAPTURED',
+            '',
+          ),
+          shipmentDispatched: this.readString(
+            'SENDON_TEMPLATE_SHIPMENT_DISPATCHED',
+            '',
+          ),
+          shipmentDelivered: this.readString(
+            'SENDON_TEMPLATE_SHIPMENT_DELIVERED',
+            '',
+          ),
+        },
       },
     };
   }
