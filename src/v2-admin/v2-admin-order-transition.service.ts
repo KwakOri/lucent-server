@@ -1,4 +1,5 @@
 import { forwardRef, Inject, Injectable } from '@nestjs/common';
+import { createHash } from 'crypto';
 import { ApiException } from '../common/errors/api.exception';
 import { getSupabaseClient } from '../supabase/supabase.client';
 import { V2CheckoutService } from '../v2-checkout/v2-checkout.service';
@@ -85,6 +86,7 @@ const LINEAR_STAGE_ORDER: V2OrderLinearStage[] = [
 ];
 
 const PAYMENT_CAPTURED_STATUSES = new Set(['CAPTURED', 'PARTIALLY_REFUNDED', 'REFUNDED']);
+const MAX_ACTION_REQUEST_ID_LENGTH = 120;
 
 @Injectable()
 export class V2AdminOrderTransitionService {
@@ -878,7 +880,17 @@ export class V2AdminOrderTransitionService {
     const base =
       this.normalizeOptionalText(input.requestId) ||
       `linear-stage-${Date.now()}-${input.row.order_id}`;
-    return `${base}:${input.action.action_key}:${input.action.resource_id}:${input.actionIndex}`;
+    const rawRequestId = `${base}:${input.action.action_key}:${input.action.resource_id}:${input.actionIndex}`;
+
+    if (rawRequestId.length <= MAX_ACTION_REQUEST_ID_LENGTH) {
+      return rawRequestId;
+    }
+
+    const digest = createHash('sha1').update(rawRequestId).digest('hex').slice(0, 24);
+    return `linear-stage:${input.action.action_key}:${input.actionIndex}:${digest}`.slice(
+      0,
+      MAX_ACTION_REQUEST_ID_LENGTH,
+    );
   }
 
   private async findActionLogIdByRequestId(
