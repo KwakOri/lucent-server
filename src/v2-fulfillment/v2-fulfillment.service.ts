@@ -56,6 +56,7 @@ interface InventoryLevelRow {
   on_hand_quantity: number;
   reserved_quantity: number;
   available_quantity: number;
+  safety_stock_quantity: number;
 }
 
 interface CreateShipmentInput {
@@ -228,13 +229,21 @@ export class V2FulfillmentService {
       );
     }
 
+    await this.releaseExpiredReservations({
+      variant_id: variantId,
+      location_id: locationId,
+      limit: 100,
+      reason: 'TTL_EXPIRED_AUTO',
+    });
+
     const inventoryLevel = await this.getInventoryLevelOrThrow(
       variantId,
       locationId,
     );
-    if (inventoryLevel.available_quantity < quantity) {
+    const sellableQuantity = this.computeSellableQuantity(inventoryLevel);
+    if (sellableQuantity < quantity) {
       throw new ApiException(
-        `가용 재고가 부족합니다 (available=${inventoryLevel.available_quantity}, requested=${quantity})`,
+        `가용 재고가 부족합니다 (sellable=${sellableQuantity}, available=${inventoryLevel.available_quantity}, safety_stock=${inventoryLevel.safety_stock_quantity}, requested=${quantity})`,
         409,
         'INVENTORY_NOT_ENOUGH',
       );
@@ -314,6 +323,92 @@ export class V2FulfillmentService {
       idempotent_replayed: false,
       reserved_at: now,
       reservation,
+    };
+  }
+
+  async releaseExpiredReservations(input: {
+    variant_id?: string;
+    location_id?: string;
+    limit?: number;
+    reason?: string | null;
+  } = {}): Promise<{
+    scanned_count: number;
+    released_count: number;
+    released_reservation_ids: string[];
+  }> {
+    const variantId = this.normalizeOptionalUuid(input.variant_id);
+    const locationId = this.normalizeOptionalUuid(input.location_id);
+    const limit = this.normalizeOpsLimit(input.limit);
+    const reason = this.normalizeOptionalText(input.reason) || 'TTL_EXPIRED_AUTO';
+    const nowIso = new Date().toISOString();
+
+    let query = this.supabase
+      .from('v2_inventory_reservations')
+      .select('id')
+      .eq('status', 'ACTIVE')
+      .not('expires_at', 'is', null)
+      .lte('expires_at', nowIso)
+      .order('expires_at', { ascending: true })
+      .limit(limit);
+
+    if (variantId) {
+      query = query.eq('variant_id', variantId);
+    }
+    if (locationId) {
+      query = query.eq('location_id', locationId);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw new ApiException(
+        '만료 예약 조회 실패',
+        500,
+        'INVENTORY_EXPIRED_RESERVATIONS_FETCH_FAILED',
+      );
+    }
+
+    const releasedReservationIds: string[] = [];
+    for (const row of data || []) {
+      const reservationId = this.normalizeOptionalUuid(row.id);
+      if (!reservationId) {
+        continue;
+      }
+      try {
+        const result = await this.transitionReservation(reservationId, 'RELEASED', {
+          reason,
+          idempotency_key: `AUTO-EXPIRE:${reservationId}`,
+          metadata: {
+            source: 'TTL_EXPIRE',
+            expired_at: nowIso,
+          },
+        });
+        const releasedId = this.normalizeOptionalUuid(result?.reservation?.id);
+        if (releasedId) {
+          releasedReservationIds.push(releasedId);
+        }
+      } catch (error) {
+        if (error instanceof ApiException) {
+          const response = error.getResponse();
+          const errorCode =
+            response && typeof response === 'object'
+              ? (response as { errorCode?: string }).errorCode
+              : null;
+          if (
+            errorCode === 'RESERVATION_INVALID_STATE' ||
+            errorCode === 'INVENTORY_RESERVATION_NOT_FOUND' ||
+            errorCode === 'INVENTORY_LEVEL_CONFLICT'
+          ) {
+            continue;
+          }
+        }
+        throw error;
+      }
+    }
+
+    return {
+      scanned_count: (data || []).length,
+      released_count: releasedReservationIds.length,
+      released_reservation_ids: releasedReservationIds,
     };
   }
 
@@ -2796,7 +2891,9 @@ export class V2FulfillmentService {
   ): Promise<InventoryLevelRow> {
     const { data, error } = await this.supabase
       .from('v2_inventory_levels')
-      .select('id, on_hand_quantity, reserved_quantity, available_quantity')
+      .select(
+        'id, on_hand_quantity, reserved_quantity, available_quantity, safety_stock_quantity',
+      )
       .eq('variant_id', variantId)
       .eq('location_id', locationId)
       .maybeSingle();
@@ -2816,6 +2913,18 @@ export class V2FulfillmentService {
       );
     }
     return data as InventoryLevelRow;
+  }
+
+  private computeSellableQuantity(level: InventoryLevelRow): number {
+    const availableQuantity = this.normalizeNonNegativeInteger(
+      level.available_quantity,
+      'available_quantity',
+    );
+    const safetyStockQuantity = this.normalizeNonNegativeInteger(
+      level.safety_stock_quantity,
+      'safety_stock_quantity',
+    );
+    return Math.max(availableQuantity - safetyStockQuantity, 0);
   }
 
   private async getStockLocationMap(

@@ -126,6 +126,7 @@ const BASE_SHIPPING_FEE = 3500;
 const FREE_SHIPPING_THRESHOLD = 50000;
 const JEJU_EXTRA_FEE = 3000;
 const ISLAND_EXTRA_FEE = 5000;
+const DEFAULT_CHECKOUT_RESERVATION_TTL_MINUTES = 10;
 
 const JEJU_POSTCODE_RANGES: ReadonlyArray<readonly [number, number]> = [
   [63000, 63644],
@@ -1171,6 +1172,7 @@ export class V2CheckoutService {
     }
 
     const locationId = await this.resolveCheckoutStockLocationId();
+    const expiresAt = this.buildCheckoutReservationExpiresAt();
     for (const item of reservableItems) {
       await this.v2FulfillmentService.reserveInventory({
         order_id: orderId,
@@ -1180,6 +1182,7 @@ export class V2CheckoutService {
         quantity: item.quantity,
         reason: 'CHECKOUT_ORDER_CREATE',
         idempotency_key: `CHECKOUT-RESERVE:${orderId}:${item.orderItemId}`,
+        expires_at: expiresAt,
         metadata: {
           source: 'V2_CHECKOUT_CREATE_ORDER',
         },
@@ -1200,6 +1203,18 @@ export class V2CheckoutService {
       );
     }
     return locationId;
+  }
+
+  private buildCheckoutReservationExpiresAt(): string | null {
+    const ttlMinutes = this.readNonNegativeIntegerEnv(
+      'V2_CHECKOUT_RESERVATION_TTL_MINUTES',
+      DEFAULT_CHECKOUT_RESERVATION_TTL_MINUTES,
+    );
+    if (ttlMinutes <= 0) {
+      return null;
+    }
+
+    return new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
   }
 
   private async releaseActiveReservationsByOrderId(
@@ -2702,6 +2717,23 @@ export class V2CheckoutService {
       );
     }
     return normalized;
+  }
+
+  private readNonNegativeIntegerEnv(
+    key: string,
+    defaultValue: number,
+  ): number {
+    const raw = process.env[key];
+    if (typeof raw !== 'string' || raw.trim().length === 0) {
+      return defaultValue;
+    }
+
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      return defaultValue;
+    }
+
+    return parsed;
   }
 
   private requireText(

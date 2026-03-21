@@ -10021,7 +10021,7 @@ export class V2CatalogService {
     if (variantIds.length > 0) {
       const { data: inventoryRows, error: inventoryError } = await this.supabase
         .from('v2_inventory_levels')
-        .select('variant_id,available_quantity')
+        .select('variant_id,available_quantity,safety_stock_quantity')
         .in('variant_id', variantIds);
       if (inventoryError) {
         throw new ApiException(
@@ -10033,11 +10033,17 @@ export class V2CatalogService {
 
       for (const row of inventoryRows || []) {
         const variantId = row.variant_id as string;
-        const current = inventoryByVariantId.get(variantId) ?? 0;
-        inventoryByVariantId.set(
-          variantId,
-          current + Number(row.available_quantity ?? 0),
+        const availableQuantity = Math.max(0, Number(row.available_quantity ?? 0));
+        const safetyStockQuantity = Math.max(
+          0,
+          Number(row.safety_stock_quantity ?? 0),
         );
+        const sellableQuantity = Math.max(
+          availableQuantity - safetyStockQuantity,
+          0,
+        );
+        const current = inventoryByVariantId.get(variantId) ?? 0;
+        inventoryByVariantId.set(variantId, current + sellableQuantity);
       }
     }
 
