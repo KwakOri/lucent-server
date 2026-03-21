@@ -13,9 +13,25 @@ async function bootstrap() {
 
   const corsOrigins = configService.corsOrigins;
   if (corsOrigins.length > 0) {
+    const allowedOrigins = new Set(corsOrigins);
     app.enableCors({
-      origin: corsOrigins,
+      origin: (origin, callback) => {
+        if (!origin) {
+          callback(null, true);
+          return;
+        }
+
+        callback(null, allowedOrigins.has(origin));
+      },
+      methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'X-Requested-With',
+        'X-CSRF-Token',
+      ],
       credentials: true,
+      maxAge: 86400,
     });
   }
 
