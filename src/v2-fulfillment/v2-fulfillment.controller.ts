@@ -124,6 +124,19 @@ interface OpsQuery {
   limit?: string;
 }
 
+interface InventoryLevelsQuery {
+  variant_id?: string;
+  location_id?: string;
+}
+
+interface UpsertInventoryLevelBody {
+  variant_id?: string;
+  location_id?: string | null;
+  on_hand_quantity?: number;
+  safety_stock_quantity?: number;
+  metadata?: Record<string, unknown> | null;
+}
+
 interface CutoverCheckBody {
   order_id?: string;
   reserve_inventory?: boolean;
@@ -185,6 +198,38 @@ export class V2FulfillmentController {
     const reservation =
       await this.v2FulfillmentService.getReservationById(reservationId);
     return successResponse(reservation);
+  }
+
+  @Get('inventory/locations')
+  async listStockLocations(
+    @Headers('authorization') authorization: string | undefined,
+  ) {
+    await this.requireAdmin(authorization);
+    const locations = await this.v2FulfillmentService.listStockLocations();
+    return successResponse(locations);
+  }
+
+  @Get('inventory/levels')
+  async listInventoryLevels(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: InventoryLevelsQuery,
+  ) {
+    await this.requireAdmin(authorization);
+    const levels = await this.v2FulfillmentService.listInventoryLevels({
+      variant_id: query.variant_id,
+      location_id: query.location_id,
+    });
+    return successResponse(levels);
+  }
+
+  @Post('inventory/levels/upsert')
+  async upsertInventoryLevel(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: UpsertInventoryLevelBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const level = await this.v2FulfillmentService.upsertInventoryLevel(body);
+    return successResponse(level, '재고 레벨이 반영되었습니다');
   }
 
   @Post('plans/generate')
