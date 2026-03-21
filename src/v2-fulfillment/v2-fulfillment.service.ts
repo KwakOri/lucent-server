@@ -1160,7 +1160,6 @@ export class V2FulfillmentService {
     }
 
     await this.markFulfillmentInProgress(updated.fulfillment_id);
-    void this.notifyShipmentDispatchedSafely(updated);
 
     return {
       idempotent_replayed: false,
@@ -1300,6 +1299,8 @@ export class V2FulfillmentService {
     }
 
     await this.markFulfillmentInProgress(updated.fulfillment_id);
+    void this.notifyShipmentDispatchedSafely(updated);
+
     return {
       idempotent_replayed: false,
       shipment: updated,
