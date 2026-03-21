@@ -1517,7 +1517,7 @@ export class V2AdminService {
     limit?: string;
     orderStatus?: string;
   }): Promise<any> {
-    const limit = this.normalizeLimit(params.limit);
+    const limit = this.normalizeOrderQueueLimit(params.limit);
     let query = this.supabase
       .from('v2_admin_order_queue_view')
       .select('*')
@@ -3308,6 +3308,17 @@ export class V2AdminService {
       return 20;
     }
     return Math.max(1, Math.min(100, parsed));
+  }
+
+  private normalizeOrderQueueLimit(raw?: string): number {
+    if (!raw) {
+      return 20;
+    }
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isNaN(parsed)) {
+      return 20;
+    }
+    return Math.max(1, Math.min(1000, parsed));
   }
 
   private normalizeBulkActionMode(raw?: string): 'DRY_RUN' | 'EXECUTE' {
