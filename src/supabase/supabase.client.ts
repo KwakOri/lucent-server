@@ -94,12 +94,13 @@ export function getSupabaseAnonClient(): SupabaseClient<Database> {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
     process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  if (!anonKey || anonKey.trim().length === 0) {
+  const normalizedAnonKey = anonKey ? normalizeEnvValue(anonKey) : '';
+  if (normalizedAnonKey.length === 0) {
     throw new Error(
       'SUPABASE_ANON_KEY (or NEXT_PUBLIC_SUPABASE_ANON_KEY) is required to initialize auth client.',
     );
   }
 
-  cachedAnonClient = createSupabaseClient(anonKey);
+  cachedAnonClient = createSupabaseClient(normalizedAnonKey);
   return cachedAnonClient;
 }
