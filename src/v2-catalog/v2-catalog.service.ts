@@ -3569,6 +3569,25 @@ export class V2CatalogService {
       );
     }
 
+    if (input.starts_at !== undefined || input.ends_at !== undefined) {
+      const { error: syncError } = await this.supabase
+        .from('v2_price_lists')
+        .update({
+          starts_at: data.starts_at ?? null,
+          ends_at: data.ends_at ?? null,
+        })
+        .eq('campaign_id', campaignId)
+        .is('deleted_at', null);
+
+      if (syncError) {
+        throw new ApiException(
+          'campaign 연동 price list 기간 동기화 실패',
+          500,
+          'V2_CAMPAIGN_PRICE_LIST_SYNC_FAILED',
+        );
+      }
+    }
+
     return data;
   }
 
@@ -9672,7 +9691,11 @@ export class V2CatalogService {
         if (priceList.status !== 'PUBLISHED') {
           return false;
         }
+        const linkedCampaignId = this.normalizeOptionalText(
+          priceList.campaign_id as string | null | undefined,
+        );
         if (
+          !linkedCampaignId &&
           !this.isTimestampInRange(
             priceList.starts_at,
             priceList.ends_at,
