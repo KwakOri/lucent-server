@@ -190,6 +190,7 @@ export class V2AdminOrderTransitionService {
         continue;
       }
 
+      const rowLogs: any[] = [];
       for (let index = 0; index < row.actions.length; index += 1) {
         const action = row.actions[index];
         const log = await this.executeAction({
@@ -202,10 +203,30 @@ export class V2AdminOrderTransitionService {
           requestId,
           metadata,
         });
+        rowLogs.push(log);
         executionLogs.push(log);
 
         if (log.status === 'FAILED') {
           break;
+        }
+      }
+
+      const hasFailed = rowLogs.some((log) => log.status === 'FAILED');
+      const hasPendingApproval = rowLogs.some(
+        (log) => log.status === 'PENDING_APPROVAL',
+      );
+      if (
+        !hasFailed &&
+        !hasPendingApproval &&
+        targetStage === 'DELIVERED'
+      ) {
+        const syncLog = await this.syncOrderDeliveredState({
+          row,
+          reason,
+          metadata,
+        });
+        if (syncLog) {
+          executionLogs.push(syncLog);
         }
       }
     }
@@ -651,6 +672,20 @@ export class V2AdminOrderTransitionService {
           addDigitalCompletionActions();
         }
       }
+    }
+
+    if (
+      blockedReasons.length === 0 &&
+      actions.length === 0 &&
+      currentStage !== input.targetStage
+    ) {
+      blockedReasons.push(
+        `현재 단계(${this.linearStageLabel(
+          currentStage,
+        )})에서 ${this.linearStageLabel(
+          input.targetStage,
+        )} 전환에 필요한 실행 액션을 생성하지 못했습니다.`,
+      );
     }
 
     return {
@@ -1362,6 +1397,125 @@ export class V2AdminOrderTransitionService {
       entitlement_id: input.entitlementId,
       status: desiredStatus,
     };
+  }
+
+  private async syncOrderDeliveredState(input: {
+    row: OrderLinearTransitionRow;
+    reason: string | null;
+    metadata: Record<string, unknown>;
+  }): Promise<Record<string, unknown> | null> {
+    try {
+      const orderId = input.row.order_id;
+      const queueByOrderId = await this.fetchOrderQueueByOrderId([orderId]);
+      const shipmentsByOrderId = await this.fetchShipmentsByOrderId([orderId]);
+      const entitlementsByOrderId = await this.fetchEntitlementsByOrderId([
+        orderId,
+      ]);
+      const queue = queueByOrderId.get(orderId) || null;
+      const shipments = shipmentsByOrderId.get(orderId) || [];
+      const entitlements = entitlementsByOrderId.get(orderId) || [];
+
+      const composition = {
+        has_physical: Boolean(queue?.has_physical) || shipments.length > 0,
+        has_digital: Boolean(queue?.has_digital) || entitlements.length > 0,
+      };
+      const allPhysicalDelivered = !composition.has_physical
+        ? true
+        : shipments.length > 0 &&
+          shipments.every(
+            (shipment) =>
+              String(shipment.shipment_status || '').toUpperCase() ===
+              'DELIVERED',
+          );
+      const allDigitalGranted = !composition.has_digital
+        ? true
+        : entitlements.length > 0 &&
+          entitlements.every(
+            (entitlement) =>
+              String(entitlement.status || '').toUpperCase() === 'GRANTED',
+          );
+
+      if (!allPhysicalDelivered || !allDigitalGranted) {
+        return null;
+      }
+
+      const { data: currentOrder, error: orderError } = await this.supabase
+        .from('v2_orders')
+        .select('id, order_status, fulfillment_status, confirmed_at, completed_at, metadata')
+        .eq('id', orderId)
+        .maybeSingle();
+
+      if (orderError || !currentOrder?.id) {
+        throw new ApiException(
+          '배송 완료 동기화 대상 order 조회 실패',
+          500,
+          'V2_ADMIN_ORDER_DELIVERED_SYNC_FETCH_FAILED',
+        );
+      }
+
+      const now = new Date().toISOString();
+      const { error: orderUpdateError } = await this.supabase
+        .from('v2_orders')
+        .update({
+          order_status: 'COMPLETED',
+          fulfillment_status: 'FULFILLED',
+          confirmed_at: currentOrder.confirmed_at || now,
+          completed_at: currentOrder.completed_at || now,
+          metadata: this.mergeMetadata(currentOrder.metadata, {
+            last_manual_stage_transition: {
+              at: now,
+              target_stage: 'DELIVERED',
+              reason: input.reason,
+              source: 'ORDER_LINEAR_STAGE_TRANSITION',
+              ...input.metadata,
+            },
+          }),
+        })
+        .eq('id', orderId);
+
+      if (orderUpdateError) {
+        throw new ApiException(
+          '배송 완료 동기화 order 상태 업데이트 실패',
+          500,
+          'V2_ADMIN_ORDER_DELIVERED_SYNC_UPDATE_FAILED',
+        );
+      }
+
+      const { error: orderItemUpdateError } = await this.supabase
+        .from('v2_order_items')
+        .update({ line_status: 'FULFILLED' })
+        .eq('order_id', orderId)
+        .in('line_status', ['PENDING', 'CONFIRMED']);
+
+      if (orderItemUpdateError) {
+        throw new ApiException(
+          '배송 완료 동기화 order item 상태 업데이트 실패',
+          500,
+          'V2_ADMIN_ORDER_ITEM_DELIVERED_SYNC_UPDATE_FAILED',
+        );
+      }
+
+      return {
+        status: 'SUCCEEDED',
+        order_id: input.row.order_id,
+        order_no: input.row.order_no,
+        action_key: 'ORDER_DELIVERED_SYNC',
+        resource_type: 'ORDER',
+        resource_id: input.row.order_id,
+      };
+    } catch (error) {
+      const parsed = this.parseActionError(error);
+      return {
+        status: 'FAILED',
+        order_id: input.row.order_id,
+        order_no: input.row.order_no,
+        action_key: 'ORDER_DELIVERED_SYNC',
+        resource_type: 'ORDER',
+        resource_id: input.row.order_id,
+        error_code: parsed.error_code,
+        error_message: parsed.message,
+      };
+    }
   }
 
   private buildActionRequestId(input: {
