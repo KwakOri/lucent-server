@@ -123,7 +123,6 @@ interface BundleConfigurationSnapshot {
 }
 
 const BASE_SHIPPING_FEE = 3500;
-const FREE_SHIPPING_THRESHOLD = 50000;
 const JEJU_EXTRA_FEE = 3000;
 const ISLAND_EXTRA_FEE = 5000;
 const DEFAULT_CHECKOUT_RESERVATION_TTL_MINUTES = 10;
@@ -2849,8 +2848,7 @@ export class V2CheckoutService {
       return 0;
     }
 
-    const baseFee =
-      input.subtotalAmount >= FREE_SHIPPING_THRESHOLD ? 0 : BASE_SHIPPING_FEE;
+    const baseFee = BASE_SHIPPING_FEE;
     const extraFee = this.resolveExtraShippingFeeByPostcode(input.postcode);
     return baseFee + extraFee;
   }
