@@ -56,6 +56,7 @@ interface InventoryLevelRow {
   on_hand_quantity: number;
   reserved_quantity: number;
   available_quantity: number;
+  safety_stock_quantity: number;
 }
 
 interface CreateShipmentInput {
@@ -146,9 +147,24 @@ interface CutoverCheckInput {
   grant_entitlement?: boolean;
 }
 
+interface ListInventoryLevelsInput {
+  variant_id?: string;
+  location_id?: string;
+}
+
+interface UpsertInventoryLevelInput {
+  variant_id?: string;
+  location_id?: string | null;
+  on_hand_quantity?: number;
+  safety_stock_quantity?: number;
+  metadata?: Record<string, unknown> | null;
+}
+
 @Injectable()
 export class V2FulfillmentService {
   private readonly logger = new Logger(V2FulfillmentService.name);
+  private readonly fallbackStockLocationCode = 'DEFAULT';
+  private readonly fallbackStockLocationName = '기본 재고 위치';
 
   private get supabase(): any {
     return getSupabaseClient() as any;
@@ -215,13 +231,21 @@ export class V2FulfillmentService {
       );
     }
 
+    await this.releaseExpiredReservations({
+      variant_id: variantId,
+      location_id: locationId,
+      limit: 100,
+      reason: 'TTL_EXPIRED_AUTO',
+    });
+
     const inventoryLevel = await this.getInventoryLevelOrThrow(
       variantId,
       locationId,
     );
-    if (inventoryLevel.available_quantity < quantity) {
+    const sellableQuantity = this.computeSellableQuantity(inventoryLevel);
+    if (sellableQuantity < quantity) {
       throw new ApiException(
-        `가용 재고가 부족합니다 (available=${inventoryLevel.available_quantity}, requested=${quantity})`,
+        `가용 재고가 부족합니다 (sellable=${sellableQuantity}, available=${inventoryLevel.available_quantity}, safety_stock=${inventoryLevel.safety_stock_quantity}, requested=${quantity})`,
         409,
         'INVENTORY_NOT_ENOUGH',
       );
@@ -304,6 +328,92 @@ export class V2FulfillmentService {
     };
   }
 
+  async releaseExpiredReservations(input: {
+    variant_id?: string;
+    location_id?: string;
+    limit?: number;
+    reason?: string | null;
+  } = {}): Promise<{
+    scanned_count: number;
+    released_count: number;
+    released_reservation_ids: string[];
+  }> {
+    const variantId = this.normalizeOptionalUuid(input.variant_id);
+    const locationId = this.normalizeOptionalUuid(input.location_id);
+    const limit = this.normalizeOpsLimit(input.limit);
+    const reason = this.normalizeOptionalText(input.reason) || 'TTL_EXPIRED_AUTO';
+    const nowIso = new Date().toISOString();
+
+    let query = this.supabase
+      .from('v2_inventory_reservations')
+      .select('id')
+      .eq('status', 'ACTIVE')
+      .not('expires_at', 'is', null)
+      .lte('expires_at', nowIso)
+      .order('expires_at', { ascending: true })
+      .limit(limit);
+
+    if (variantId) {
+      query = query.eq('variant_id', variantId);
+    }
+    if (locationId) {
+      query = query.eq('location_id', locationId);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw new ApiException(
+        '만료 예약 조회 실패',
+        500,
+        'INVENTORY_EXPIRED_RESERVATIONS_FETCH_FAILED',
+      );
+    }
+
+    const releasedReservationIds: string[] = [];
+    for (const row of data || []) {
+      const reservationId = this.normalizeOptionalUuid(row.id);
+      if (!reservationId) {
+        continue;
+      }
+      try {
+        const result = await this.transitionReservation(reservationId, 'RELEASED', {
+          reason,
+          idempotency_key: `AUTO-EXPIRE:${reservationId}`,
+          metadata: {
+            source: 'TTL_EXPIRE',
+            expired_at: nowIso,
+          },
+        });
+        const releasedId = this.normalizeOptionalUuid(result?.reservation?.id);
+        if (releasedId) {
+          releasedReservationIds.push(releasedId);
+        }
+      } catch (error) {
+        if (error instanceof ApiException) {
+          const response = error.getResponse();
+          const errorCode =
+            response && typeof response === 'object'
+              ? (response as { errorCode?: string }).errorCode
+              : null;
+          if (
+            errorCode === 'RESERVATION_INVALID_STATE' ||
+            errorCode === 'INVENTORY_RESERVATION_NOT_FOUND' ||
+            errorCode === 'INVENTORY_LEVEL_CONFLICT'
+          ) {
+            continue;
+          }
+        }
+        throw error;
+      }
+    }
+
+    return {
+      scanned_count: (data || []).length,
+      released_count: releasedReservationIds.length,
+      released_reservation_ids: releasedReservationIds,
+    };
+  }
+
   async releaseReservation(
     reservationId: string,
     input: TransitionReservationInput,
@@ -324,6 +434,237 @@ export class V2FulfillmentService {
       'reservation_id가 올바르지 않습니다',
     );
     return this.fetchReservationById(normalized);
+  }
+
+  async listStockLocations(): Promise<any[]> {
+    const { data, error } = await this.supabase
+      .from('v2_stock_locations')
+      .select('id, code, name, location_type, priority, is_active, country_code, region_code')
+      .eq('is_active', true)
+      .order('priority', { ascending: true })
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        'stock location 조회 실패',
+        500,
+        'STOCK_LOCATION_FETCH_FAILED',
+      );
+    }
+
+    return data || [];
+  }
+
+  async listInventoryLevels(input: ListInventoryLevelsInput): Promise<any[]> {
+    const variantId = this.requireUuid(input.variant_id, 'variant_id는 필수입니다');
+    const locationId = this.normalizeOptionalUuid(input.location_id);
+
+    let query = this.supabase
+      .from('v2_inventory_levels')
+      .select(
+        'id, variant_id, location_id, on_hand_quantity, reserved_quantity, available_quantity, safety_stock_quantity, updated_reason, updated_at, metadata',
+      )
+      .eq('variant_id', variantId)
+      .order('updated_at', { ascending: false });
+
+    if (locationId) {
+      query = query.eq('location_id', locationId);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw new ApiException(
+        'inventory level 조회 실패',
+        500,
+        'INVENTORY_LEVEL_FETCH_FAILED',
+      );
+    }
+
+    const rows = data || [];
+    if (rows.length === 0) {
+      return [];
+    }
+
+    const locationIds = Array.from(
+      new Set<string>(
+        rows
+          .map((row: any) => this.normalizeOptionalText(row.location_id))
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+    const locationById = await this.getStockLocationMap(locationIds);
+
+    return rows.map((row: any) => ({
+      id: row.id,
+      variant_id: row.variant_id,
+      location_id: row.location_id,
+      on_hand_quantity: this.normalizeNonNegativeInteger(
+        row.on_hand_quantity,
+        'on_hand_quantity',
+      ),
+      reserved_quantity: this.normalizeNonNegativeInteger(
+        row.reserved_quantity,
+        'reserved_quantity',
+      ),
+      available_quantity: this.normalizeNonNegativeInteger(
+        row.available_quantity,
+        'available_quantity',
+      ),
+      safety_stock_quantity: this.normalizeNonNegativeInteger(
+        row.safety_stock_quantity,
+        'safety_stock_quantity',
+      ),
+      updated_reason: this.normalizeOptionalText(row.updated_reason),
+      updated_at: row.updated_at,
+      metadata:
+        row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
+          ? row.metadata
+          : {},
+      location: locationById.get(row.location_id) || null,
+    }));
+  }
+
+  async upsertInventoryLevel(input: UpsertInventoryLevelInput): Promise<any> {
+    const variantId = this.requireUuid(input.variant_id, 'variant_id는 필수입니다');
+    const requestedLocationId = this.normalizeOptionalUuid(input.location_id);
+    const locationId =
+      requestedLocationId || (await this.getDefaultStockLocationId());
+
+    const variant = await this.getVariantForInventoryOrThrow(variantId);
+    if (variant.fulfillment_type !== 'PHYSICAL') {
+      throw new ApiException(
+        'PHYSICAL variant만 재고를 설정할 수 있습니다',
+        409,
+        'INVENTORY_VARIANT_INVALID_FULFILLMENT',
+      );
+    }
+    if (!variant.track_inventory) {
+      throw new ApiException(
+        'track_inventory가 켜진 variant만 재고를 설정할 수 있습니다',
+        409,
+        'INVENTORY_TRACK_DISABLED',
+      );
+    }
+
+    const { data: existingLevel, error: existingLevelError } = await this.supabase
+      .from('v2_inventory_levels')
+      .select(
+        'id, variant_id, location_id, on_hand_quantity, reserved_quantity, available_quantity, safety_stock_quantity, metadata',
+      )
+      .eq('variant_id', variantId)
+      .eq('location_id', locationId)
+      .maybeSingle();
+
+    if (existingLevelError) {
+      throw new ApiException(
+        '기존 inventory level 조회 실패',
+        500,
+        'INVENTORY_LEVEL_FETCH_FAILED',
+      );
+    }
+
+    const existingOnHand = existingLevel
+      ? this.normalizeNonNegativeInteger(existingLevel.on_hand_quantity, 'on_hand_quantity')
+      : 0;
+    const existingReserved = existingLevel
+      ? this.normalizeNonNegativeInteger(existingLevel.reserved_quantity, 'reserved_quantity')
+      : 0;
+    const existingSafety = existingLevel
+      ? this.normalizeNonNegativeInteger(
+          existingLevel.safety_stock_quantity,
+          'safety_stock_quantity',
+        )
+      : 0;
+
+    const nextOnHand =
+      input.on_hand_quantity === undefined
+        ? existingOnHand
+        : this.normalizeOptionalNonNegativeInteger(
+            input.on_hand_quantity,
+            'on_hand_quantity',
+          );
+    const nextSafety =
+      input.safety_stock_quantity === undefined
+        ? existingSafety
+        : this.normalizeOptionalNonNegativeInteger(
+            input.safety_stock_quantity,
+            'safety_stock_quantity',
+          );
+    if (nextOnHand < existingReserved) {
+      throw new ApiException(
+        `on_hand_quantity는 reserved_quantity(${existingReserved})보다 작을 수 없습니다`,
+        409,
+        'INVENTORY_ON_HAND_CONFLICT',
+      );
+    }
+
+    const metadataPatch = this.normalizeOptionalJsonObject(input.metadata) || {};
+    const mergedMetadata = this.mergeMetadata(existingLevel?.metadata, metadataPatch);
+
+    const payload = {
+      variant_id: variantId,
+      location_id: locationId,
+      on_hand_quantity: nextOnHand,
+      reserved_quantity: existingReserved,
+      safety_stock_quantity: nextSafety,
+      updated_reason: 'ADMIN_SET',
+      metadata: mergedMetadata,
+    };
+
+    const { data, error } = existingLevel
+      ? await this.supabase
+          .from('v2_inventory_levels')
+          .update(payload)
+          .eq('id', existingLevel.id)
+          .select(
+            'id, variant_id, location_id, on_hand_quantity, reserved_quantity, available_quantity, safety_stock_quantity, updated_reason, updated_at, metadata',
+          )
+          .maybeSingle()
+      : await this.supabase
+          .from('v2_inventory_levels')
+          .insert(payload)
+          .select(
+            'id, variant_id, location_id, on_hand_quantity, reserved_quantity, available_quantity, safety_stock_quantity, updated_reason, updated_at, metadata',
+          )
+          .maybeSingle();
+
+    if (error || !data) {
+      throw new ApiException(
+        'inventory level 저장 실패',
+        500,
+        'INVENTORY_LEVEL_UPSERT_FAILED',
+      );
+    }
+
+    const location = await this.getStockLocationOrThrow(locationId);
+    return {
+      id: data.id,
+      variant_id: data.variant_id,
+      location_id: data.location_id,
+      on_hand_quantity: this.normalizeNonNegativeInteger(
+        data.on_hand_quantity,
+        'on_hand_quantity',
+      ),
+      reserved_quantity: this.normalizeNonNegativeInteger(
+        data.reserved_quantity,
+        'reserved_quantity',
+      ),
+      available_quantity: this.normalizeNonNegativeInteger(
+        data.available_quantity,
+        'available_quantity',
+      ),
+      safety_stock_quantity: this.normalizeNonNegativeInteger(
+        data.safety_stock_quantity,
+        'safety_stock_quantity',
+      ),
+      updated_reason: this.normalizeOptionalText(data.updated_reason),
+      updated_at: data.updated_at,
+      metadata:
+        data.metadata && typeof data.metadata === 'object' && !Array.isArray(data.metadata)
+          ? data.metadata
+          : {},
+      location,
+    };
   }
 
   async generateFulfillmentPlan(
@@ -2552,7 +2893,9 @@ export class V2FulfillmentService {
   ): Promise<InventoryLevelRow> {
     const { data, error } = await this.supabase
       .from('v2_inventory_levels')
-      .select('id, on_hand_quantity, reserved_quantity, available_quantity')
+      .select(
+        'id, on_hand_quantity, reserved_quantity, available_quantity, safety_stock_quantity',
+      )
       .eq('variant_id', variantId)
       .eq('location_id', locationId)
       .maybeSingle();
@@ -2572,6 +2915,201 @@ export class V2FulfillmentService {
       );
     }
     return data as InventoryLevelRow;
+  }
+
+  private computeSellableQuantity(level: InventoryLevelRow): number {
+    const availableQuantity = this.normalizeNonNegativeInteger(
+      level.available_quantity,
+      'available_quantity',
+    );
+    const safetyStockQuantity = this.normalizeNonNegativeInteger(
+      level.safety_stock_quantity,
+      'safety_stock_quantity',
+    );
+    return Math.max(availableQuantity - safetyStockQuantity, 0);
+  }
+
+  private async getStockLocationMap(
+    locationIds: string[],
+  ): Promise<Map<string, any>> {
+    if (locationIds.length === 0) {
+      return new Map<string, any>();
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_stock_locations')
+      .select('id, code, name, location_type, priority, is_active, country_code, region_code')
+      .in('id', locationIds);
+
+    if (error) {
+      throw new ApiException(
+        'stock location 조회 실패',
+        500,
+        'STOCK_LOCATION_FETCH_FAILED',
+      );
+    }
+
+    return new Map((data || []).map((row: any) => [row.id, row]));
+  }
+
+  private async getStockLocationOrThrow(locationId: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('v2_stock_locations')
+      .select('id, code, name, location_type, priority, is_active, country_code, region_code')
+      .eq('id', locationId)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'stock location 조회 실패',
+        500,
+        'STOCK_LOCATION_FETCH_FAILED',
+      );
+    }
+    if (!data || data.is_active !== true) {
+      throw new ApiException(
+        '활성 stock location을 찾을 수 없습니다',
+        404,
+        'STOCK_LOCATION_NOT_FOUND',
+      );
+    }
+
+    return data;
+  }
+
+  private async getDefaultStockLocationId(): Promise<string> {
+    const { data, error } = await this.supabase
+      .from('v2_stock_locations')
+      .select('id')
+      .eq('is_active', true)
+      .order('priority', { ascending: true })
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        '기본 stock location 조회 실패',
+        500,
+        'STOCK_LOCATION_FETCH_FAILED',
+      );
+    }
+    if (data?.id && this.isUuid(data.id)) {
+      return data.id;
+    }
+
+    const { data: fallbackRow, error: fallbackFetchError } = await this.supabase
+      .from('v2_stock_locations')
+      .select('id, is_active, priority')
+      .eq('code', this.fallbackStockLocationCode)
+      .maybeSingle();
+
+    if (fallbackFetchError) {
+      throw new ApiException(
+        '기본 stock location 조회 실패',
+        500,
+        'STOCK_LOCATION_FETCH_FAILED',
+      );
+    }
+
+    if (fallbackRow?.id && this.isUuid(fallbackRow.id)) {
+      if (fallbackRow.is_active !== true || Number(fallbackRow.priority || 0) > 0) {
+        const { error: activateError } = await this.supabase
+          .from('v2_stock_locations')
+          .update({
+            is_active: true,
+            priority: 0,
+          })
+          .eq('id', fallbackRow.id);
+
+        if (activateError) {
+          throw new ApiException(
+            '기본 stock location 활성화 실패',
+            500,
+            'STOCK_LOCATION_UPSERT_FAILED',
+          );
+        }
+      }
+
+      return fallbackRow.id;
+    }
+
+    const { data: createdRow, error: createError } = await this.supabase
+      .from('v2_stock_locations')
+      .insert({
+        code: this.fallbackStockLocationCode,
+        name: this.fallbackStockLocationName,
+        location_type: 'WAREHOUSE',
+        country_code: 'KR',
+        is_active: true,
+        priority: 0,
+        metadata: {
+          source: 'system-default',
+        },
+      })
+      .select('id')
+      .maybeSingle();
+
+    if (createError) {
+      if (createError.code === '23505') {
+        const { data: concurrentRow, error: concurrentError } = await this.supabase
+          .from('v2_stock_locations')
+          .select('id')
+          .eq('code', this.fallbackStockLocationCode)
+          .maybeSingle();
+
+        if (concurrentError || !concurrentRow?.id || !this.isUuid(concurrentRow.id)) {
+          throw new ApiException(
+            '기본 stock location 조회 실패',
+            500,
+            'STOCK_LOCATION_FETCH_FAILED',
+          );
+        }
+
+        return concurrentRow.id;
+      }
+
+      throw new ApiException(
+        '기본 stock location 생성 실패',
+        500,
+        'STOCK_LOCATION_UPSERT_FAILED',
+      );
+    }
+
+    if (!createdRow?.id || !this.isUuid(createdRow.id)) {
+      throw new ApiException(
+        '기본 stock location 생성 결과가 비어 있습니다',
+        500,
+        'STOCK_LOCATION_UPSERT_FAILED',
+      );
+    }
+
+    return createdRow.id;
+  }
+
+  private async getVariantForInventoryOrThrow(variantId: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('v2_product_variants')
+      .select('id, fulfillment_type, track_inventory, deleted_at')
+      .eq('id', variantId)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'variant 조회 실패',
+        500,
+        'V2_VARIANT_FETCH_FAILED',
+      );
+    }
+    if (!data || data.deleted_at) {
+      throw new ApiException(
+        'variant를 찾을 수 없습니다',
+        404,
+        'V2_VARIANT_NOT_FOUND',
+      );
+    }
+
+    return data;
   }
 
   private async updateInventoryLevelWithOptimisticLock(
