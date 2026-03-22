@@ -34,7 +34,9 @@ export class V2AdminService {
       'V2_ADMIN_APPROVAL_ENFORCED',
       false,
     );
-    const enforcedActions = this.readCsvEnv('V2_ADMIN_APPROVAL_ENFORCED_ACTIONS');
+    const enforcedActions = this.readCsvEnv(
+      'V2_ADMIN_APPROVAL_ENFORCED_ACTIONS',
+    );
 
     return {
       rollout_stage: stage,
@@ -64,9 +66,8 @@ export class V2AdminService {
       ) {
         approvalEnforcedForAction = true;
       } else {
-        approvalEnforcedForAction = policy.approval_enforced_actions.includes(
-          actionKey,
-        );
+        approvalEnforcedForAction =
+          policy.approval_enforced_actions.includes(actionKey);
       }
     }
 
@@ -77,7 +78,9 @@ export class V2AdminService {
         requires_approval: requiresApproval,
         approval_enforced_for_action: approvalEnforcedForAction,
       },
-      decision: approvalEnforcedForAction ? 'APPROVAL_REQUIRED' : 'DIRECT_EXECUTE',
+      decision: approvalEnforcedForAction
+        ? 'APPROVAL_REQUIRED'
+        : 'DIRECT_EXECUTE',
     };
   }
 
@@ -218,7 +221,11 @@ export class V2AdminService {
 
     if (input.currentStage !== undefined) {
       const parsedStage = Number.parseInt(input.currentStage, 10);
-      if (!Number.isInteger(parsedStage) || parsedStage < 0 || parsedStage > 8) {
+      if (
+        !Number.isInteger(parsedStage) ||
+        parsedStage < 0 ||
+        parsedStage > 8
+      ) {
         throw new ApiException(
           'current_stage는 0~8 범위의 정수여야 합니다',
           400,
@@ -235,7 +242,9 @@ export class V2AdminService {
       updates.owner_role_code = this.normalizeOptionalText(input.ownerRoleCode);
     }
     if (input.lastGateResult !== undefined) {
-      updates.last_gate_result = this.normalizeOptionalText(input.lastGateResult);
+      updates.last_gate_result = this.normalizeOptionalText(
+        input.lastGateResult,
+      );
     }
     if (input.metadata !== undefined) {
       updates.metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
@@ -413,8 +422,8 @@ export class V2AdminService {
         summary.failed > 0 || summary.missing > 0
           ? 'BLOCKED'
           : summary.warn > 0
-          ? 'REVIEW'
-          : 'READY';
+            ? 'REVIEW'
+            : 'READY';
 
       return {
         domain: {
@@ -440,17 +449,22 @@ export class V2AdminService {
       domains: checklistDomains,
       summary: {
         total_domains: checklistDomains.length,
-        ready_count: checklistDomains.filter((item) => item.decision === 'READY')
-          .length,
-        review_count: checklistDomains.filter((item) => item.decision === 'REVIEW')
-          .length,
-        blocked_count: checklistDomains.filter((item) => item.decision === 'BLOCKED')
-          .length,
+        ready_count: checklistDomains.filter(
+          (item) => item.decision === 'READY',
+        ).length,
+        review_count: checklistDomains.filter(
+          (item) => item.decision === 'REVIEW',
+        ).length,
+        blocked_count: checklistDomains.filter(
+          (item) => item.decision === 'BLOCKED',
+        ).length,
       },
     };
   }
 
-  async getCutoverReopenReadiness(params: { domainKey?: string }): Promise<any> {
+  async getCutoverReopenReadiness(params: {
+    domainKey?: string;
+  }): Promise<any> {
     const checklist = await this.getCutoverGateChecklist(params);
     const checklistDomains = Array.isArray(checklist?.domains)
       ? checklist.domains
@@ -481,31 +495,34 @@ export class V2AdminService {
       CRITICAL: 4,
     };
 
-    const [{ data: issues, error: issuesError }, { data: stageRuns, error: stageRunsError }, { data: routingFlags, error: routingFlagsError }] =
-      await Promise.all([
-        this.supabase
-          .from('v2_cutover_stage_issues')
-          .select('id,domain_id,status,severity,occurred_at')
-          .in('domain_id', domainIds)
-          .neq('status', 'RESOLVED')
-          .order('occurred_at', { ascending: false }),
-        this.supabase
-          .from('v2_cutover_stage_runs')
-          .select(
-            'id,domain_id,stage_no,run_key,status,transition_mode,started_at,finished_at,updated_at,created_at',
-          )
-          .in('domain_id', domainIds)
-          .order('created_at', { ascending: false }),
-        this.supabase
-          .from('v2_cutover_routing_flags')
-          .select(
-            'id,domain_id,target,traffic_percent,enabled,priority,reason,updated_at,created_at',
-          )
-          .in('domain_id', domainIds)
-          .eq('enabled', true)
-          .order('priority', { ascending: true })
-          .order('created_at', { ascending: false }),
-      ]);
+    const [
+      { data: issues, error: issuesError },
+      { data: stageRuns, error: stageRunsError },
+      { data: routingFlags, error: routingFlagsError },
+    ] = await Promise.all([
+      this.supabase
+        .from('v2_cutover_stage_issues')
+        .select('id,domain_id,status,severity,occurred_at')
+        .in('domain_id', domainIds)
+        .neq('status', 'RESOLVED')
+        .order('occurred_at', { ascending: false }),
+      this.supabase
+        .from('v2_cutover_stage_runs')
+        .select(
+          'id,domain_id,stage_no,run_key,status,transition_mode,started_at,finished_at,updated_at,created_at',
+        )
+        .in('domain_id', domainIds)
+        .order('created_at', { ascending: false }),
+      this.supabase
+        .from('v2_cutover_routing_flags')
+        .select(
+          'id,domain_id,target,traffic_percent,enabled,priority,reason,updated_at,created_at',
+        )
+        .in('domain_id', domainIds)
+        .eq('enabled', true)
+        .order('priority', { ascending: true })
+        .order('created_at', { ascending: false }),
+    ]);
 
     if (issuesError) {
       throw new ApiException(
@@ -627,8 +644,11 @@ export class V2AdminService {
         blockers.push('최신 stage run이 COMPLETED 상태가 아님');
       }
 
-      const reopenDecision =
-        !needsReopen ? 'NOT_REQUIRED' : blockers.length > 0 ? 'BLOCKED' : 'READY';
+      const reopenDecision = !needsReopen
+        ? 'NOT_REQUIRED'
+        : blockers.length > 0
+          ? 'BLOCKED'
+          : 'READY';
 
       return {
         domain: {
@@ -658,7 +678,8 @@ export class V2AdminService {
               transition_mode: latestStageRun.transition_mode,
               started_at: latestStageRun.started_at,
               finished_at: latestStageRun.finished_at,
-              updated_at: latestStageRun.updated_at || latestStageRun.created_at,
+              updated_at:
+                latestStageRun.updated_at || latestStageRun.created_at,
             }
           : null,
         active_routing_flag: activeRouting
@@ -684,8 +705,9 @@ export class V2AdminService {
 
     return {
       generated_at: new Date().toISOString(),
-      required_gate_types:
-        checklist.required_gate_types || [...this.requiredCutoverGateTypes],
+      required_gate_types: checklist.required_gate_types || [
+        ...this.requiredCutoverGateTypes,
+      ],
       domains: readinessDomains,
       summary: {
         total_domains: readinessDomains.length,
@@ -724,7 +746,10 @@ export class V2AdminService {
       input.gateType,
       'gate_type이 필요합니다',
     );
-    const gateKey = this.normalizeRequiredText(input.gateKey, 'gate_key가 필요합니다');
+    const gateKey = this.normalizeRequiredText(
+      input.gateKey,
+      'gate_key가 필요합니다',
+    );
     const gateResult = this.normalizeRequiredText(
       input.gateResult,
       'gate_result가 필요합니다',
@@ -732,7 +757,8 @@ export class V2AdminService {
     const domain = await this.requireCutoverDomain(domainKey);
 
     const measuredAt =
-      this.normalizeOptionalIsoDateTime(input.measuredAt) || new Date().toISOString();
+      this.normalizeOptionalIsoDateTime(input.measuredAt) ||
+      new Date().toISOString();
 
     const { data, error } = await this.supabase
       .from('v2_cutover_gate_reports')
@@ -742,7 +768,8 @@ export class V2AdminService {
         gate_key: gateKey,
         gate_result: gateResult,
         measured_at: measuredAt,
-        threshold_json: this.normalizeOptionalJsonObject(input.thresholdJson) || {},
+        threshold_json:
+          this.normalizeOptionalJsonObject(input.thresholdJson) || {},
         metrics_json: this.normalizeOptionalJsonObject(input.metricsJson) || {},
         detail: this.normalizeOptionalText(input.detail),
         metadata: this.normalizeOptionalJsonObject(input.metadata) || {},
@@ -831,8 +858,14 @@ export class V2AdminService {
       input.domainKey,
       'domain_key가 필요합니다',
     );
-    const batchKey = this.normalizeRequiredText(input.batchKey, 'batch_key가 필요합니다');
-    const runType = this.normalizeRequiredText(input.runType, 'run_type이 필요합니다');
+    const batchKey = this.normalizeRequiredText(
+      input.batchKey,
+      'batch_key가 필요합니다',
+    );
+    const runType = this.normalizeRequiredText(
+      input.runType,
+      'run_type이 필요합니다',
+    );
     const domain = await this.requireCutoverDomain(domainKey);
 
     const status = this.normalizeOptionalText(input.status) || 'PENDING';
@@ -844,8 +877,10 @@ export class V2AdminService {
       idempotency_key: this.normalizeOptionalText(input.idempotencyKey),
       started_at: this.normalizeOptionalIsoDateTime(input.startedAt),
       finished_at: this.normalizeOptionalIsoDateTime(input.finishedAt),
-      source_snapshot: this.normalizeOptionalJsonObject(input.sourceSnapshot) || {},
-      result_summary: this.normalizeOptionalJsonObject(input.resultSummary) || {},
+      source_snapshot:
+        this.normalizeOptionalJsonObject(input.sourceSnapshot) || {},
+      result_summary:
+        this.normalizeOptionalJsonObject(input.resultSummary) || {},
       error_message: this.normalizeOptionalText(input.errorMessage),
       metadata: this.normalizeOptionalJsonObject(input.metadata) || {},
     };
@@ -973,7 +1008,9 @@ export class V2AdminService {
         ? Math.max(0, Math.min(100, Math.trunc(input.trafficPercent)))
         : 0;
     const priority =
-      typeof input.priority === 'number' ? Math.max(0, Math.trunc(input.priority)) : 100;
+      typeof input.priority === 'number'
+        ? Math.max(0, Math.trunc(input.priority))
+        : 100;
 
     const payload = {
       domain_id: domain.id,
@@ -1092,7 +1129,10 @@ export class V2AdminService {
     );
     const domain = await this.requireCutoverDomain(domainKey);
     const stageNo = this.parseRequiredStageNo(input.stageNo);
-    const runKey = this.normalizeRequiredText(input.runKey, 'run_key가 필요합니다');
+    const runKey = this.normalizeRequiredText(
+      input.runKey,
+      'run_key가 필요합니다',
+    );
     const status = this.normalizeOptionalText(input.status) || 'PLANNED';
     const transitionMode =
       this.normalizeOptionalText(input.transitionMode) || 'LIMITED';
@@ -1101,8 +1141,8 @@ export class V2AdminService {
       input.limitedTargets === undefined || input.limitedTargets === null
         ? []
         : Array.isArray(input.limitedTargets)
-        ? input.limitedTargets
-        : null;
+          ? input.limitedTargets
+          : null;
     if (limitedTargets === null) {
       throw new ApiException(
         'limited_targets는 배열이어야 합니다',
@@ -1276,7 +1316,10 @@ export class V2AdminService {
           'V2_CUTOVER_STAGE_RUN_NOT_FOUND',
         );
       }
-      if (stageRun.domain_id !== domain.id || Number(stageRun.stage_no) !== stageNo) {
+      if (
+        stageRun.domain_id !== domain.id ||
+        Number(stageRun.stage_no) !== stageNo
+      ) {
         throw new ApiException(
           'stage_run_id의 domain/stage 정보가 일치하지 않습니다',
           400,
@@ -1297,7 +1340,8 @@ export class V2AdminService {
       recovery_action: this.normalizeOptionalText(input.recoveryAction),
       owner_role_code: this.normalizeOptionalText(input.ownerRoleCode),
       occurred_at:
-        this.normalizeOptionalIsoDateTime(input.occurredAt) || new Date().toISOString(),
+        this.normalizeOptionalIsoDateTime(input.occurredAt) ||
+        new Date().toISOString(),
       resolved_at: this.normalizeOptionalIsoDateTime(input.resolvedAt),
       metadata: this.normalizeOptionalJsonObject(input.metadata) || {},
     };
@@ -1542,9 +1586,8 @@ export class V2AdminService {
     const orderIds = rows
       .map((row) => this.normalizeOptionalUuid(row.order_id))
       .filter((orderId): orderId is string => Boolean(orderId));
-    const depositorNameByOrderId = await this.fetchOrderDepositorNameByOrderIds(
-      orderIds,
-    );
+    const depositorNameByOrderId =
+      await this.fetchOrderDepositorNameByOrderIds(orderIds);
 
     return {
       items: rows.map((row) => {
@@ -1614,7 +1657,11 @@ export class V2AdminService {
       snapshot: unknown,
       key: string,
     ): string | null => {
-      if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+      if (
+        !snapshot ||
+        typeof snapshot !== 'object' ||
+        Array.isArray(snapshot)
+      ) {
         return null;
       }
       const value = (snapshot as Record<string, unknown>)[key];
@@ -1931,16 +1978,194 @@ export class V2AdminService {
       approvals = approvalRows || [];
     }
 
+    const enrichedItems = await this.enrichOrderItemsForDisplay(
+      itemsResult.data || [],
+    );
+
     return {
       order,
       queue_row: queueResult.data || null,
-      items: itemsResult.data || [],
+      items: enrichedItems,
       adjustments: adjustmentsResult.data || [],
       payments: paymentsResult.data || [],
       fulfillment_queue: fulfillmentQueueResult.data || [],
       action_logs: actionLogs,
       approvals,
     };
+  }
+
+  private async enrichOrderItemsForDisplay(rawItems: any[]): Promise<any[]> {
+    const items = Array.isArray(rawItems) ? rawItems : [];
+    if (items.length === 0) {
+      return [];
+    }
+
+    const variantIds = Array.from(
+      new Set(
+        items
+          .map((item) =>
+            this.normalizeOptionalUuid(
+              item?.variant_id as string | null | undefined,
+            ),
+          )
+          .filter((variantId): variantId is string => Boolean(variantId)),
+      ),
+    );
+
+    const variantById = new Map<string, any>();
+    if (variantIds.length > 0) {
+      const { data, error } = await this.supabase
+        .from('v2_product_variants')
+        .select('id, product_id, title')
+        .in('id', variantIds);
+
+      if (error) {
+        throw new ApiException(
+          'order item variant 상세 조회 실패',
+          500,
+          'V2_ADMIN_ORDER_ITEM_VARIANT_FETCH_FAILED',
+        );
+      }
+
+      for (const variant of data || []) {
+        const variantId = this.normalizeOptionalUuid(
+          variant?.id as string | null | undefined,
+        );
+        if (!variantId) {
+          continue;
+        }
+        variantById.set(variantId, variant);
+      }
+    }
+
+    const productIds = Array.from(
+      new Set(
+        items
+          .map((item) => {
+            const directProductId = this.normalizeOptionalUuid(
+              item?.product_id as string | null | undefined,
+            );
+            if (directProductId) {
+              return directProductId;
+            }
+
+            const variantId = this.normalizeOptionalUuid(
+              item?.variant_id as string | null | undefined,
+            );
+            const variant = variantId ? variantById.get(variantId) : null;
+
+            return this.normalizeOptionalUuid(
+              variant?.product_id as string | null | undefined,
+            );
+          })
+          .filter((productId): productId is string => Boolean(productId)),
+      ),
+    );
+
+    const productTitleById = new Map<string, string>();
+    if (productIds.length > 0) {
+      const { data, error } = await this.supabase
+        .from('v2_products')
+        .select('id, title')
+        .in('id', productIds);
+
+      if (error) {
+        throw new ApiException(
+          'order item product 상세 조회 실패',
+          500,
+          'V2_ADMIN_ORDER_ITEM_PRODUCT_FETCH_FAILED',
+        );
+      }
+
+      for (const product of data || []) {
+        const productId = this.normalizeOptionalUuid(
+          product?.id as string | null | undefined,
+        );
+        const productTitle = this.normalizeOptionalText(
+          product?.title as string | null | undefined,
+        );
+
+        if (!productId || !productTitle) {
+          continue;
+        }
+
+        productTitleById.set(productId, productTitle);
+      }
+    }
+
+    return items.map((item) => {
+      const variantId = this.normalizeOptionalUuid(
+        item?.variant_id as string | null | undefined,
+      );
+      const variant = variantId ? variantById.get(variantId) : null;
+
+      const displaySnapshot =
+        item?.display_snapshot &&
+        typeof item.display_snapshot === 'object' &&
+        !Array.isArray(item.display_snapshot)
+          ? (item.display_snapshot as Record<string, unknown>)
+          : {};
+
+      const productId =
+        this.normalizeOptionalUuid(
+          item?.product_id as string | null | undefined,
+        ) ||
+        this.normalizeOptionalUuid(
+          variant?.product_id as string | null | undefined,
+        );
+
+      const productTitle =
+        this.normalizeOptionalText(
+          item?.product_name_snapshot as string | null | undefined,
+        ) ||
+        this.normalizeOptionalText(
+          displaySnapshot.product_title as string | null | undefined,
+        ) ||
+        this.normalizeOptionalText(
+          displaySnapshot.product_name as string | null | undefined,
+        ) ||
+        (productId ? productTitleById.get(productId) || null : null);
+
+      const variantTitle =
+        this.normalizeOptionalText(
+          item?.variant_name_snapshot as string | null | undefined,
+        ) ||
+        this.normalizeOptionalText(
+          displaySnapshot.variant_title as string | null | undefined,
+        ) ||
+        this.normalizeOptionalText(
+          displaySnapshot.title as string | null | undefined,
+        ) ||
+        this.normalizeOptionalText(variant?.title as string | null | undefined);
+
+      const displayTitle =
+        this.normalizeOptionalText(
+          displaySnapshot.title as string | null | undefined,
+        ) ||
+        variantTitle ||
+        productTitle ||
+        null;
+
+      return {
+        ...item,
+        product_id: productId || null,
+        product_name_snapshot: productTitle || null,
+        variant_name_snapshot: variantTitle || null,
+        display_snapshot: {
+          ...displaySnapshot,
+          product_id: productId || null,
+          product_title: productTitle || null,
+          product_name:
+            this.normalizeOptionalText(
+              displaySnapshot.product_name as string | null | undefined,
+            ) ||
+            productTitle ||
+            null,
+          variant_title: variantTitle || null,
+          title: displayTitle,
+        },
+      };
+    });
   }
 
   async listFulfillmentQueue(params: {
@@ -2004,12 +2229,15 @@ export class V2AdminService {
 
     let items = data || [];
     if (onlyMismatches) {
-      items = items.filter((row: any) => Number(row.reservation_delta || 0) !== 0);
+      items = items.filter(
+        (row: any) => Number(row.reservation_delta || 0) !== 0,
+      );
     }
     if (onlyLowStock) {
       items = items.filter(
         (row: any) =>
-          Number(row.available_quantity || 0) <= Number(row.safety_stock_quantity || 0),
+          Number(row.available_quantity || 0) <=
+          Number(row.safety_stock_quantity || 0),
       );
     }
 
@@ -2049,14 +2277,12 @@ export class V2AdminService {
       projectId: this.normalizeOptionalUuid(params.projectId),
       campaignId: this.normalizeOptionalUuid(params.campaignId),
       salesChannelId: this.normalizeOptionalText(params.salesChannelId),
-      campaignType: this.normalizeOptionalText(params.campaignType)?.toUpperCase() || null,
+      campaignType:
+        this.normalizeOptionalText(params.campaignType)?.toUpperCase() || null,
     };
 
-    const {
-      salesItems,
-      financialAllocations,
-      storageMode,
-    } = await this.loadSalesStatsFacts(dateRange, filters);
+    const { salesItems, financialAllocations, storageMode } =
+      await this.loadSalesStatsFacts(dateRange, filters);
 
     const activeSalesItems = (salesItems || []).filter(
       (row: any) => row?.order_status !== 'CANCELED',
@@ -2078,12 +2304,19 @@ export class V2AdminService {
       ),
       captured_amount: financialAllocations
         .filter((row: any) => row?.event_type === 'CAPTURE')
-        .reduce((sum: number, row: any) => sum + Number(row?.allocated_amount || 0), 0),
+        .reduce(
+          (sum: number, row: any) => sum + Number(row?.allocated_amount || 0),
+          0,
+        ),
       refund_amount: financialAllocations
         .filter((row: any) => row?.event_type === 'REFUND')
-        .reduce((sum: number, row: any) => sum + Number(row?.allocated_amount || 0), 0),
+        .reduce(
+          (sum: number, row: any) => sum + Number(row?.allocated_amount || 0),
+          0,
+        ),
     } as any;
-    summary.net_settlement_amount = summary.captured_amount - summary.refund_amount;
+    summary.net_settlement_amount =
+      summary.captured_amount - summary.refund_amount;
 
     const byProjectMap = new Map<
       string,
@@ -2118,27 +2351,27 @@ export class V2AdminService {
       const orderId = this.normalizeOptionalText(row.order_id) || '';
       const projectId = this.normalizeOptionalText(row.project_id_snapshot);
       const projectName =
-        this.normalizeOptionalText(row.project_name_snapshot) || '미지정 프로젝트';
+        this.normalizeOptionalText(row.project_name_snapshot) ||
+        '미지정 프로젝트';
       const campaignId = this.normalizeOptionalText(row.campaign_id_snapshot);
       const campaignName =
         this.normalizeOptionalText(row.campaign_name_snapshot) || '캠페인 없음';
       const campaignType = this.normalizeOptionalText(row.campaign_type);
       const projectKey = projectId || 'UNASSIGNED';
       const campaignKey = campaignId || 'NO_CAMPAIGN';
-      const currencyCode = this.normalizeOptionalText(row.currency_code) || 'KRW';
+      const currencyCode =
+        this.normalizeOptionalText(row.currency_code) || 'KRW';
 
-      const projectBucket =
-        byProjectMap.get(projectKey) ||
-        {
-          project_id: projectId,
-          project_name: projectName,
-          currency_code: currencyCode,
-          order_ids: new Set<string>(),
-          units_sold: 0,
-          order_gross_amount: 0,
-          captured_amount: 0,
-          refund_amount: 0,
-        };
+      const projectBucket = byProjectMap.get(projectKey) || {
+        project_id: projectId,
+        project_name: projectName,
+        currency_code: currencyCode,
+        order_ids: new Set<string>(),
+        units_sold: 0,
+        order_gross_amount: 0,
+        captured_amount: 0,
+        refund_amount: 0,
+      };
       if (orderId) {
         projectBucket.order_ids.add(orderId);
       }
@@ -2146,19 +2379,17 @@ export class V2AdminService {
       projectBucket.order_gross_amount += Number(row.final_line_total || 0);
       byProjectMap.set(projectKey, projectBucket);
 
-      const campaignBucket =
-        byCampaignMap.get(campaignKey) ||
-        {
-          campaign_id: campaignId,
-          campaign_name: campaignName,
-          campaign_type: campaignType,
-          currency_code: currencyCode,
-          order_ids: new Set<string>(),
-          units_sold: 0,
-          order_gross_amount: 0,
-          captured_amount: 0,
-          refund_amount: 0,
-        };
+      const campaignBucket = byCampaignMap.get(campaignKey) || {
+        campaign_id: campaignId,
+        campaign_name: campaignName,
+        campaign_type: campaignType,
+        currency_code: currencyCode,
+        order_ids: new Set<string>(),
+        units_sold: 0,
+        order_gross_amount: 0,
+        captured_amount: 0,
+        refund_amount: 0,
+      };
       if (orderId) {
         campaignBucket.order_ids.add(orderId);
       }
@@ -2234,7 +2465,10 @@ export class V2AdminService {
         refund_amount: number;
       }
     >();
-    const rangeDates = this.listIsoDatesInRange(dateRange.fromDate, dateRange.toDate);
+    const rangeDates = this.listIsoDatesInRange(
+      dateRange.fromDate,
+      dateRange.toDate,
+    );
     for (const date of rangeDates) {
       dailyMap.set(date, {
         date,
@@ -2289,7 +2523,9 @@ export class V2AdminService {
     const policyVersions = Array.from(
       new Set(
         financialAllocations
-          .map((row: any) => this.normalizeOptionalText(row.allocation_policy_version))
+          .map((row: any) =>
+            this.normalizeOptionalText(row.allocation_policy_version),
+          )
           .filter((value: string | null): value is string => Boolean(value)),
       ),
     );
@@ -2311,7 +2547,10 @@ export class V2AdminService {
       summary: {
         ...summary,
         currency_code:
-          this.resolveStatsCurrencyCode(activeSalesItems, financialAllocations) || 'KRW',
+          this.resolveStatsCurrencyCode(
+            activeSalesItems,
+            financialAllocations,
+          ) || 'KRW',
       },
       daily,
       by_project: byProject,
@@ -2364,7 +2603,10 @@ export class V2AdminService {
         throw error;
       }
 
-      const salesItems = await this.fetchSalesItemFactsFallback(dateRange, filters);
+      const salesItems = await this.fetchSalesItemFactsFallback(
+        dateRange,
+        filters,
+      );
       const orderIds = Array.from(
         new Set(
           salesItems
@@ -2646,11 +2888,13 @@ export class V2AdminService {
         continue;
       }
 
-      const status = this.normalizeOptionalText(payment.status)?.toUpperCase() || '';
+      const status =
+        this.normalizeOptionalText(payment.status)?.toUpperCase() || '';
       const captureAmount = Math.max(0, Number(payment.amount || 0));
       const refundAmount = Math.max(0, Number(payment.refunded_total || 0));
       const currencyCode =
-        this.normalizeOptionalText(payment.currency_code)?.toUpperCase() || 'KRW';
+        this.normalizeOptionalText(payment.currency_code)?.toUpperCase() ||
+        'KRW';
       const capturedAt =
         this.normalizeOptionalIsoDateTime(payment.captured_at) ||
         this.normalizeOptionalIsoDateTime(payment.created_at) ||
@@ -2676,7 +2920,9 @@ export class V2AdminService {
           if (!this.isIsoInRange(occurredAt, input.dateRange)) {
             continue;
           }
-          const itemMeta = orderItems.find((item) => item.id === row.order_item_id);
+          const itemMeta = orderItems.find(
+            (item) => item.id === row.order_item_id,
+          );
           allocations.push({
             financial_event_id: `${paymentId}:CAPTURE`,
             order_id: orderId,
@@ -2714,7 +2960,9 @@ export class V2AdminService {
           if (!this.isIsoInRange(occurredAt, input.dateRange)) {
             continue;
           }
-          const itemMeta = orderItems.find((item) => item.id === row.order_item_id);
+          const itemMeta = orderItems.find(
+            (item) => item.id === row.order_item_id,
+          );
           allocations.push({
             financial_event_id: `${paymentId}:REFUND`,
             order_id: orderId,
@@ -2769,7 +3017,9 @@ export class V2AdminService {
     if (typeof response === 'string') {
       return false;
     }
-    const errorCode = this.normalizeOptionalText(response?.errorCode)?.toUpperCase();
+    const errorCode = this.normalizeOptionalText(
+      response?.errorCode,
+    )?.toUpperCase();
     if (!errorCode) {
       return false;
     }
@@ -2811,11 +3061,13 @@ export class V2AdminService {
         continue;
       }
 
-      const status = this.normalizeOptionalText(payment.status)?.toUpperCase() || null;
+      const status =
+        this.normalizeOptionalText(payment.status)?.toUpperCase() || null;
       const amount = Math.max(0, Number(payment.amount || 0));
       const refundedTotal = Math.max(0, Number(payment.refunded_total || 0));
       const currencyCode =
-        this.normalizeOptionalText(payment.currency_code)?.toUpperCase() || 'KRW';
+        this.normalizeOptionalText(payment.currency_code)?.toUpperCase() ||
+        'KRW';
       const capturedAt =
         this.normalizeOptionalIsoDateTime(payment.captured_at) ||
         this.normalizeOptionalIsoDateTime(payment.created_at) ||
@@ -2845,7 +3097,10 @@ export class V2AdminService {
         });
       }
 
-      if (refundedTotal > 0 && (status === 'PARTIALLY_REFUNDED' || status === 'REFUNDED')) {
+      if (
+        refundedTotal > 0 &&
+        (status === 'PARTIALLY_REFUNDED' || status === 'REFUNDED')
+      ) {
         eventRows.push({
           event_key: `${paymentId}:REFUND`,
           order_id: orderId,
@@ -2944,10 +3199,11 @@ export class V2AdminService {
       itemsByOrderId.set(orderId, bucket);
     }
 
-    const { data: existingAllocations, error: existingError } = await this.supabase
-      .from('v2_order_item_financial_allocations')
-      .select('financial_event_id, order_item_id, allocated_amount')
-      .in('financial_event_id', eventIds);
+    const { data: existingAllocations, error: existingError } =
+      await this.supabase
+        .from('v2_order_item_financial_allocations')
+        .select('financial_event_id, order_item_id, allocated_amount')
+        .in('financial_event_id', eventIds);
 
     if (existingError) {
       throw new ApiException(
@@ -2978,7 +3234,9 @@ export class V2AdminService {
     for (const event of events) {
       const eventId = this.normalizeOptionalText(event.id);
       const orderId = this.normalizeOptionalText(event.order_id);
-      const eventType = this.normalizeOptionalText(event.event_type)?.toUpperCase();
+      const eventType = this.normalizeOptionalText(
+        event.event_type,
+      )?.toUpperCase();
       const amount = Math.max(0, Number(event.amount || 0));
       if (!eventId || !orderId || !eventType || amount <= 0) {
         continue;
@@ -2990,7 +3248,11 @@ export class V2AdminService {
       }
 
       const existing = existingByEventId.get(eventId);
-      if (existing && existing.amount === amount && existing.count === orderItemRows.length) {
+      if (
+        existing &&
+        existing.amount === amount &&
+        existing.count === orderItemRows.length
+      ) {
         continue;
       }
 
@@ -2998,7 +3260,10 @@ export class V2AdminService {
         deleteEventIds.push(eventId);
       }
 
-      const allocations = this.allocateAmountByOrderItems(amount, orderItemRows);
+      const allocations = this.allocateAmountByOrderItems(
+        amount,
+        orderItemRows,
+      );
       const policyVersion =
         eventType === 'REFUND'
           ? this.refundAllocationPolicyVersion
@@ -3067,11 +3332,15 @@ export class V2AdminService {
       }));
     }
 
-    let weights = orderItems.map((item) => Math.max(0, Number(item.final_line_total || 0)));
+    let weights = orderItems.map((item) =>
+      Math.max(0, Number(item.final_line_total || 0)),
+    );
     let weightSum = weights.reduce((sum, weight) => sum + weight, 0);
 
     if (weightSum <= 0) {
-      weights = orderItems.map((item) => Math.max(1, Number(item.quantity || 0)));
+      weights = orderItems.map((item) =>
+        Math.max(1, Number(item.quantity || 0)),
+      );
       weightSum = weights.reduce((sum, weight) => sum + weight, 0);
     }
 
@@ -3364,7 +3633,9 @@ export class V2AdminService {
     return value;
   }
 
-  private parseRequiredStageNo(value: string | number | null | undefined): number {
+  private parseRequiredStageNo(
+    value: string | number | null | undefined,
+  ): number {
     const raw =
       typeof value === 'number'
         ? String(value)
@@ -3488,7 +3759,9 @@ export class V2AdminService {
       return 20;
     }
     const parsed =
-      typeof raw === 'number' ? Math.trunc(raw) : Number.parseInt(String(raw), 10);
+      typeof raw === 'number'
+        ? Math.trunc(raw)
+        : Number.parseInt(String(raw), 10);
     if (Number.isNaN(parsed)) {
       return 20;
     }
@@ -3512,7 +3785,9 @@ export class V2AdminService {
     };
   }
 
-  private async fetchBulkTargetOrders(orderIds: string[]): Promise<Map<string, any>> {
+  private async fetchBulkTargetOrders(
+    orderIds: string[],
+  ): Promise<Map<string, any>> {
     const { data, error } = await this.supabase
       .from('v2_orders')
       .select('id, order_no, order_status, payment_status, fulfillment_status')
@@ -3681,14 +3956,17 @@ export class V2AdminService {
             reason: input.reason,
           }),
           execute: () =>
-            this.v2FulfillmentService.dispatchShipment(input.candidate.resource_id, {
-              metadata: {
-                source: 'ORDER_QUEUE_BULK_ACTION',
-                order_id: input.candidate.order_id,
-                order_no: input.candidate.order_no,
-                bulk_reason: input.reason,
+            this.v2FulfillmentService.dispatchShipment(
+              input.candidate.resource_id,
+              {
+                metadata: {
+                  source: 'ORDER_QUEUE_BULK_ACTION',
+                  order_id: input.candidate.order_id,
+                  order_no: input.candidate.order_no,
+                  bulk_reason: input.reason,
+                },
               },
-            }),
+            ),
         });
 
         return {
@@ -3719,14 +3997,17 @@ export class V2AdminService {
             reason: input.reason,
           }),
           execute: () =>
-            this.v2FulfillmentService.reissueEntitlement(input.candidate.resource_id, {
-              metadata: {
-                source: 'ORDER_QUEUE_BULK_ACTION',
-                order_id: input.candidate.order_id,
-                order_no: input.candidate.order_no,
-                bulk_reason: input.reason,
+            this.v2FulfillmentService.reissueEntitlement(
+              input.candidate.resource_id,
+              {
+                metadata: {
+                  source: 'ORDER_QUEUE_BULK_ACTION',
+                  order_id: input.candidate.order_id,
+                  order_no: input.candidate.order_no,
+                  bulk_reason: input.reason,
+                },
               },
-            }),
+            ),
         });
 
         return {
@@ -3767,15 +4048,18 @@ export class V2AdminService {
             reason: input.reason,
           }),
           execute: () =>
-            this.v2FulfillmentService.revokeEntitlement(input.candidate.resource_id, {
-              reason: input.reason || undefined,
-              metadata: {
-                source: 'ORDER_QUEUE_BULK_ACTION',
-                order_id: input.candidate.order_id,
-                order_no: input.candidate.order_no,
-                bulk_reason: input.reason,
+            this.v2FulfillmentService.revokeEntitlement(
+              input.candidate.resource_id,
+              {
+                reason: input.reason || undefined,
+                metadata: {
+                  source: 'ORDER_QUEUE_BULK_ACTION',
+                  order_id: input.candidate.order_id,
+                  order_no: input.candidate.order_no,
+                  bulk_reason: input.reason,
+                },
               },
-            }),
+            ),
         });
 
         return {
@@ -3799,7 +4083,8 @@ export class V2AdminService {
       const actionLogId = await this.findActionLogIdByRequestId(
         input.candidateRequestId,
       );
-      const pendingApproval = parsed.error_code === 'V2_ADMIN_APPROVAL_REQUIRED';
+      const pendingApproval =
+        parsed.error_code === 'V2_ADMIN_APPROVAL_REQUIRED';
 
       return {
         status: pendingApproval ? 'PENDING_APPROVAL' : 'FAILED',
@@ -3937,8 +4222,12 @@ export class V2AdminService {
     return 'STAGE_1';
   }
 
-  private readLegacyWriteMode(stage: 'STAGE_1' | 'STAGE_2' | 'STAGE_3'): string {
-    const explicit = this.normalizeOptionalText(process.env.V2_ADMIN_LEGACY_WRITE_MODE);
+  private readLegacyWriteMode(
+    stage: 'STAGE_1' | 'STAGE_2' | 'STAGE_3',
+  ): string {
+    const explicit = this.normalizeOptionalText(
+      process.env.V2_ADMIN_LEGACY_WRITE_MODE,
+    );
     if (explicit) {
       return explicit;
     }
