@@ -2690,6 +2690,114 @@ export class V2CheckoutService {
       );
     }
 
+    const items = Array.isArray(data.items) ? (data.items as any[]) : [];
+    if (items.length === 0) {
+      return data;
+    }
+
+    const variantIds = Array.from(
+      new Set(
+        items
+          .map((item) =>
+            this.normalizeOptionalUuid(item?.variant_id as string | null | undefined),
+          )
+          .filter((variantId): variantId is string => Boolean(variantId)),
+      ),
+    );
+    const variantSnapshotById = await this.fetchVariantSnapshotsByIds(variantIds);
+
+    const productIds = Array.from(
+      new Set(
+        items
+          .map((item) => {
+            const itemProductId = this.normalizeOptionalUuid(
+              item?.product_id as string | null | undefined,
+            );
+            if (itemProductId) {
+              return itemProductId;
+            }
+            const itemVariantId = this.normalizeOptionalUuid(
+              item?.variant_id as string | null | undefined,
+            );
+            if (!itemVariantId) {
+              return null;
+            }
+            const variantSnapshot = variantSnapshotById.get(itemVariantId);
+            return this.normalizeOptionalUuid(
+              variantSnapshot?.product_id as string | null | undefined,
+            );
+          })
+          .filter((productId): productId is string => Boolean(productId)),
+      ),
+    );
+    const thumbnailByProductId =
+      await this.loadPrimaryProductThumbnailByProductIds(productIds);
+
+    data.items = items.map((item) => {
+      const variantId = this.normalizeOptionalUuid(
+        item?.variant_id as string | null | undefined,
+      );
+      const variantSnapshot = variantId ? variantSnapshotById.get(variantId) : null;
+      const displaySnapshot =
+        item?.display_snapshot &&
+        typeof item.display_snapshot === 'object' &&
+        !Array.isArray(item.display_snapshot)
+          ? (item.display_snapshot as Record<string, unknown>)
+          : {};
+
+      const productId =
+        this.normalizeOptionalUuid(item?.product_id as string | null | undefined) ||
+        this.normalizeOptionalUuid(
+          variantSnapshot?.product_id as string | null | undefined,
+        );
+      const productTitle =
+        this.normalizeOptionalText(
+          item?.product_name_snapshot as string | null | undefined,
+        ) ||
+        this.normalizeOptionalText(
+          displaySnapshot.product_title as string | null | undefined,
+        ) ||
+        this.normalizeOptionalText(
+          variantSnapshot?.product?.title as string | null | undefined,
+        );
+      const variantTitle =
+        this.normalizeOptionalText(
+          item?.variant_name_snapshot as string | null | undefined,
+        ) ||
+        this.normalizeOptionalText(
+          displaySnapshot.variant_title as string | null | undefined,
+        ) ||
+        this.normalizeOptionalText(
+          displaySnapshot.title as string | null | undefined,
+        ) ||
+        this.normalizeOptionalText(variantSnapshot?.title as string | null | undefined);
+      const thumbnailUrl =
+        (productId ? thumbnailByProductId.get(productId) : null) ||
+        this.normalizeOptionalText(
+          displaySnapshot.thumbnail_url as string | null | undefined,
+        );
+
+      return {
+        ...item,
+        product_name_snapshot: productTitle || item?.product_name_snapshot || null,
+        variant_name_snapshot: variantTitle || item?.variant_name_snapshot || null,
+        display_snapshot: {
+          ...displaySnapshot,
+          product_id: productId || null,
+          product_title: productTitle || null,
+          variant_title: variantTitle || null,
+          thumbnail_url: thumbnailUrl || null,
+          title:
+            this.normalizeOptionalText(
+              displaySnapshot.title as string | null | undefined,
+            ) ||
+            variantTitle ||
+            productTitle ||
+            null,
+        },
+      };
+    });
+
     return data;
   }
 
