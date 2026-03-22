@@ -1538,10 +1538,99 @@ export class V2AdminService {
       );
     }
 
+    const rows = (data || []) as any[];
+    const orderIds = rows
+      .map((row) => this.normalizeOptionalUuid(row.order_id))
+      .filter((orderId): orderId is string => Boolean(orderId));
+    const depositorNameByOrderId = await this.fetchOrderDepositorNameByOrderIds(
+      orderIds,
+    );
+
     return {
-      items: data || [],
+      items: rows.map((row) => {
+        const orderId = this.normalizeOptionalUuid(row.order_id);
+        return {
+          ...row,
+          depositor_name: orderId
+            ? depositorNameByOrderId.get(orderId) || null
+            : null,
+        };
+      }),
       limit,
     };
+  }
+
+  private async fetchOrderDepositorNameByOrderIds(
+    orderIds: string[],
+  ): Promise<Map<string, string>> {
+    const normalizedOrderIds = Array.from(
+      new Set(
+        (orderIds || [])
+          .map((orderId) => this.normalizeOptionalUuid(orderId))
+          .filter((orderId): orderId is string => Boolean(orderId)),
+      ),
+    );
+    if (normalizedOrderIds.length === 0) {
+      return new Map();
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_orders')
+      .select('id, customer_snapshot, shipping_address_snapshot')
+      .in('id', normalizedOrderIds);
+
+    if (error) {
+      throw new ApiException(
+        'order queue 입금자명 조회 실패',
+        500,
+        'V2_ADMIN_ORDER_QUEUE_DEPOSITOR_FETCH_FAILED',
+      );
+    }
+
+    const depositorNameByOrderId = new Map<string, string>();
+    for (const row of data || []) {
+      const orderId = this.normalizeOptionalUuid(row.id);
+      if (!orderId) {
+        continue;
+      }
+      const depositorName = this.resolveOrderDepositorNameFromSnapshots({
+        customerSnapshot: row.customer_snapshot,
+        shippingAddressSnapshot: row.shipping_address_snapshot,
+      });
+      if (!depositorName) {
+        continue;
+      }
+      depositorNameByOrderId.set(orderId, depositorName);
+    }
+
+    return depositorNameByOrderId;
+  }
+
+  private resolveOrderDepositorNameFromSnapshots(input: {
+    customerSnapshot: unknown;
+    shippingAddressSnapshot: unknown;
+  }): string | null {
+    const readSnapshotText = (
+      snapshot: unknown,
+      key: string,
+    ): string | null => {
+      if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+        return null;
+      }
+      const value = (snapshot as Record<string, unknown>)[key];
+      if (typeof value !== 'string') {
+        return null;
+      }
+      return this.normalizeOptionalText(value);
+    };
+
+    return (
+      readSnapshotText(input.customerSnapshot, 'name') ||
+      readSnapshotText(input.customerSnapshot, 'full_name') ||
+      readSnapshotText(input.customerSnapshot, 'recipient_name') ||
+      readSnapshotText(input.shippingAddressSnapshot, 'recipient_name') ||
+      null
+    );
   }
 
   async bulkOrderQueueAction(input: {
