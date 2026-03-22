@@ -1404,7 +1404,110 @@ export class V2CheckoutService {
       );
     }
 
-    return data || [];
+    const items = (data || []) as any[];
+    const productIds = Array.from(
+      new Set(
+        items
+          .map((item) =>
+            this.normalizeOptionalText(
+              item?.variant?.product?.id as string | null | undefined,
+            ),
+          )
+          .filter((productId): productId is string => !!productId),
+      ),
+    );
+    const thumbnailByProductId =
+      await this.loadPrimaryProductThumbnailByProductIds(productIds);
+
+    for (const item of items) {
+      const product = item?.variant?.product;
+      const productId = this.normalizeOptionalText(
+        product?.id as string | null | undefined,
+      );
+      if (!product || !productId) {
+        continue;
+      }
+      item.variant.product = {
+        ...product,
+        thumbnail_url: thumbnailByProductId.get(productId) ?? null,
+      };
+    }
+
+    return items;
+  }
+
+  private async loadPrimaryProductThumbnailByProductIds(
+    productIds: string[],
+  ): Promise<Map<string, string>> {
+    if (productIds.length === 0) {
+      return new Map();
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_product_media')
+      .select('product_id,public_url,media_role,is_primary,sort_order,created_at')
+      .in('product_id', productIds)
+      .eq('status', 'ACTIVE')
+      .is('deleted_at', null)
+      .order('is_primary', { ascending: false })
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        'v2 cart 썸네일 조회 실패',
+        500,
+        'V2_CART_THUMBNAIL_FETCH_FAILED',
+      );
+    }
+
+    const rowsByProductId = new Map<string, any[]>();
+    for (const row of (data || []) as any[]) {
+      const productId = this.normalizeOptionalText(
+        row.product_id as string | null | undefined,
+      );
+      if (!productId) {
+        continue;
+      }
+      const rows = rowsByProductId.get(productId) || [];
+      rows.push(row);
+      rowsByProductId.set(productId, rows);
+    }
+
+    const thumbnailByProductId = new Map<string, string>();
+    for (const productId of productIds) {
+      const mediaRows = rowsByProductId.get(productId) || [];
+      if (mediaRows.length === 0) {
+        continue;
+      }
+
+      const primaryByFlag = mediaRows.find(
+        (media) =>
+          media.is_primary &&
+          this.normalizeOptionalText(media.public_url as string | null | undefined),
+      );
+      const primaryByRole = mediaRows.find(
+        (media) =>
+          media.media_role === 'PRIMARY' &&
+          this.normalizeOptionalText(media.public_url as string | null | undefined),
+      );
+      const fallback = mediaRows.find((media) =>
+        this.normalizeOptionalText(media.public_url as string | null | undefined),
+      );
+      const thumbnailUrl = this.normalizeOptionalText(
+        (primaryByFlag || primaryByRole || fallback)?.public_url as
+          | string
+          | null
+          | undefined,
+      );
+      if (!thumbnailUrl) {
+        continue;
+      }
+
+      thumbnailByProductId.set(productId, thumbnailUrl);
+    }
+
+    return thumbnailByProductId;
   }
 
   private async touchCart(cartId: string): Promise<void> {
