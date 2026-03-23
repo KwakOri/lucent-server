@@ -82,6 +82,7 @@ interface RefundV2OrderBody {
 }
 
 interface ListV2OrdersQuery {
+  page?: string;
   limit?: string;
   order_status?: string;
 }
@@ -171,9 +172,12 @@ export class V2CheckoutController {
     @Query() query: ListV2OrdersQuery,
   ) {
     const user = await this.authSessionService.requireUser(authorization);
+    const isAdmin = this.authSessionService.isAdmin(user.email);
     const result = await this.v2CheckoutService.listOrders(user.id, {
+      page: query.page,
       limit: query.limit,
       orderStatus: query.order_status,
+      includeAllForAdmin: isAdmin,
     });
     return successResponse(result);
   }
