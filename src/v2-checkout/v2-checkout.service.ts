@@ -559,27 +559,39 @@ export class V2CheckoutService {
   async listOrders(
     profileId: string,
     input: {
+      page?: string;
       limit?: string;
       orderStatus?: string;
+      includeAllForAdmin?: boolean;
     } = {},
   ): Promise<{
     items: any[];
     total: number;
     limit: number;
+    page: number;
+    totalPages: number;
   }> {
+    const parsedPage = Number.parseInt(input.page || '1', 10);
+    const page =
+      Number.isInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
     const parsedLimit = Number.parseInt(input.limit || '20', 10);
     const limit = Number.isInteger(parsedLimit)
       ? Math.min(Math.max(parsedLimit, 1), 100)
       : 20;
+    const from = (page - 1) * limit;
+    const to = from + limit - 1;
     const orderStatus = this.normalizeOptionalText(input.orderStatus);
 
     let query = this.supabase
       .from('v2_orders')
       .select('id', { count: 'exact' })
-      .eq('profile_id', profileId)
       .order('placed_at', { ascending: false })
       .order('created_at', { ascending: false })
-      .limit(limit);
+      .range(from, to);
+
+    if (!input.includeAllForAdmin) {
+      query = query.eq('profile_id', profileId);
+    }
 
     if (orderStatus) {
       query = query.eq('order_status', orderStatus);
@@ -596,10 +608,13 @@ export class V2CheckoutService {
 
     const orderIds = (data || []).map((row: any) => row.id).filter(Boolean);
     if (orderIds.length === 0) {
+      const total = count || 0;
       return {
         items: [],
-        total: count || 0,
+        total,
         limit,
+        page,
+        totalPages: total > 0 ? Math.ceil(total / limit) : 1,
       };
     }
 
@@ -607,10 +622,13 @@ export class V2CheckoutService {
       orderIds.map((orderId: string) => this.fetchOrderAggregate(orderId)),
     );
 
+    const total = count || items.length;
     return {
       items,
-      total: count || items.length,
+      total,
       limit,
+      page,
+      totalPages: total > 0 ? Math.ceil(total / limit) : 1,
     };
   }
 
