@@ -1572,25 +1572,34 @@ export class V2CatalogService {
       inventoryByVariantId,
       priceItems,
       campaignTargetEligibilityByCampaignId,
-    } = await this.loadShopContext([productId]);
+      projectStatusById,
+    } = await this.loadShopContext([productId], [product.project_id as string | null]);
     const variants = variantsByProductId.get(productId) || [];
     const media = mediaByProductId.get(productId) || [];
+    const projectStatus = this.resolveShopProjectStatus(
+      product.project_id as string | null,
+      projectStatusById,
+    );
+    const isProjectActive = projectStatus === 'ACTIVE';
 
     const variantViews = variants.map((variant: any, index: number) => {
-      const priceSelection = this.selectShopPriceItem({
-        productId,
-        projectId: product.project_id as string | null,
-        variantId: variant.id as string,
-        priceItems,
-        evaluatedAt,
-        campaignId,
-        channel,
-        campaignTargetEligibilityByCampaignId,
-      });
+      const priceSelection = isProjectActive
+        ? this.selectShopPriceItem({
+            productId,
+            projectId: product.project_id as string | null,
+            variantId: variant.id as string,
+            priceItems,
+            evaluatedAt,
+            campaignId,
+            channel,
+            campaignTargetEligibilityByCampaignId,
+          })
+        : { selected: null, base: null, override: null };
       const inventoryQuantity = variant.track_inventory
         ? (inventoryByVariantId.get(variant.id as string) ?? null)
         : null;
       const availability = this.buildShopAvailability({
+        projectStatus,
         productStatus: product.status as V2ProductStatus,
         variant,
         selectedPriceItem: priceSelection.selected,
@@ -9905,30 +9914,41 @@ export class V2CatalogService {
       inventoryByVariantId,
       priceItems,
       campaignTargetEligibilityByCampaignId,
-    } = await this.loadShopContext(productIds);
+      projectStatusById,
+    } = await this.loadShopContext(
+      productIds,
+      products.map((product) => product.project_id as string | null),
+    );
 
     return products.map((product) => {
       const productId = product.id as string;
+      const projectStatus = this.resolveShopProjectStatus(
+        product.project_id as string | null,
+        projectStatusById,
+      );
+      const isProjectActive = projectStatus === 'ACTIVE';
       const variants = variantsByProductId.get(productId) || [];
       const primaryVariant = variants[0] || null;
       const media = mediaByProductId.get(productId) || [];
       const primaryMedia = this.pickPrimaryShopMedia(media);
-      const priceSelection = primaryVariant
-        ? this.selectShopPriceItem({
-            productId,
-            projectId: product.project_id as string | null,
-            variantId: primaryVariant.id as string,
-            priceItems,
-            evaluatedAt: context.evaluatedAt,
-            campaignId: context.campaignId,
-            channel: context.channel,
-            campaignTargetEligibilityByCampaignId,
-          })
-        : { selected: null };
+      const priceSelection =
+        primaryVariant && isProjectActive
+          ? this.selectShopPriceItem({
+              productId,
+              projectId: product.project_id as string | null,
+              variantId: primaryVariant.id as string,
+              priceItems,
+              evaluatedAt: context.evaluatedAt,
+              campaignId: context.campaignId,
+              channel: context.channel,
+              campaignTargetEligibilityByCampaignId,
+            })
+          : { selected: null, base: null, override: null };
       const inventoryQuantity = primaryVariant?.track_inventory
         ? (inventoryByVariantId.get(primaryVariant.id as string) ?? null)
         : null;
       const availability = this.buildShopAvailability({
+        projectStatus,
         productStatus: product.status as V2ProductStatus,
         variant: primaryVariant,
         selectedPriceItem: priceSelection.selected,
@@ -9962,11 +9982,15 @@ export class V2CatalogService {
     });
   }
 
-  private async loadShopContext(productIds: string[]): Promise<{
+  private async loadShopContext(
+    productIds: string[],
+    inputProjectIds: Array<string | null> = [],
+  ): Promise<{
     variantsByProductId: Map<string, any[]>;
     mediaByProductId: Map<string, any[]>;
     inventoryByVariantId: Map<string, number>;
     priceItems: any[];
+    projectStatusById: Map<string, V2ProjectStatus>;
     campaignTargetEligibilityByCampaignId: Map<
       string,
       CampaignTargetEligibilityScope
@@ -9975,6 +9999,7 @@ export class V2CatalogService {
     const variantsByProductId = new Map<string, any[]>();
     const mediaByProductId = new Map<string, any[]>();
     const inventoryByVariantId = new Map<string, number>();
+    const projectStatusById = new Map<string, V2ProjectStatus>();
     const campaignTargetEligibilityByCampaignId = new Map<
       string,
       CampaignTargetEligibilityScope
@@ -9986,8 +10011,37 @@ export class V2CatalogService {
         mediaByProductId,
         inventoryByVariantId,
         priceItems: [],
+        projectStatusById,
         campaignTargetEligibilityByCampaignId,
       };
+    }
+
+    const projectIds = Array.from(
+      new Set(
+        inputProjectIds
+          .map((projectId) => this.normalizeOptionalText(projectId))
+          .filter((projectId): projectId is string => !!projectId),
+      ),
+    );
+    if (projectIds.length > 0) {
+      const { data: projectRows, error: projectsError } = await this.supabase
+        .from('v2_projects')
+        .select('id,status')
+        .in('id', projectIds)
+        .is('deleted_at', null);
+      if (projectsError) {
+        throw new ApiException(
+          'v2 shop 프로젝트 조회 실패',
+          500,
+          'V2_SHOP_PROJECTS_FETCH_FAILED',
+        );
+      }
+
+      for (const row of projectRows || []) {
+        if (row.id && row.status) {
+          projectStatusById.set(row.id as string, row.status as V2ProjectStatus);
+        }
+      }
     }
 
     const { data: variantRows, error: variantsError } = await this.supabase
@@ -10137,9 +10191,21 @@ export class V2CatalogService {
       mediaByProductId,
       inventoryByVariantId,
       priceItems: normalizedPriceItems,
+      projectStatusById,
       campaignTargetEligibilityByCampaignId:
         loadedCampaignTargetEligibilityByCampaignId,
     };
+  }
+
+  private resolveShopProjectStatus(
+    projectId: string | null | undefined,
+    projectStatusById: Map<string, V2ProjectStatus>,
+  ): V2ProjectStatus | null {
+    const normalizedProjectId = this.normalizeOptionalText(projectId);
+    if (!normalizedProjectId) {
+      return null;
+    }
+    return projectStatusById.get(normalizedProjectId) ?? null;
   }
 
   private pickPrimaryShopMedia(mediaItems: any[]): any | null {
@@ -10158,6 +10224,7 @@ export class V2CatalogService {
   }
 
   private buildShopAvailability(params: {
+    projectStatus: V2ProjectStatus | null;
     productStatus: V2ProductStatus;
     variant: any | null;
     selectedPriceItem: any | null;
@@ -10171,6 +10238,13 @@ export class V2CatalogService {
       ? params.inventoryQuantity
       : null;
 
+    if (params.projectStatus !== 'ACTIVE') {
+      return {
+        sellable: false,
+        reason: 'PROJECT_INACTIVE',
+        available_quantity: availableQuantity,
+      };
+    }
     if (params.productStatus !== 'ACTIVE') {
       return {
         sellable: false,
