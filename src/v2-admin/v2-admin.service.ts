@@ -1527,6 +1527,98 @@ export class V2AdminService {
     };
   }
 
+  async listUnifiedAuditLogs(params: {
+    limit?: string;
+    source?: string;
+    domain?: string;
+    eventType?: string;
+    status?: string;
+    severity?: string;
+    resourceType?: string;
+    resourceId?: string;
+    actorId?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    search?: string;
+  }): Promise<any> {
+    const limit = this.normalizeLimit(params.limit);
+    let query = this.supabase
+      .from('v2_admin_audit_view')
+      .select('*')
+      .order('occurred_at', { ascending: false })
+      .order('audit_id', { ascending: false })
+      .limit(limit);
+
+    const source = this.normalizeOptionalText(params.source);
+    if (source) {
+      query = query.eq('source_table', source);
+    }
+
+    const domain = this.normalizeOptionalText(params.domain);
+    if (domain) {
+      query = query.eq('domain', domain);
+    }
+
+    const eventType = this.normalizeOptionalText(params.eventType);
+    if (eventType) {
+      query = query.eq('event_type', eventType);
+    }
+
+    const status = this.normalizeOptionalText(params.status);
+    if (status) {
+      query = query.eq('status', status);
+    }
+
+    const severity = this.normalizeOptionalText(params.severity);
+    if (severity) {
+      query = query.eq('severity', severity);
+    }
+
+    const resourceType = this.normalizeOptionalText(params.resourceType);
+    if (resourceType) {
+      query = query.eq('resource_type', resourceType);
+    }
+
+    const resourceId = this.normalizeOptionalUuid(params.resourceId);
+    if (resourceId) {
+      query = query.eq('resource_id', resourceId);
+    }
+
+    const actorId = this.normalizeOptionalUuid(params.actorId);
+    if (actorId) {
+      query = query.eq('actor_id', actorId);
+    }
+
+    const dateFrom = this.normalizeOptionalIsoDateTime(params.dateFrom);
+    if (dateFrom) {
+      query = query.gte('occurred_at', dateFrom);
+    }
+
+    const dateTo = this.normalizeOptionalIsoDateTime(params.dateTo);
+    if (dateTo) {
+      query = query.lte('occurred_at', dateTo);
+    }
+
+    const search = this.normalizeOptionalText(params.search);
+    if (search) {
+      query = query.ilike('message', `%${search}%`);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw new ApiException(
+        '통합 audit 로그 조회 실패',
+        500,
+        'V2_ADMIN_UNIFIED_AUDIT_FETCH_FAILED',
+      );
+    }
+
+    return {
+      items: data || [],
+      limit,
+    };
+  }
+
   async listApprovals(params: {
     limit?: string;
     status?: string;
