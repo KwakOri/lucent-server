@@ -173,7 +173,10 @@ export class V2CheckoutController {
     @Headers('authorization') authorization: string | undefined,
   ) {
     const user = await this.authSessionService.requireUser(authorization);
-    const result = await this.v2CheckoutService.listDigitalEntitlements(user.id);
+    const isAdmin = this.authSessionService.isAdmin(user.email);
+    const result = await this.v2CheckoutService.listDigitalEntitlements(user.id, {
+      includeAllForAdmin: isAdmin,
+    });
     return successResponse(result);
   }
 

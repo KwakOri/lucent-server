@@ -647,16 +647,24 @@ export class V2CheckoutService {
 
   async listDigitalEntitlements(
     profileId: string,
+    input: {
+      includeAllForAdmin?: boolean;
+    } = {},
   ): Promise<{ items: any[]; total: number }> {
-    const { data: orders, error: ordersError } = await this.supabase
+    let ordersQuery = this.supabase
       .from('v2_orders')
       .select(
         'id,order_no,placed_at,order_status,payment_status,fulfillment_status,canceled_at,completed_at',
       )
-      .eq('profile_id', profileId)
       .order('placed_at', { ascending: false })
       .order('created_at', { ascending: false })
       .limit(500);
+
+    if (!input.includeAllForAdmin) {
+      ordersQuery = ordersQuery.eq('profile_id', profileId);
+    }
+
+    const { data: orders, error: ordersError } = await ordersQuery;
 
     if (ordersError) {
       throw new ApiException(
