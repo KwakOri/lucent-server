@@ -959,6 +959,7 @@ export class V2CheckoutService {
     profileId: string,
     entitlementId: string,
     input: {
+      includeAllForAdmin?: boolean;
       ipAddress?: string | null;
       userAgent?: string | null;
     } = {},
@@ -980,7 +981,9 @@ export class V2CheckoutService {
     const entitlement = await this.fetchDigitalEntitlementById(
       normalizedEntitlementId,
     );
-    await this.assertOrderOwnership(entitlement.order_id, profileId);
+    await this.assertOrderOwnership(entitlement.order_id, profileId, {
+      includeAllForAdmin: input.includeAllForAdmin,
+    });
 
     const entitlementVariantId = this.normalizeOptionalUuid(
       entitlement?.order_item?.variant_id as string | null | undefined,
@@ -3278,6 +3281,9 @@ export class V2CheckoutService {
   private async assertOrderOwnership(
     orderId: string,
     profileId: string,
+    input: {
+      includeAllForAdmin?: boolean;
+    } = {},
   ): Promise<void> {
     const normalizedOrderId = this.normalizeOptionalUuid(orderId);
     if (!normalizedOrderId) {
@@ -3288,12 +3294,16 @@ export class V2CheckoutService {
       );
     }
 
-    const { data, error } = await this.supabase
+    let query = this.supabase
       .from('v2_orders')
       .select('id')
-      .eq('id', normalizedOrderId)
-      .eq('profile_id', profileId)
-      .maybeSingle();
+      .eq('id', normalizedOrderId);
+
+    if (!input.includeAllForAdmin) {
+      query = query.eq('profile_id', profileId);
+    }
+
+    const { data, error } = await query.maybeSingle();
 
     if (error) {
       throw new ApiException(
