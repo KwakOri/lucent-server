@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ApiException } from '../common/errors/api.exception';
+import { createPresignedDownloadUrlFromR2 } from '../images/r2.util';
 import { CommerceNotificationsService } from '../notifications/commerce-notifications.service';
 import { getSupabaseClient } from '../supabase/supabase.client';
 import { V2CatalogService } from '../v2-catalog/v2-catalog.service';
@@ -642,6 +643,462 @@ export class V2CheckoutService {
       );
     }
     return order;
+  }
+
+  async listDigitalEntitlements(
+    profileId: string,
+    input: {
+      includeAllForAdmin?: boolean;
+    } = {},
+  ): Promise<{ items: any[]; total: number }> {
+    let ordersQuery = this.supabase
+      .from('v2_orders')
+      .select(
+        'id,order_no,placed_at,order_status,payment_status,fulfillment_status,canceled_at,completed_at',
+      )
+      .order('placed_at', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(500);
+
+    if (!input.includeAllForAdmin) {
+      ordersQuery = ordersQuery.eq('profile_id', profileId);
+    }
+
+    const { data: orders, error: ordersError } = await ordersQuery;
+
+    if (ordersError) {
+      throw new ApiException(
+        '디지털 entitlement 주문 조회 실패',
+        500,
+        'V2_DIGITAL_ENTITLEMENT_ORDERS_FETCH_FAILED',
+      );
+    }
+
+    const orderRows = (orders || []) as any[];
+    if (orderRows.length === 0) {
+      return {
+        items: [],
+        total: 0,
+      };
+    }
+
+    const orderById = new Map<string, any>();
+    for (const orderRow of orderRows) {
+      const orderId = this.normalizeOptionalUuid(orderRow.id);
+      if (!orderId) {
+        continue;
+      }
+      orderById.set(orderId, orderRow);
+    }
+
+    const orderIds = Array.from(orderById.keys());
+    if (orderIds.length === 0) {
+      return {
+        items: [],
+        total: 0,
+      };
+    }
+
+    const { data: entitlements, error: entitlementsError } = await this.supabase
+      .from('v2_digital_entitlements')
+      .select(
+        `
+        *,
+        order_item:v2_order_items (
+          id,
+          order_id,
+          product_id,
+          variant_id,
+          line_type,
+          line_status,
+          quantity,
+          final_line_total,
+          line_subtotal,
+          product_name_snapshot,
+          variant_name_snapshot,
+          display_snapshot
+        ),
+        digital_asset:v2_digital_assets (
+          id,
+          variant_id,
+          file_name,
+          file_size,
+          mime_type,
+          status,
+          storage_path,
+          version_no,
+          metadata,
+          deleted_at
+        )
+      `,
+      )
+      .in('order_id', orderIds)
+      .order('granted_at', { ascending: false })
+      .order('created_at', { ascending: false });
+
+    if (entitlementsError) {
+      throw new ApiException(
+        '디지털 entitlement 목록 조회 실패',
+        500,
+        'V2_DIGITAL_ENTITLEMENTS_FETCH_FAILED',
+      );
+    }
+
+    const rows = (entitlements || []) as any[];
+    if (rows.length === 0) {
+      return {
+        items: [],
+        total: 0,
+      };
+    }
+
+    const variantIds = Array.from(
+      new Set(
+        rows
+          .map((row) =>
+            this.normalizeOptionalUuid(
+              row?.order_item?.variant_id as string | null | undefined,
+            ),
+          )
+          .filter((variantId): variantId is string => Boolean(variantId)),
+      ),
+    );
+
+    const variantSnapshotById = await this.fetchVariantSnapshotsByIds(variantIds);
+    const productIds = Array.from(
+      new Set(
+        rows
+          .map((row) => {
+            const rowOrderItem = row?.order_item;
+            const productIdFromItem = this.normalizeOptionalUuid(
+              rowOrderItem?.product_id as string | null | undefined,
+            );
+            if (productIdFromItem) {
+              return productIdFromItem;
+            }
+
+            const variantId = this.normalizeOptionalUuid(
+              rowOrderItem?.variant_id as string | null | undefined,
+            );
+            if (!variantId) {
+              return null;
+            }
+            const variantSnapshot = variantSnapshotById.get(variantId);
+            return this.normalizeOptionalUuid(
+              variantSnapshot?.product_id as string | null | undefined,
+            );
+          })
+          .filter((productId): productId is string => Boolean(productId)),
+      ),
+    );
+    const thumbnailByProductId =
+      await this.loadPrimaryProductThumbnailByProductIds(productIds);
+    const legacyDownloadUrlByV2ProductId =
+      await this.loadLegacyDownloadUrlByV2ProductIds(productIds);
+
+    const fallbackVariantIds = Array.from(
+      new Set(
+        rows
+          .filter((row) => !this.isReadyDigitalAsset(row?.digital_asset))
+          .map((row) =>
+            this.normalizeOptionalUuid(
+              row?.order_item?.variant_id as string | null | undefined,
+            ),
+          )
+          .filter((variantId): variantId is string => Boolean(variantId)),
+      ),
+    );
+    const fallbackAssetByVariantId =
+      await this.loadLatestReadyDigitalAssetByVariantIds(fallbackVariantIds);
+
+    const items = rows
+      .map((row) => {
+        const orderId = this.normalizeOptionalUuid(row?.order_id);
+        if (!orderId) {
+          return null;
+        }
+        const order = orderById.get(orderId);
+        if (!order) {
+          return null;
+        }
+
+        const orderItem =
+          row?.order_item &&
+          typeof row.order_item === 'object' &&
+          !Array.isArray(row.order_item)
+            ? row.order_item
+            : null;
+        const displaySnapshot =
+          orderItem?.display_snapshot &&
+          typeof orderItem.display_snapshot === 'object' &&
+          !Array.isArray(orderItem.display_snapshot)
+            ? (orderItem.display_snapshot as Record<string, unknown>)
+            : {};
+        const variantId = this.normalizeOptionalUuid(
+          orderItem?.variant_id as string | null | undefined,
+        );
+        const variantSnapshot = variantId ? variantSnapshotById.get(variantId) : null;
+        const productId =
+          this.normalizeOptionalUuid(
+            orderItem?.product_id as string | null | undefined,
+          ) ||
+          this.normalizeOptionalUuid(
+            variantSnapshot?.product_id as string | null | undefined,
+          );
+        const productTitle =
+          this.normalizeOptionalText(
+            orderItem?.product_name_snapshot as string | null | undefined,
+          ) ||
+          this.normalizeOptionalText(
+            displaySnapshot.product_title as string | null | undefined,
+          ) ||
+          this.normalizeOptionalText(
+            variantSnapshot?.product?.title as string | null | undefined,
+          ) ||
+          '디지털 상품';
+        const variantTitle =
+          this.normalizeOptionalText(
+            orderItem?.variant_name_snapshot as string | null | undefined,
+          ) ||
+          this.normalizeOptionalText(
+            displaySnapshot.variant_title as string | null | undefined,
+          ) ||
+          this.normalizeOptionalText(
+            displaySnapshot.title as string | null | undefined,
+          ) ||
+          this.normalizeOptionalText(
+            variantSnapshot?.title as string | null | undefined,
+          );
+        const thumbnailUrl =
+          (productId ? thumbnailByProductId.get(productId) : null) ||
+          this.normalizeOptionalText(
+            displaySnapshot.thumbnail_url as string | null | undefined,
+          );
+        const legacyDownloadUrl =
+          (productId ? legacyDownloadUrlByV2ProductId.get(productId) : null) ||
+          null;
+
+        const digitalAsset = this.resolveReadyDigitalAsset({
+          explicitAsset: row?.digital_asset,
+          variantId,
+          fallbackByVariantId: fallbackAssetByVariantId,
+        });
+
+        const availability = this.evaluateEntitlementAvailability({
+          entitlement: row,
+          hasReadyAsset: Boolean(
+            legacyDownloadUrl || this.normalizeOptionalText(digitalAsset?.storage_path),
+          ),
+        });
+
+        return {
+          id: row.id,
+          status: row.status,
+          access_type: row.access_type,
+          granted_at: row.granted_at || null,
+          expires_at: row.expires_at || null,
+          download_count: this.normalizeNonNegativeInteger(
+            row.download_count ?? 0,
+            'download_count',
+          ),
+          max_downloads:
+            typeof row.max_downloads === 'number' &&
+            Number.isInteger(row.max_downloads) &&
+            row.max_downloads >= 0
+              ? row.max_downloads
+              : null,
+          remaining_downloads: availability.remaining_downloads,
+          can_download: availability.can_download,
+          blocked_reason: availability.blocked_reason,
+          order: {
+            id: order.id,
+            order_no: order.order_no,
+            placed_at: order.placed_at || null,
+            order_status: order.order_status,
+            payment_status: order.payment_status,
+            fulfillment_status: order.fulfillment_status,
+          },
+          order_item: {
+            id: orderItem?.id || null,
+            line_type: orderItem?.line_type || null,
+            line_status: orderItem?.line_status || null,
+            quantity: Math.max(
+              1,
+              this.normalizeNonNegativeInteger(
+                orderItem?.quantity ?? 1,
+                'quantity',
+              ),
+            ),
+            final_line_total: this.normalizeNonNegativeInteger(
+              orderItem?.final_line_total ?? orderItem?.line_subtotal ?? 0,
+              'final_line_total',
+            ),
+            product_id: productId || null,
+            product_title: productTitle,
+            variant_title: variantTitle || null,
+            thumbnail_url: thumbnailUrl || null,
+            item_kind: 'DIGITAL',
+          },
+          digital_asset: digitalAsset
+            ? {
+                id: digitalAsset.id,
+                file_name: digitalAsset.file_name,
+                file_size: digitalAsset.file_size,
+                mime_type: digitalAsset.mime_type,
+                status: digitalAsset.status,
+                version_no: digitalAsset.version_no,
+              }
+            : null,
+          download_path: `/api/v2/checkout/me/digital-entitlements/${row.id}/download`,
+        };
+      })
+      .filter((item): item is any => Boolean(item));
+
+    return {
+      items,
+      total: items.length,
+    };
+  }
+
+  async createDigitalEntitlementDownloadRedirect(
+    profileId: string,
+    entitlementId: string,
+    input: {
+      includeAllForAdmin?: boolean;
+      ipAddress?: string | null;
+      userAgent?: string | null;
+    } = {},
+  ): Promise<{
+    download_url: string;
+    expires_at: string;
+    expires_in_seconds: number;
+    remaining_downloads: number | null;
+  }> {
+    const normalizedEntitlementId = this.normalizeOptionalUuid(entitlementId);
+    if (!normalizedEntitlementId) {
+      throw new ApiException(
+        'entitlement_id가 올바르지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const entitlement = await this.fetchDigitalEntitlementById(
+      normalizedEntitlementId,
+    );
+    await this.assertOrderOwnership(entitlement.order_id, profileId, {
+      includeAllForAdmin: input.includeAllForAdmin,
+    });
+
+    const entitlementOrderItem =
+      entitlement?.order_item &&
+      typeof entitlement.order_item === 'object' &&
+      !Array.isArray(entitlement.order_item)
+        ? entitlement.order_item
+        : null;
+    const entitlementVariantId = this.normalizeOptionalUuid(
+      entitlementOrderItem?.variant_id as string | null | undefined,
+    );
+    let entitlementProductId = this.normalizeOptionalUuid(
+      entitlementOrderItem?.product_id as string | null | undefined,
+    );
+    if (!entitlementProductId && entitlementVariantId) {
+      const variantSnapshotById = await this.fetchVariantSnapshotsByIds([
+        entitlementVariantId,
+      ]);
+      entitlementProductId = this.normalizeOptionalUuid(
+        variantSnapshotById.get(entitlementVariantId)?.product_id as
+          | string
+          | null
+          | undefined,
+      );
+    }
+    const legacyDownloadUrlByV2ProductId =
+      await this.loadLegacyDownloadUrlByV2ProductIds(
+        entitlementProductId ? [entitlementProductId] : [],
+      );
+    const legacyDownloadUrl =
+      (entitlementProductId
+        ? legacyDownloadUrlByV2ProductId.get(entitlementProductId)
+        : null) || null;
+
+    const fallbackByVariantId =
+      await this.loadLatestReadyDigitalAssetByVariantIds(
+        entitlementVariantId ? [entitlementVariantId] : [],
+      );
+    const digitalAsset = this.resolveReadyDigitalAsset({
+      explicitAsset: entitlement.digital_asset,
+      variantId: entitlementVariantId,
+      fallbackByVariantId,
+    });
+
+    const storagePath = this.normalizeOptionalText(digitalAsset?.storage_path);
+    if (!storagePath && !legacyDownloadUrl) {
+      throw new ApiException(
+        '다운로드 가능한 디지털 파일을 찾을 수 없습니다',
+        404,
+        'DIGITAL_ASSET_NOT_FOUND',
+      );
+    }
+
+    const availability = this.evaluateEntitlementAvailability({
+      entitlement,
+      hasReadyAsset: Boolean(legacyDownloadUrl || storagePath),
+    });
+    if (!availability.can_download) {
+      throw new ApiException(
+        '현재 entitlement 상태에서는 다운로드할 수 없습니다',
+        409,
+        availability.blocked_reason || 'ENTITLEMENT_NOT_DOWNLOADABLE',
+      );
+    }
+
+    let downloadUrl: string;
+    let expiresAt: string;
+    let expiresInSeconds: number;
+    if (legacyDownloadUrl) {
+      downloadUrl = legacyDownloadUrl;
+      expiresInSeconds = 0;
+      expiresAt = new Date().toISOString();
+    } else if (storagePath) {
+      const signedDownload = await createPresignedDownloadUrlFromR2({
+        key: storagePath,
+        fileName: this.normalizeOptionalText(digitalAsset.file_name),
+        contentType: this.normalizeOptionalText(digitalAsset.mime_type),
+        expiresInSeconds: this.normalizeDigitalDownloadUrlTtlSeconds(),
+      });
+      downloadUrl = signedDownload.downloadUrl;
+      expiresInSeconds = signedDownload.expiresInSeconds;
+      expiresAt = signedDownload.expiresAt;
+    } else {
+      throw new ApiException(
+        '다운로드 URL 생성에 실패했습니다',
+        500,
+        'DIGITAL_DOWNLOAD_URL_CREATE_FAILED',
+      );
+    }
+
+    const logResult = await this.v2FulfillmentService.logEntitlementDownload(
+      normalizedEntitlementId,
+      {
+        metadata: {
+          source: 'V2_CHECKOUT_DIGITAL_DOWNLOAD',
+          profile_id: profileId,
+          request_ip: this.normalizeOptionalText(input.ipAddress),
+          user_agent: this.normalizeOptionalText(input.userAgent),
+        },
+      },
+    );
+
+    return {
+      download_url: downloadUrl,
+      expires_at: expiresAt,
+      expires_in_seconds: expiresInSeconds,
+      remaining_downloads:
+        typeof logResult?.remaining_downloads === 'number'
+          ? logResult.remaining_downloads
+          : null,
+    };
   }
 
   async cancelOrder(
@@ -2818,6 +3275,298 @@ export class V2CheckoutService {
     return data;
   }
 
+  private async fetchDigitalEntitlementById(entitlementId: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('v2_digital_entitlements')
+      .select(
+        `
+        *,
+        order_item:v2_order_items (
+          id,
+          order_id,
+          product_id,
+          variant_id,
+          line_type,
+          line_status,
+          quantity,
+          final_line_total,
+          line_subtotal,
+          product_name_snapshot,
+          variant_name_snapshot,
+          display_snapshot
+        ),
+        digital_asset:v2_digital_assets (
+          id,
+          variant_id,
+          file_name,
+          file_size,
+          mime_type,
+          status,
+          storage_path,
+          version_no,
+          metadata,
+          deleted_at
+        )
+      `,
+      )
+      .eq('id', entitlementId)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'digital entitlement 조회 실패',
+        500,
+        'V2_DIGITAL_ENTITLEMENT_FETCH_FAILED',
+      );
+    }
+    if (!data) {
+      throw new ApiException(
+        'digital entitlement를 찾을 수 없습니다',
+        404,
+        'V2_DIGITAL_ENTITLEMENT_NOT_FOUND',
+      );
+    }
+
+    return data;
+  }
+
+  private async assertOrderOwnership(
+    orderId: string,
+    profileId: string,
+    input: {
+      includeAllForAdmin?: boolean;
+    } = {},
+  ): Promise<void> {
+    const normalizedOrderId = this.normalizeOptionalUuid(orderId);
+    if (!normalizedOrderId) {
+      throw new ApiException(
+        '주문 정보를 확인할 수 없습니다',
+        404,
+        'V2_ORDER_NOT_FOUND',
+      );
+    }
+
+    let query = this.supabase
+      .from('v2_orders')
+      .select('id')
+      .eq('id', normalizedOrderId);
+
+    if (!input.includeAllForAdmin) {
+      query = query.eq('profile_id', profileId);
+    }
+
+    const { data, error } = await query.maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        '주문 소유권 확인 실패',
+        500,
+        'V2_ORDER_OWNERSHIP_CHECK_FAILED',
+      );
+    }
+    if (!data) {
+      throw new ApiException(
+        '주문을 찾을 수 없습니다',
+        404,
+        'V2_ORDER_NOT_FOUND',
+      );
+    }
+  }
+
+  private async loadLatestReadyDigitalAssetByVariantIds(
+    variantIds: string[],
+  ): Promise<Map<string, any>> {
+    if (variantIds.length === 0) {
+      return new Map();
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_digital_assets')
+      .select(
+        'id,variant_id,file_name,file_size,mime_type,status,storage_path,version_no,metadata,deleted_at,created_at',
+      )
+      .in('variant_id', variantIds)
+      .eq('status', 'READY')
+      .is('deleted_at', null)
+      .order('variant_id', { ascending: true })
+      .order('version_no', { ascending: false })
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      throw new ApiException(
+        '디지털 에셋 조회 실패',
+        500,
+        'V2_DIGITAL_ASSET_FETCH_FAILED',
+      );
+    }
+
+    const mapped = new Map<string, any>();
+    for (const assetRow of (data || []) as any[]) {
+      const variantId = this.normalizeOptionalUuid(assetRow.variant_id);
+      if (!variantId || mapped.has(variantId)) {
+        continue;
+      }
+      mapped.set(variantId, assetRow);
+    }
+
+    return mapped;
+  }
+
+  private async loadLegacyDownloadUrlByV2ProductIds(
+    v2ProductIds: string[],
+  ): Promise<Map<string, string>> {
+    if (v2ProductIds.length === 0) {
+      return new Map();
+    }
+
+    const { data: v2Products, error: v2ProductsError } = await this.supabase
+      .from('v2_products')
+      .select('id,legacy_product_id')
+      .in('id', v2ProductIds)
+      .is('deleted_at', null);
+
+    if (v2ProductsError) {
+      throw new ApiException(
+        'legacy 매핑용 v2 product 조회 실패',
+        500,
+        'V2_PRODUCT_LEGACY_MAPPING_FETCH_FAILED',
+      );
+    }
+
+    const legacyProductIdByV2ProductId = new Map<string, string>();
+    for (const v2Product of (v2Products || []) as any[]) {
+      const v2ProductId = this.normalizeOptionalUuid(v2Product?.id);
+      const legacyProductId = this.normalizeOptionalUuid(
+        v2Product?.legacy_product_id,
+      );
+      if (!v2ProductId || !legacyProductId) {
+        continue;
+      }
+      legacyProductIdByV2ProductId.set(v2ProductId, legacyProductId);
+    }
+
+    const legacyProductIds = Array.from(
+      new Set(legacyProductIdByV2ProductId.values()),
+    );
+    if (legacyProductIds.length === 0) {
+      return new Map();
+    }
+
+    const { data: legacyProducts, error: legacyProductsError } =
+      await this.supabase
+        .from('products')
+        .select('id,digital_file_url')
+        .in('id', legacyProductIds)
+        .eq('is_active', true);
+
+    if (legacyProductsError) {
+      throw new ApiException(
+        'legacy digital_file_url 조회 실패',
+        500,
+        'LEGACY_PRODUCT_DOWNLOAD_URL_FETCH_FAILED',
+      );
+    }
+
+    const downloadUrlByLegacyProductId = new Map<string, string>();
+    for (const legacyProduct of (legacyProducts || []) as any[]) {
+      const legacyProductId = this.normalizeOptionalUuid(legacyProduct?.id);
+      const downloadUrl = this.normalizeOptionalHttpUrl(
+        legacyProduct?.digital_file_url,
+      );
+      if (!legacyProductId || !downloadUrl) {
+        continue;
+      }
+      downloadUrlByLegacyProductId.set(legacyProductId, downloadUrl);
+    }
+
+    const downloadUrlByV2ProductId = new Map<string, string>();
+    for (const [v2ProductId, legacyProductId] of legacyProductIdByV2ProductId) {
+      const downloadUrl = downloadUrlByLegacyProductId.get(legacyProductId);
+      if (!downloadUrl) {
+        continue;
+      }
+      downloadUrlByV2ProductId.set(v2ProductId, downloadUrl);
+    }
+
+    return downloadUrlByV2ProductId;
+  }
+
+  private isReadyDigitalAsset(asset: unknown): boolean {
+    if (!asset || typeof asset !== 'object' || Array.isArray(asset)) {
+      return false;
+    }
+    const row = asset as Record<string, unknown>;
+    return (
+      this.normalizeOptionalText(row.status) === 'READY' &&
+      !this.normalizeOptionalText(row.deleted_at)
+    );
+  }
+
+  private resolveReadyDigitalAsset(input: {
+    explicitAsset: unknown;
+    variantId: string | null;
+    fallbackByVariantId: Map<string, any>;
+  }): any | null {
+    if (this.isReadyDigitalAsset(input.explicitAsset)) {
+      return input.explicitAsset as any;
+    }
+    if (!input.variantId) {
+      return null;
+    }
+    return input.fallbackByVariantId.get(input.variantId) || null;
+  }
+
+  private evaluateEntitlementAvailability(input: {
+    entitlement: any;
+    hasReadyAsset: boolean;
+  }): {
+    can_download: boolean;
+    blocked_reason: string | null;
+    remaining_downloads: number | null;
+  } {
+    const status = this.normalizeOptionalText(input.entitlement?.status) || 'PENDING';
+    const downloadCount = this.normalizeNonNegativeInteger(
+      input.entitlement?.download_count ?? 0,
+      'download_count',
+    );
+    const maxDownloads =
+      typeof input.entitlement?.max_downloads === 'number' &&
+      Number.isInteger(input.entitlement.max_downloads) &&
+      input.entitlement.max_downloads >= 0
+        ? input.entitlement.max_downloads
+        : null;
+    const expiresAt = this.normalizeOptionalText(input.entitlement?.expires_at);
+    const expiresAtMs = expiresAt ? new Date(expiresAt).getTime() : null;
+    const isExpiredByTime =
+      typeof expiresAtMs === 'number' &&
+      Number.isFinite(expiresAtMs) &&
+      expiresAtMs <= Date.now();
+
+    let canDownload = true;
+    let blockedReason: string | null = null;
+
+    if (!input.hasReadyAsset) {
+      canDownload = false;
+      blockedReason = 'DIGITAL_ASSET_NOT_READY';
+    } else if (isExpiredByTime || status === 'EXPIRED') {
+      canDownload = false;
+      blockedReason = 'ENTITLEMENT_EXPIRED';
+    } else if (status !== 'GRANTED') {
+      canDownload = false;
+      blockedReason = `ENTITLEMENT_${status}`;
+    } else if (maxDownloads !== null && downloadCount >= maxDownloads) {
+      canDownload = false;
+      blockedReason = 'ENTITLEMENT_DOWNLOAD_LIMIT_EXCEEDED';
+    }
+
+    return {
+      can_download: canDownload,
+      blocked_reason: blockedReason,
+      remaining_downloads:
+        maxDownloads !== null ? Math.max(maxDownloads - downloadCount, 0) : null,
+    };
+  }
+
   private resolveOrderStatusFromPaymentStatus(
     paymentStatus: V2PaymentStatus,
     currentOrderStatus: V2OrderStatus,
@@ -2963,6 +3712,14 @@ export class V2CheckoutService {
     return parsed;
   }
 
+  private normalizeDigitalDownloadUrlTtlSeconds(): number {
+    const ttlSeconds = this.readNonNegativeIntegerEnv(
+      'V2_DIGITAL_DOWNLOAD_URL_TTL_SECONDS',
+      60,
+    );
+    return Math.min(Math.max(ttlSeconds, 5), 300);
+  }
+
   private requireText(
     value: unknown,
     message: string,
@@ -2982,6 +3739,17 @@ export class V2CheckoutService {
     }
     const normalized = value.trim();
     return normalized.length > 0 ? normalized : null;
+  }
+
+  private normalizeOptionalHttpUrl(value: unknown): string | null {
+    const normalized = this.normalizeOptionalText(value);
+    if (!normalized) {
+      return null;
+    }
+    if (!/^https?:\/\//i.test(normalized)) {
+      return null;
+    }
+    return normalized;
   }
 
   private normalizeOptionalPostcode(value: unknown): string | null {

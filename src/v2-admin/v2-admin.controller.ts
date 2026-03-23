@@ -20,6 +20,21 @@ interface ActionLogQuery {
   domain?: string;
 }
 
+interface UnifiedAuditQuery {
+  limit?: string;
+  source?: string;
+  domain?: string;
+  event_type?: string;
+  status?: string;
+  severity?: string;
+  resource_type?: string;
+  resource_id?: string;
+  actor_id?: string;
+  date_from?: string;
+  date_to?: string;
+  search?: string;
+}
+
 interface ApprovalQuery {
   limit?: string;
   status?: string;
@@ -508,6 +523,29 @@ export class V2AdminController {
       limit: query.limit,
       status: query.status,
       domain: query.domain,
+    });
+    return successResponse(logs);
+  }
+
+  @Get('audit/unified')
+  async listUnifiedAuditLogs(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: UnifiedAuditQuery,
+  ) {
+    await this.requireAdmin(authorization);
+    const logs = await this.v2AdminService.listUnifiedAuditLogs({
+      limit: query.limit,
+      source: query.source,
+      domain: query.domain,
+      eventType: query.event_type,
+      status: query.status,
+      severity: query.severity,
+      resourceType: query.resource_type,
+      resourceId: query.resource_id,
+      actorId: query.actor_id,
+      dateFrom: query.date_from,
+      dateTo: query.date_to,
+      search: query.search,
     });
     return successResponse(logs);
   }
