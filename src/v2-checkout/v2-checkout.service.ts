@@ -2296,6 +2296,21 @@ export class V2CheckoutService {
         : null;
 
       if (isBundleLine && bundleDefinitionId) {
+        const resolvedBundle = await this.v2CatalogService.resolveBundle({
+          bundle_definition_id: bundleDefinitionId,
+          parent_variant_id:
+            this.normalizeOptionalUuid(line?.variant_id) ||
+            lineContext.variantId,
+          parent_quantity: quantity,
+          parent_unit_amount: finalUnitPrice,
+          selected_components: bundleConfiguration?.selected_components || [],
+        });
+        const bundlePricingStrategy = this.normalizeOptionalText(
+          resolvedBundle?.pricing_strategy,
+        );
+        const isFixedAmountBundlePricing =
+          bundlePricingStrategy === 'FIXED_AMOUNT';
+
         const parentRow = {
           order_id: orderId,
           parent_order_item_id: null,
@@ -2310,13 +2325,13 @@ export class V2CheckoutService {
           quantity,
           line_status: lineStatus,
           currency_code: currencyCode,
-          list_unit_price: 0,
-          sale_unit_price: 0,
-          final_unit_price: 0,
-          line_subtotal: 0,
-          discount_total: 0,
+          list_unit_price: isFixedAmountBundlePricing ? listUnitPrice : 0,
+          sale_unit_price: isFixedAmountBundlePricing ? saleUnitPrice : 0,
+          final_unit_price: isFixedAmountBundlePricing ? finalUnitPrice : 0,
+          line_subtotal: isFixedAmountBundlePricing ? lineSubtotal : 0,
+          discount_total: isFixedAmountBundlePricing ? discountTotal : 0,
           tax_total: 0,
-          final_line_total: 0,
+          final_line_total: isFixedAmountBundlePricing ? finalLineTotal : 0,
           sku_snapshot: this.normalizeOptionalText(line?.sku),
           product_name_snapshot:
             this.normalizeOptionalText(line?.product_name_snapshot) || null,
@@ -2355,7 +2370,7 @@ export class V2CheckoutService {
           metadata: {
             ...(this.normalizeOptionalJsonObject(line?.metadata) || {}),
             bundle_configuration_snapshot: bundleConfiguration,
-            bundle_parent_display_only: true,
+            bundle_parent_display_only: !isFixedAmountBundlePricing,
           },
         };
 
@@ -2363,16 +2378,6 @@ export class V2CheckoutService {
         createdOrderItems.push({
           orderItem: parentOrderItem,
           adjustments: quoteLineAdjustments,
-        });
-
-        const resolvedBundle = await this.v2CatalogService.resolveBundle({
-          bundle_definition_id: bundleDefinitionId,
-          parent_variant_id:
-            this.normalizeOptionalUuid(line?.variant_id) ||
-            lineContext.variantId,
-          parent_quantity: quantity,
-          parent_unit_amount: finalUnitPrice,
-          selected_components: bundleConfiguration?.selected_components || [],
         });
 
         const componentLines = Array.isArray(resolvedBundle?.component_lines)
@@ -2386,24 +2391,26 @@ export class V2CheckoutService {
           );
         }
 
-        const allocationWeights = componentLines.map((componentLine: any) =>
-          this.normalizeNonNegativeNumber(
-            componentLine?.allocation_weight ?? 0,
-            `bundle_component_lines[${index}].allocation_weight`,
-          ),
-        );
-        const listLineTotals = this.allocateAmountByWeights(
-          lineSubtotal,
-          allocationWeights,
-        );
-        const saleLineTotals = this.allocateAmountByWeights(
-          saleUnitPrice * quantity,
-          allocationWeights,
-        );
-        const finalLineTotals = this.allocateAmountByWeights(
-          finalLineTotal,
-          allocationWeights,
-        );
+        const allocationWeights = isFixedAmountBundlePricing
+          ? []
+          : componentLines.map((componentLine: any) =>
+              this.normalizeNonNegativeNumber(
+                componentLine?.allocation_weight ?? 0,
+                `bundle_component_lines[${index}].allocation_weight`,
+              ),
+            );
+        const listLineTotals = isFixedAmountBundlePricing
+          ? Array.from({ length: componentLines.length }, () => 0)
+          : this.allocateAmountByWeights(lineSubtotal, allocationWeights);
+        const saleLineTotals = isFixedAmountBundlePricing
+          ? Array.from({ length: componentLines.length }, () => 0)
+          : this.allocateAmountByWeights(
+              saleUnitPrice * quantity,
+              allocationWeights,
+            );
+        const finalLineTotals = isFixedAmountBundlePricing
+          ? Array.from({ length: componentLines.length }, () => 0)
+          : this.allocateAmountByWeights(finalLineTotal, allocationWeights);
 
         const componentVariantIds = Array.from(
           new Set<string>(
@@ -2466,15 +2473,18 @@ export class V2CheckoutService {
             componentQuantity > 0
               ? Math.floor(componentFinalTotal / componentQuantity)
               : componentSaleUnitPrice;
-          const componentAllocatedUnitAmount = this.normalizeNonNegativeInteger(
-            componentLine?.allocated_unit_amount ?? componentFinalUnitPrice,
-            `bundle_component_lines[${componentIndex}].allocated_unit_amount`,
-          );
-          const componentAllocatedDiscountAmount =
-            this.normalizeNonNegativeInteger(
-              componentLine?.allocated_discount_amount ?? 0,
-              `bundle_component_lines[${componentIndex}].allocated_discount_amount`,
-            ) * quantity;
+          const componentAllocatedUnitAmount = isFixedAmountBundlePricing
+            ? 0
+            : this.normalizeNonNegativeInteger(
+                componentLine?.allocated_unit_amount ?? componentFinalUnitPrice,
+                `bundle_component_lines[${componentIndex}].allocated_unit_amount`,
+              );
+          const componentAllocatedDiscountAmount = isFixedAmountBundlePricing
+            ? 0
+            : this.normalizeNonNegativeInteger(
+                componentLine?.allocated_discount_amount ?? 0,
+                `bundle_component_lines[${componentIndex}].allocated_discount_amount`,
+              ) * quantity;
           const componentVariantSnapshot =
             variantSnapshotById.get(componentVariantId) || null;
           const componentFulfillmentType = this.normalizeOptionalText(
