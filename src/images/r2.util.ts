@@ -3,6 +3,7 @@ import {
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
+  GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
   S3Client,
@@ -12,6 +13,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const DEFAULT_SINGLE_UPLOAD_URL_EXPIRES_IN_SECONDS = 900;
 const DEFAULT_MULTIPART_UPLOAD_PART_URL_EXPIRES_IN_SECONDS = 3 * 60 * 60;
+const DEFAULT_DOWNLOAD_URL_EXPIRES_IN_SECONDS = 60;
 
 function getRequiredEnv(key: string): string {
   const value = process.env[key];
@@ -140,6 +142,51 @@ export async function createPresignedMultipartUploadPartUrlToR2(options: {
 
   return {
     uploadUrl,
+    expiresInSeconds,
+    expiresAt: new Date(Date.now() + expiresInSeconds * 1000).toISOString(),
+  };
+}
+
+function buildAttachmentContentDisposition(fileName: string): string {
+  const trimmed = fileName.trim();
+  const fallback = trimmed.length > 0 ? trimmed : 'download';
+  const safeFallback = fallback.replace(/["\\]/g, '_');
+  const encoded = encodeURIComponent(fallback);
+  return `attachment; filename="${safeFallback}"; filename*=UTF-8''${encoded}`;
+}
+
+export async function createPresignedDownloadUrlFromR2(options: {
+  key: string;
+  fileName?: string | null;
+  contentType?: string | null;
+  expiresInSeconds?: number;
+}): Promise<{
+  downloadUrl: string;
+  expiresInSeconds: number;
+  expiresAt: string;
+}> {
+  const client = createR2Client();
+  const expiresInSeconds =
+    options.expiresInSeconds ?? DEFAULT_DOWNLOAD_URL_EXPIRES_IN_SECONDS;
+  const normalizedFileName = (options.fileName || '').trim();
+  const fallbackFileName =
+    normalizedFileName.length > 0
+      ? normalizedFileName
+      : options.key.split('/').pop() || 'download';
+  const command = new GetObjectCommand({
+    Bucket: getBucketName(),
+    Key: options.key,
+    ResponseContentType: (options.contentType || '').trim() || undefined,
+    ResponseContentDisposition:
+      buildAttachmentContentDisposition(fallbackFileName),
+  });
+
+  const downloadUrl = await getSignedUrl(client, command, {
+    expiresIn: expiresInSeconds,
+  });
+
+  return {
+    downloadUrl,
     expiresInSeconds,
     expiresAt: new Date(Date.now() + expiresInSeconds * 1000).toISOString(),
   };

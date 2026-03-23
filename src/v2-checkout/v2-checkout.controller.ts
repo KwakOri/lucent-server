@@ -8,7 +8,9 @@ import {
   Patch,
   Post,
   Query,
+  Res,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { AuthSessionService } from '../auth/auth-session.service';
 import { successResponse } from '../common/api-response';
 import { ApiException } from '../common/errors/api.exception';
@@ -162,8 +164,39 @@ export class V2CheckoutController {
       result,
       result.idempotent_replayed
         ? '중복 요청으로 기존 주문을 반환했습니다'
-        : 'v2 주문이 생성되었습니다',
+      : 'v2 주문이 생성되었습니다',
     );
+  }
+
+  @Get('me/digital-entitlements')
+  async listDigitalEntitlements(
+    @Headers('authorization') authorization: string | undefined,
+  ) {
+    const user = await this.authSessionService.requireUser(authorization);
+    const result = await this.v2CheckoutService.listDigitalEntitlements(user.id);
+    return successResponse(result);
+  }
+
+  @Get('me/digital-entitlements/:entitlementId/download')
+  async downloadDigitalEntitlement(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('entitlementId') entitlementId: string,
+    @Headers('x-forwarded-for') forwardedFor: string | undefined,
+    @Headers('user-agent') userAgent: string | undefined,
+    @Res() response: Response,
+  ) {
+    const user = await this.authSessionService.requireUser(authorization);
+    const ipAddress = forwardedFor?.split(',')[0]?.trim() || null;
+    const result = await this.v2CheckoutService.createDigitalEntitlementDownloadRedirect(
+      user.id,
+      entitlementId,
+      {
+        ipAddress,
+        userAgent: userAgent || null,
+      },
+    );
+
+    return response.redirect(result.download_url);
   }
 
   @Get('orders')
