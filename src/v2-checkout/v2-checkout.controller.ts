@@ -189,11 +189,13 @@ export class V2CheckoutController {
     @Res() response: Response,
   ) {
     const user = await this.authSessionService.requireUser(authorization);
+    const isAdmin = this.authSessionService.isAdmin(user.email);
     const ipAddress = forwardedFor?.split(',')[0]?.trim() || null;
     const result = await this.v2CheckoutService.createDigitalEntitlementDownloadRedirect(
       user.id,
       entitlementId,
       {
+        includeAllForAdmin: isAdmin,
         ipAddress,
         userAgent: userAgent || null,
       },
