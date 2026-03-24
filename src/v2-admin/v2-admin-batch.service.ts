@@ -583,16 +583,52 @@ export class V2AdminBatchService {
     keyword?: string;
     dateFrom?: string;
     dateTo?: string;
+    projectId?: string;
+    campaignId?: string;
   }): Promise<any> {
     const limit = this.normalizeLimit(params.limit, 200, 1000);
     const keyword = this.normalizeOptionalText(params.keyword)?.toLowerCase() || null;
     const dateFrom = this.normalizeOptionalDate(params.dateFrom, 'date_from');
     const dateTo = this.normalizeOptionalDate(params.dateTo, 'date_to');
+    const projectId = this.normalizeOptionalUuid(params.projectId);
+    const campaignId = this.normalizeOptionalUuid(params.campaignId);
 
     const rows = await this.fetchQueueRows(limit);
+    const orderScopeByOrderId = await this.fetchOrderScopeByOrderIds(
+      rows
+        .map((row) => this.normalizeOptionalUuid(row.order_id))
+        .filter((orderId: string | null): orderId is string => Boolean(orderId)),
+    );
+
     const items = rows
       .filter((row) => this.resolveStageFromQueueRow(row) === 'READY_TO_SHIP')
       .filter((row) => this.matchesDateRange(row.placed_at || row.created_at, dateFrom, dateTo))
+      .map((row) => {
+        const normalizedOrderId = this.normalizeOptionalUuid(row.order_id);
+        const scope = normalizedOrderId
+          ? orderScopeByOrderId.get(normalizedOrderId)
+          : null;
+        const projectIds = scope?.project_ids || [];
+        const campaignIds = scope?.campaign_ids || [];
+        return {
+          ...row,
+          project_id: scope?.project_id || null,
+          project_name: scope?.project_name || null,
+          campaign_id: scope?.campaign_id || null,
+          campaign_name: scope?.campaign_name || null,
+          project_ids: projectIds,
+          campaign_ids: campaignIds,
+        };
+      })
+      .filter((row) => {
+        if (projectId && !row.project_ids.includes(projectId)) {
+          return false;
+        }
+        if (campaignId && !row.campaign_ids.includes(campaignId)) {
+          return false;
+        }
+        return true;
+      })
       .filter((row) => {
         if (!keyword) {
           return true;
@@ -600,7 +636,9 @@ export class V2AdminBatchService {
         return (
           row.order_no.toLowerCase().includes(keyword) ||
           String(row.depositor_name || '').toLowerCase().includes(keyword) ||
-          row.order_id.toLowerCase().includes(keyword)
+          row.order_id.toLowerCase().includes(keyword) ||
+          String(row.project_name || '').toLowerCase().includes(keyword) ||
+          String(row.campaign_name || '').toLowerCase().includes(keyword)
         );
       })
       .map((row) => ({
