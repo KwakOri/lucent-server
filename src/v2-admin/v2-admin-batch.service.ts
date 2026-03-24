@@ -2057,6 +2057,7 @@ export class V2AdminBatchService {
           'project_name_snapshot',
           'campaign_id_snapshot',
           'campaign_name_snapshot',
+          'display_snapshot',
           'line_status',
           'created_at',
         ].join(', '),
@@ -2083,13 +2084,26 @@ export class V2AdminBatchService {
     const campaignIdValues = activeRows
       .map((row: any) => this.normalizeOptionalUuid(row.campaign_id_snapshot))
       .filter((value: string | null): value is string => Boolean(value));
+    const priceListIdValues = activeRows
+      .map((row: any) => this.extractSelectedPriceListId(row.display_snapshot))
+      .filter((value: string | null): value is string => Boolean(value));
 
     const projectIds = Array.from(new Set<string>(projectIdValues));
     const campaignIds = Array.from(new Set<string>(campaignIdValues));
-    const [projectNameById, campaignNameById] = await Promise.all([
+    const priceListIds = Array.from(new Set<string>(priceListIdValues));
+
+    const [projectNameById, campaignIdByPriceListId] = await Promise.all([
       this.fetchProjectNameByIds(projectIds),
-      this.fetchCampaignNameByIds(campaignIds),
+      this.fetchCampaignIdByPriceListIds(priceListIds),
     ]);
+
+    const resolvedCampaignIds = Array.from(
+      new Set<string>([
+        ...campaignIds,
+        ...Array.from(campaignIdByPriceListId.values()),
+      ]),
+    );
+    const campaignNameById = await this.fetchCampaignNameByIds(resolvedCampaignIds);
 
     const scopeByOrderId = new Map<string, OrderScopeContext>();
 
@@ -2103,7 +2117,15 @@ export class V2AdminBatchService {
       const projectName =
         this.normalizeOptionalText(row.project_name_snapshot) ||
         (projectId ? projectNameById.get(projectId) || null : null);
-      const campaignId = this.normalizeOptionalUuid(row.campaign_id_snapshot);
+      const selectedPriceListId = this.extractSelectedPriceListId(
+        row.display_snapshot,
+      );
+      const campaignIdFromPriceList = selectedPriceListId
+        ? campaignIdByPriceListId.get(selectedPriceListId) || null
+        : null;
+      const campaignId =
+        this.normalizeOptionalUuid(row.campaign_id_snapshot) ||
+        campaignIdFromPriceList;
       const campaignName =
         this.normalizeOptionalText(row.campaign_name_snapshot) ||
         (campaignId ? campaignNameById.get(campaignId) || null : null);
@@ -2199,6 +2221,38 @@ export class V2AdminBatchService {
         continue;
       }
       map.set(campaignId, campaignName);
+    }
+    return map;
+  }
+
+  private async fetchCampaignIdByPriceListIds(
+    priceListIds: string[],
+  ): Promise<Map<string, string>> {
+    if (priceListIds.length === 0) {
+      return new Map();
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_price_lists')
+      .select('id, campaign_id')
+      .in('id', priceListIds);
+
+    if (error) {
+      throw new ApiException(
+        '가격표 캠페인 정보 조회 실패',
+        500,
+        'V2_ADMIN_BATCH_PRICE_LIST_CAMPAIGN_FETCH_FAILED',
+      );
+    }
+
+    const map = new Map<string, string>();
+    for (const row of data || []) {
+      const priceListId = this.normalizeOptionalUuid(row.id);
+      const campaignId = this.normalizeOptionalUuid(row.campaign_id);
+      if (!priceListId || !campaignId) {
+        continue;
+      }
+      map.set(priceListId, campaignId);
     }
     return map;
   }
@@ -2508,6 +2562,16 @@ export class V2AdminBatchService {
     }
 
     return normalized;
+  }
+
+  private extractSelectedPriceListId(snapshot: unknown): string | null {
+    const displaySnapshot = this.normalizeOptionalJsonObject(snapshot);
+    const pricingSnapshot = this.normalizeOptionalJsonObject(
+      displaySnapshot?.pricing,
+    );
+    return this.normalizeOptionalUuid(
+      pricingSnapshot?.selected_price_list_id,
+    );
   }
 
   private normalizeOptionalUuid(value: unknown): string | null {
