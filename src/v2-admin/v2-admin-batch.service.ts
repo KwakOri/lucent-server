@@ -38,6 +38,21 @@ interface QueueRow {
   has_physical: boolean;
   has_digital: boolean;
   depositor_name?: string | null;
+  project_id?: string | null;
+  project_name?: string | null;
+  campaign_id?: string | null;
+  campaign_name?: string | null;
+  project_ids?: string[];
+  campaign_ids?: string[];
+}
+
+interface OrderScopeContext {
+  project_id: string | null;
+  project_name: string | null;
+  campaign_id: string | null;
+  campaign_name: string | null;
+  project_ids: string[];
+  campaign_ids: string[];
 }
 
 interface BatchTransitionOrderStatus {
@@ -60,16 +75,52 @@ export class V2AdminBatchService {
     keyword?: string;
     dateFrom?: string;
     dateTo?: string;
+    projectId?: string;
+    campaignId?: string;
   }): Promise<any> {
     const limit = this.normalizeLimit(params.limit, 200, 1000);
     const keyword = this.normalizeOptionalText(params.keyword)?.toLowerCase() || null;
     const dateFrom = this.normalizeOptionalDate(params.dateFrom, 'date_from');
     const dateTo = this.normalizeOptionalDate(params.dateTo, 'date_to');
+    const projectId = this.normalizeOptionalUuid(params.projectId);
+    const campaignId = this.normalizeOptionalUuid(params.campaignId);
 
     const rows = await this.fetchQueueRows(limit);
+    const orderScopeByOrderId = await this.fetchOrderScopeByOrderIds(
+      rows
+        .map((row) => this.normalizeOptionalUuid(row.order_id))
+        .filter((orderId: string | null): orderId is string => Boolean(orderId)),
+    );
+
     const items = rows
       .filter((row) => this.resolveStageFromQueueRow(row) === 'PAYMENT_CONFIRMED')
       .filter((row) => this.matchesDateRange(row.placed_at || row.created_at, dateFrom, dateTo))
+      .map((row) => {
+        const normalizedOrderId = this.normalizeOptionalUuid(row.order_id);
+        const scope = normalizedOrderId
+          ? orderScopeByOrderId.get(normalizedOrderId)
+          : null;
+        const projectIds = scope?.project_ids || [];
+        const campaignIds = scope?.campaign_ids || [];
+        return {
+          ...row,
+          project_id: scope?.project_id || null,
+          project_name: scope?.project_name || null,
+          campaign_id: scope?.campaign_id || null,
+          campaign_name: scope?.campaign_name || null,
+          project_ids: projectIds,
+          campaign_ids: campaignIds,
+        };
+      })
+      .filter((row) => {
+        if (projectId && !row.project_ids.includes(projectId)) {
+          return false;
+        }
+        if (campaignId && !row.campaign_ids.includes(campaignId)) {
+          return false;
+        }
+        return true;
+      })
       .filter((row) => {
         if (!keyword) {
           return true;
@@ -77,7 +128,9 @@ export class V2AdminBatchService {
         return (
           row.order_no.toLowerCase().includes(keyword) ||
           String(row.depositor_name || '').toLowerCase().includes(keyword) ||
-          row.order_id.toLowerCase().includes(keyword)
+          row.order_id.toLowerCase().includes(keyword) ||
+          String(row.project_name || '').toLowerCase().includes(keyword) ||
+          String(row.campaign_name || '').toLowerCase().includes(keyword)
         );
       })
       .map((row) => ({
@@ -1623,6 +1676,98 @@ export class V2AdminBatchService {
       orderMap,
       itemsMap,
     };
+  }
+
+  private async fetchOrderScopeByOrderIds(
+    orderIds: string[],
+  ): Promise<Map<string, OrderScopeContext>> {
+    const normalizedOrderIds = Array.from(
+      new Set(
+        (orderIds || [])
+          .map((orderId) => this.normalizeOptionalUuid(orderId))
+          .filter((orderId): orderId is string => Boolean(orderId)),
+      ),
+    );
+
+    if (normalizedOrderIds.length === 0) {
+      return new Map();
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_order_items')
+      .select(
+        [
+          'order_id',
+          'project_id_snapshot',
+          'project_name_snapshot',
+          'campaign_id_snapshot',
+          'campaign_name_snapshot',
+          'line_status',
+          'created_at',
+        ].join(', '),
+      )
+      .in('order_id', normalizedOrderIds)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        '주문 프로젝트/캠페인 정보 조회 실패',
+        500,
+        'V2_ADMIN_BATCH_ORDER_SCOPE_FETCH_FAILED',
+      );
+    }
+
+    const scopeByOrderId = new Map<string, OrderScopeContext>();
+
+    for (const row of data || []) {
+      const lineStatus = String(row.line_status || '').toUpperCase();
+      if (lineStatus === 'CANCELED' || lineStatus === 'REFUNDED') {
+        continue;
+      }
+
+      const orderId = this.normalizeOptionalUuid(row.order_id);
+      if (!orderId) {
+        continue;
+      }
+
+      const projectId = this.normalizeOptionalUuid(row.project_id_snapshot);
+      const projectName = this.normalizeOptionalText(row.project_name_snapshot);
+      const campaignId = this.normalizeOptionalUuid(row.campaign_id_snapshot);
+      const campaignName = this.normalizeOptionalText(row.campaign_name_snapshot);
+
+      const existing = scopeByOrderId.get(orderId) || {
+        project_id: null,
+        project_name: null,
+        campaign_id: null,
+        campaign_name: null,
+        project_ids: [],
+        campaign_ids: [],
+      };
+
+      if (projectId && !existing.project_ids.includes(projectId)) {
+        existing.project_ids.push(projectId);
+      }
+      if (campaignId && !existing.campaign_ids.includes(campaignId)) {
+        existing.campaign_ids.push(campaignId);
+      }
+
+      if (!existing.project_id && projectId) {
+        existing.project_id = projectId;
+      }
+      if (!existing.project_name && projectName) {
+        existing.project_name = projectName;
+      }
+      if (!existing.campaign_id && campaignId) {
+        existing.campaign_id = campaignId;
+      }
+      if (!existing.campaign_name && campaignName) {
+        existing.campaign_name = campaignName;
+      }
+
+      scopeByOrderId.set(orderId, existing);
+    }
+
+    return scopeByOrderId;
   }
 
   private async fetchOrderDepositorNameByOrderIds(

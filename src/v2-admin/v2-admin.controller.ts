@@ -69,6 +69,8 @@ interface ProductionCandidatesQuery {
   keyword?: string;
   date_from?: string;
   date_to?: string;
+  project_id?: string;
+  campaign_id?: string;
 }
 
 interface ProductionBatchPreviewBody {
@@ -646,6 +648,8 @@ export class V2AdminController {
       keyword: query.keyword,
       dateFrom: query.date_from,
       dateTo: query.date_to,
+      projectId: query.project_id,
+      campaignId: query.campaign_id,
     });
     return successResponse(result);
   }
