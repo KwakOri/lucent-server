@@ -201,7 +201,7 @@ export class V2AdminBatchService {
     metadata?: Record<string, unknown> | null;
     actor?: V2AdminActionActor;
   }): Promise<any> {
-    const title = this.normalizeRequiredText(input.title, 'title이 필요합니다.');
+    const requestedTitle = this.normalizeOptionalText(input.title);
     const notes = this.normalizeOptionalText(input.notes);
     const idempotencyKey = this.normalizeOptionalText(input.idempotencyKey);
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
@@ -220,10 +220,14 @@ export class V2AdminBatchService {
       );
     }
 
+    const title = requestedTitle || (await this.generateProductionSnapshotTitle());
+    const projectSummary = await this.buildProductionProjectSummary(validOrderIds);
+
     const batchNo = this.generateBatchNo('PB');
     const snapshot = {
       notes,
       idempotency_key: idempotencyKey,
+      project_summary: projectSummary,
       preview,
     };
 
@@ -240,7 +244,11 @@ export class V2AdminBatchService {
         ),
         snapshot_json: snapshot,
         created_by: actor.id,
-        metadata,
+        metadata: {
+          ...metadata,
+          project_summary: projectSummary,
+          auto_title: requestedTitle ? false : true,
+        },
       })
       .select('*')
       .maybeSingle();
@@ -1528,6 +1536,68 @@ export class V2AdminBatchService {
       .sort((a, b) => b.quantity_total - a.quantity_total);
   }
 
+  private async generateProductionSnapshotTitle(): Promise<string> {
+    const now = new Date();
+    const datePart = this.formatSnapshotDatePart(now);
+    const [dayStartIso, nextDayIso] = this.getSnapshotDayRangeIso(now);
+
+    const { data, error } = await this.supabase
+      .from('v2_admin_production_batches')
+      .select('title')
+      .gte('created_at', dayStartIso)
+      .lt('created_at', nextDayIso)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        '제작 스냅샷 번호 생성 실패',
+        500,
+        'V2_ADMIN_PRODUCTION_BATCH_TITLE_GENERATE_FAILED',
+      );
+    }
+
+    const usedSequences = new Set<number>();
+    for (const row of data || []) {
+      const title = this.normalizeOptionalText(row?.title);
+      const match = title?.match(/^(\d{6})(\d{2,})$/);
+      if (!match || match[1] !== datePart) {
+        continue;
+      }
+      const seq = Number.parseInt(match[2], 10);
+      if (Number.isInteger(seq) && seq > 0) {
+        usedSequences.add(seq);
+      }
+    }
+
+    let nextSequence = 1;
+    while (usedSequences.has(nextSequence)) {
+      nextSequence += 1;
+    }
+
+    return `${datePart}${String(nextSequence).padStart(2, '0')}`;
+  }
+
+  private async buildProductionProjectSummary(orderIds: string[]): Promise<string> {
+    const scopeByOrderId = await this.fetchOrderScopeByOrderIds(orderIds);
+    const projectNames: string[] = [];
+
+    for (const scope of scopeByOrderId.values()) {
+      const projectName = this.normalizeOptionalText(scope.project_name);
+      if (projectName) {
+        projectNames.push(projectName);
+      }
+    }
+
+    const uniqueProjectNames = Array.from(new Set(projectNames));
+    if (uniqueProjectNames.length === 0) {
+      return '프로젝트 미지정';
+    }
+    if (uniqueProjectNames.length === 1) {
+      return uniqueProjectNames[0];
+    }
+    return `${uniqueProjectNames[0]} 외 ${uniqueProjectNames.length - 1}`;
+  }
+
   private async fetchQueueRows(limit: number): Promise<QueueRow[]> {
     const { data, error } = await this.supabase
       .from('v2_admin_order_queue_view')
@@ -1941,6 +2011,36 @@ export class V2AdminBatchService {
       .toString()
       .padStart(4, '0');
     return `${prefix}-${yyyy}${mm}${dd}-${hh}${min}${sec}-${rand}`;
+  }
+
+  private formatSnapshotDatePart(date: Date): string {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Seoul',
+      year: '2-digit',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const parts = formatter.formatToParts(date);
+    const year = parts.find((part) => part.type === 'year')?.value || '';
+    const month = parts.find((part) => part.type === 'month')?.value || '';
+    const day = parts.find((part) => part.type === 'day')?.value || '';
+    return `${year}${month}${day}`;
+  }
+
+  private getSnapshotDayRangeIso(baseDate: Date): [string, string] {
+    const dateFormatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Seoul',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const snapshotDate = dateFormatter.format(baseDate);
+    const [year, month, day] = snapshotDate.split('-').map((value) => Number.parseInt(value, 10));
+
+    const utcStartMillis = Date.UTC(year, month - 1, day, -9, 0, 0, 0);
+    const utcEndMillis = utcStartMillis + 24 * 60 * 60 * 1000;
+
+    return [new Date(utcStartMillis).toISOString(), new Date(utcEndMillis).toISOString()];
   }
 
   private generateRequestId(prefix: string): string {
