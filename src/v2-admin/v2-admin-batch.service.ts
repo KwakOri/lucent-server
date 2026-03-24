@@ -444,6 +444,25 @@ export class V2AdminBatchService {
       orderStatusMap,
     );
 
+    if (this.hasFailedOrderTransition(orderStatusMap)) {
+      const { error: attemptUpdateError } = await this.supabase
+        .from('v2_admin_production_batches')
+        .update({
+          complete_request_id: requestId,
+        })
+        .eq('id', batch.id);
+
+      if (attemptUpdateError) {
+        throw new ApiException(
+          '제작 배치 완료 시도 이력 업데이트 실패',
+          500,
+          'V2_ADMIN_PRODUCTION_BATCH_COMPLETE_ATTEMPT_UPDATE_FAILED',
+        );
+      }
+
+      return this.getProductionBatchDetail(batch.id);
+    }
+
     const { error: updateError } = await this.supabase
       .from('v2_admin_production_batches')
       .update({
@@ -981,6 +1000,25 @@ export class V2AdminBatchService {
       orderStatusMap,
     );
 
+    if (this.hasFailedOrderTransition(orderStatusMap)) {
+      const { error: attemptUpdateError } = await this.supabase
+        .from('v2_admin_shipping_batches')
+        .update({
+          dispatch_request_id: requestId,
+        })
+        .eq('id', batch.id);
+
+      if (attemptUpdateError) {
+        throw new ApiException(
+          '배송 배치 출고 시도 이력 업데이트 실패',
+          500,
+          'V2_ADMIN_SHIPPING_BATCH_DISPATCH_ATTEMPT_UPDATE_FAILED',
+        );
+      }
+
+      return this.getShippingBatchDetail(batch.id);
+    }
+
     const { error: updateError } = await this.supabase
       .from('v2_admin_shipping_batches')
       .update({
@@ -1043,6 +1081,25 @@ export class V2AdminBatchService {
       'complete',
       orderStatusMap,
     );
+
+    if (this.hasFailedOrderTransition(orderStatusMap)) {
+      const { error: attemptUpdateError } = await this.supabase
+        .from('v2_admin_shipping_batches')
+        .update({
+          complete_request_id: requestId,
+        })
+        .eq('id', batch.id);
+
+      if (attemptUpdateError) {
+        throw new ApiException(
+          '배송 배치 완료 시도 이력 업데이트 실패',
+          500,
+          'V2_ADMIN_SHIPPING_BATCH_COMPLETE_ATTEMPT_UPDATE_FAILED',
+        );
+      }
+
+      return this.getShippingBatchDetail(batch.id);
+    }
 
     const { error: updateError } = await this.supabase
       .from('v2_admin_shipping_batches')
@@ -1328,6 +1385,17 @@ export class V2AdminBatchService {
     }
 
     return map;
+  }
+
+  private hasFailedOrderTransition(
+    statusMap: Map<string, BatchTransitionOrderStatus>,
+  ): boolean {
+    for (const status of statusMap.values()) {
+      if (status.status === 'FAILED') {
+        return true;
+      }
+    }
+    return false;
   }
 
   private async buildProductionAggregates(orderIds: string[]): Promise<any[]> {
