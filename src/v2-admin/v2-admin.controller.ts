@@ -11,6 +11,7 @@ import {
 import { AuthSessionService } from '../auth/auth-session.service';
 import { successResponse } from '../common/api-response';
 import { ApiException } from '../common/errors/api.exception';
+import { V2AdminBatchService } from './v2-admin-batch.service';
 import { V2AdminOrderTransitionService } from './v2-admin-order-transition.service';
 import { V2AdminService } from './v2-admin.service';
 
@@ -58,6 +59,76 @@ interface BulkOrderActionBody {
 interface OrderLinearTransitionBody {
   order_ids?: string[];
   target_stage?: string;
+  reason?: string | null;
+  request_id?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface ProductionCandidatesQuery {
+  limit?: string;
+  keyword?: string;
+  date_from?: string;
+  date_to?: string;
+}
+
+interface ProductionBatchPreviewBody {
+  order_ids?: string[];
+}
+
+interface CreateProductionBatchBody {
+  title?: string;
+  order_ids?: string[];
+  notes?: string | null;
+  idempotency_key?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface ProductionBatchActionBody {
+  reason?: string | null;
+  request_id?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface ProductionBatchesQuery {
+  limit?: string;
+  status?: string;
+}
+
+interface ShippingCandidatesQuery {
+  limit?: string;
+  keyword?: string;
+  date_from?: string;
+  date_to?: string;
+}
+
+interface ShippingBatchPreviewBody {
+  order_ids?: string[];
+}
+
+interface CreateShippingBatchBody {
+  title?: string;
+  order_ids?: string[];
+  notes?: string | null;
+  idempotency_key?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface ShippingBatchesQuery {
+  limit?: string;
+  status?: string;
+}
+
+interface SaveShippingBatchPackagesBody {
+  packages?: Array<{
+    batch_order_id?: string;
+    shipment_id?: string | null;
+    carrier_code?: string | null;
+    tracking_no?: string | null;
+    notes?: string | null;
+  }>;
+}
+
+interface ShippingBatchActionBody {
   reason?: string | null;
   request_id?: string | null;
   metadata?: Record<string, unknown> | null;
@@ -223,6 +294,7 @@ export class V2AdminController {
   constructor(
     private readonly v2AdminService: V2AdminService,
     private readonly v2AdminOrderTransitionService: V2AdminOrderTransitionService,
+    private readonly v2AdminBatchService: V2AdminBatchService,
     private readonly authSessionService: AuthSessionService,
   ) {}
 
@@ -563,6 +635,268 @@ export class V2AdminController {
     return successResponse(approvals);
   }
 
+  @Get('ops/production/candidates')
+  async listProductionCandidates(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: ProductionCandidatesQuery,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.listProductionCandidates({
+      limit: query.limit,
+      keyword: query.keyword,
+      dateFrom: query.date_from,
+      dateTo: query.date_to,
+    });
+    return successResponse(result);
+  }
+
+  @Post('ops/production/batches/preview')
+  async previewProductionBatch(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: ProductionBatchPreviewBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.previewProductionBatch({
+      orderIds: body.order_ids,
+    });
+    return successResponse(result);
+  }
+
+  @Post('ops/production/batches')
+  async createProductionBatch(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: CreateProductionBatchBody,
+  ) {
+    const admin = await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.createProductionBatch({
+      title: body.title,
+      orderIds: body.order_ids,
+      notes: body.notes,
+      idempotencyKey: body.idempotency_key,
+      metadata: body.metadata,
+      actor: this.buildActionActor(admin),
+    });
+    return successResponse(result);
+  }
+
+  @Get('ops/production/batches')
+  async listProductionBatches(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: ProductionBatchesQuery,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.listProductionBatches({
+      limit: query.limit,
+      status: query.status,
+    });
+    return successResponse(result);
+  }
+
+  @Get('ops/production/batches/:batchId')
+  async getProductionBatchDetail(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('batchId') batchId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.getProductionBatchDetail(batchId);
+    return successResponse(result);
+  }
+
+  @Post('ops/production/batches/:batchId/activate')
+  async activateProductionBatch(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('batchId') batchId: string,
+    @Body() body: ProductionBatchActionBody,
+  ) {
+    const admin = await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.activateProductionBatch({
+      batchId,
+      reason: body.reason,
+      requestId: body.request_id,
+      metadata: body.metadata,
+      actor: this.buildActionActor(admin),
+    });
+    return successResponse(result);
+  }
+
+  @Post('ops/production/batches/:batchId/complete')
+  async completeProductionBatch(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('batchId') batchId: string,
+    @Body() body: ProductionBatchActionBody,
+  ) {
+    const admin = await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.completeProductionBatch({
+      batchId,
+      reason: body.reason,
+      requestId: body.request_id,
+      metadata: body.metadata,
+      actor: this.buildActionActor(admin),
+    });
+    return successResponse(result);
+  }
+
+  @Post('ops/production/batches/:batchId/cancel')
+  async cancelProductionBatch(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('batchId') batchId: string,
+    @Body() body: ProductionBatchActionBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.cancelProductionBatch({
+      batchId,
+      reason: body.reason,
+    });
+    return successResponse(result);
+  }
+
+  @Get('ops/shipping/candidates')
+  async listShippingCandidates(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: ShippingCandidatesQuery,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.listShippingCandidates({
+      limit: query.limit,
+      keyword: query.keyword,
+      dateFrom: query.date_from,
+      dateTo: query.date_to,
+    });
+    return successResponse(result);
+  }
+
+  @Post('ops/shipping/batches/preview')
+  async previewShippingBatch(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: ShippingBatchPreviewBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.previewShippingBatch({
+      orderIds: body.order_ids,
+    });
+    return successResponse(result);
+  }
+
+  @Post('ops/shipping/batches')
+  async createShippingBatch(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: CreateShippingBatchBody,
+  ) {
+    const admin = await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.createShippingBatch({
+      title: body.title,
+      orderIds: body.order_ids,
+      notes: body.notes,
+      idempotencyKey: body.idempotency_key,
+      metadata: body.metadata,
+      actor: this.buildActionActor(admin),
+    });
+    return successResponse(result);
+  }
+
+  @Get('ops/shipping/batches')
+  async listShippingBatches(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: ShippingBatchesQuery,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.listShippingBatches({
+      limit: query.limit,
+      status: query.status,
+    });
+    return successResponse(result);
+  }
+
+  @Get('ops/shipping/batches/:batchId')
+  async getShippingBatchDetail(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('batchId') batchId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.getShippingBatchDetail(batchId);
+    return successResponse(result);
+  }
+
+  @Post('ops/shipping/batches/:batchId/activate')
+  async activateShippingBatch(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('batchId') batchId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.activateShippingBatch({
+      batchId,
+    });
+    return successResponse(result);
+  }
+
+  @Post('ops/shipping/batches/:batchId/packages')
+  async saveShippingBatchPackages(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('batchId') batchId: string,
+    @Body() body: SaveShippingBatchPackagesBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.saveShippingBatchPackages({
+      batchId,
+      packages: (body.packages || []).map((item) => ({
+        batchOrderId: item.batch_order_id,
+        shipmentId: item.shipment_id,
+        carrierCode: item.carrier_code,
+        trackingNo: item.tracking_no,
+        notes: item.notes,
+      })),
+    });
+    return successResponse(result);
+  }
+
+  @Post('ops/shipping/batches/:batchId/dispatch')
+  async dispatchShippingBatch(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('batchId') batchId: string,
+    @Body() body: ShippingBatchActionBody,
+  ) {
+    const admin = await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.dispatchShippingBatch({
+      batchId,
+      reason: body.reason,
+      requestId: body.request_id,
+      metadata: body.metadata,
+      actor: this.buildActionActor(admin),
+    });
+    return successResponse(result);
+  }
+
+  @Post('ops/shipping/batches/:batchId/complete')
+  async completeShippingBatch(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('batchId') batchId: string,
+    @Body() body: ShippingBatchActionBody,
+  ) {
+    const admin = await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.completeShippingBatch({
+      batchId,
+      reason: body.reason,
+      requestId: body.request_id,
+      metadata: body.metadata,
+      actor: this.buildActionActor(admin),
+    });
+    return successResponse(result);
+  }
+
+  @Post('ops/shipping/batches/:batchId/cancel')
+  async cancelShippingBatch(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('batchId') batchId: string,
+    @Body() body: ShippingBatchActionBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.cancelShippingBatch({
+      batchId,
+      reason: body.reason,
+    });
+    return successResponse(result);
+  }
+
   @Get('ops/order-queue')
   async listOrderQueue(
     @Headers('authorization') authorization: string | undefined,
@@ -701,6 +1035,16 @@ export class V2AdminController {
       campaignType: query.campaign_type,
     });
     return successResponse(stats);
+  }
+
+  private buildActionActor(admin: any) {
+    return {
+      id: typeof admin?.id === 'string' ? admin.id : null,
+      email: typeof admin?.email === 'string' ? admin.email : null,
+      isLocalBypass:
+        this.authSessionService.isLocalAdminBypassEnabled() ||
+        admin?.id === 'LOCAL_ADMIN_BYPASS',
+    };
   }
 
   private async requireAdmin(authorization: string | undefined): Promise<any> {
