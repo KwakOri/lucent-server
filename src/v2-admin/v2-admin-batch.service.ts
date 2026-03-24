@@ -144,6 +144,190 @@ export class V2AdminBatchService {
     };
   }
 
+  async listProductionSavedViews(input: {
+    ownerAdminId?: string;
+  }): Promise<any> {
+    const ownerAdminId = this.normalizeRequiredUuid(
+      input.ownerAdminId,
+      'owner_admin_id가 필요합니다.',
+    );
+
+    const { data, error } = await this.supabase
+      .from('v2_admin_production_saved_views')
+      .select('*')
+      .eq('owner_admin_id', ownerAdminId)
+      .order('is_default', { ascending: false })
+      .order('updated_at', { ascending: false });
+
+    if (error) {
+      throw new ApiException(
+        '제작 뷰 목록 조회 실패',
+        500,
+        'V2_ADMIN_PRODUCTION_VIEW_LIST_FAILED',
+      );
+    }
+
+    return {
+      items: (data || []).map((row: any) => this.toProductionSavedViewRow(row)),
+    };
+  }
+
+  async createProductionSavedView(input: {
+    ownerAdminId?: string;
+    name?: string;
+    filter?: unknown;
+    isDefault?: boolean;
+    metadata?: Record<string, unknown> | null;
+  }): Promise<any> {
+    const ownerAdminId = this.normalizeRequiredUuid(
+      input.ownerAdminId,
+      'owner_admin_id가 필요합니다.',
+    );
+    const name = this.normalizeRequiredText(input.name, '뷰 이름이 필요합니다.');
+    const filter = this.normalizeProductionViewFilter(input.filter);
+    const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
+    const isDefault = Boolean(input.isDefault);
+
+    if (isDefault) {
+      const { error: resetDefaultError } = await this.supabase
+        .from('v2_admin_production_saved_views')
+        .update({ is_default: false })
+        .eq('owner_admin_id', ownerAdminId)
+        .eq('is_default', true);
+      if (resetDefaultError) {
+        throw new ApiException(
+          '기존 기본 뷰 초기화 실패',
+          500,
+          'V2_ADMIN_PRODUCTION_VIEW_DEFAULT_RESET_FAILED',
+        );
+      }
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_admin_production_saved_views')
+      .insert({
+        owner_admin_id: ownerAdminId,
+        name,
+        filter_json: filter,
+        is_default: isDefault,
+        metadata,
+      })
+      .select('*')
+      .maybeSingle();
+
+    if (error || !data) {
+      throw new ApiException(
+        '제작 뷰 생성 실패',
+        500,
+        'V2_ADMIN_PRODUCTION_VIEW_CREATE_FAILED',
+      );
+    }
+
+    return this.toProductionSavedViewRow(data);
+  }
+
+  async updateProductionSavedView(input: {
+    ownerAdminId?: string;
+    viewId?: string;
+    name?: string;
+    filter?: unknown;
+    isDefault?: boolean;
+    metadata?: Record<string, unknown> | null;
+  }): Promise<any> {
+    const ownerAdminId = this.normalizeRequiredUuid(
+      input.ownerAdminId,
+      'owner_admin_id가 필요합니다.',
+    );
+    const viewId = this.normalizeRequiredUuid(input.viewId, 'view_id가 필요합니다.');
+    const current = await this.requireProductionSavedView(viewId, ownerAdminId);
+
+    const nextName =
+      input.name !== undefined
+        ? this.normalizeRequiredText(input.name, '뷰 이름이 필요합니다.')
+        : current.name;
+    const nextFilter =
+      input.filter !== undefined
+        ? this.normalizeProductionViewFilter(input.filter)
+        : this.normalizeProductionViewFilter(current.filter_json);
+    const nextIsDefault =
+      input.isDefault !== undefined ? Boolean(input.isDefault) : Boolean(current.is_default);
+    const nextMetadata =
+      input.metadata !== undefined
+        ? this.normalizeOptionalJsonObject(input.metadata) || {}
+        : this.normalizeOptionalJsonObject(current.metadata) || {};
+
+    if (nextIsDefault) {
+      const { error: resetDefaultError } = await this.supabase
+        .from('v2_admin_production_saved_views')
+        .update({ is_default: false })
+        .eq('owner_admin_id', ownerAdminId)
+        .eq('is_default', true)
+        .neq('id', viewId);
+      if (resetDefaultError) {
+        throw new ApiException(
+          '기존 기본 뷰 초기화 실패',
+          500,
+          'V2_ADMIN_PRODUCTION_VIEW_DEFAULT_RESET_FAILED',
+        );
+      }
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_admin_production_saved_views')
+      .update({
+        name: nextName,
+        filter_json: nextFilter,
+        is_default: nextIsDefault,
+        metadata: nextMetadata,
+      })
+      .eq('id', viewId)
+      .eq('owner_admin_id', ownerAdminId)
+      .select('*')
+      .maybeSingle();
+
+    if (error || !data) {
+      throw new ApiException(
+        '제작 뷰 수정 실패',
+        500,
+        'V2_ADMIN_PRODUCTION_VIEW_UPDATE_FAILED',
+      );
+    }
+
+    return this.toProductionSavedViewRow(data);
+  }
+
+  async deleteProductionSavedView(input: {
+    ownerAdminId?: string;
+    viewId?: string;
+  }): Promise<any> {
+    const ownerAdminId = this.normalizeRequiredUuid(
+      input.ownerAdminId,
+      'owner_admin_id가 필요합니다.',
+    );
+    const viewId = this.normalizeRequiredUuid(input.viewId, 'view_id가 필요합니다.');
+
+    await this.requireProductionSavedView(viewId, ownerAdminId);
+
+    const { error } = await this.supabase
+      .from('v2_admin_production_saved_views')
+      .delete()
+      .eq('id', viewId)
+      .eq('owner_admin_id', ownerAdminId);
+
+    if (error) {
+      throw new ApiException(
+        '제작 뷰 삭제 실패',
+        500,
+        'V2_ADMIN_PRODUCTION_VIEW_DELETE_FAILED',
+      );
+    }
+
+    return {
+      id: viewId,
+      deleted: true,
+    };
+  }
+
   async previewProductionBatch(input: {
     orderIds?: string[];
   }): Promise<any> {
@@ -1252,6 +1436,69 @@ export class V2AdminBatchService {
     }
 
     return this.getShippingBatchDetail(batch.id);
+  }
+
+  private async requireProductionSavedView(
+    viewId: string,
+    ownerAdminId: string,
+  ): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('v2_admin_production_saved_views')
+      .select('*')
+      .eq('id', viewId)
+      .eq('owner_admin_id', ownerAdminId)
+      .maybeSingle();
+
+    if (error || !data) {
+      throw new ApiException(
+        '제작 뷰를 찾을 수 없습니다.',
+        404,
+        'V2_ADMIN_PRODUCTION_VIEW_NOT_FOUND',
+      );
+    }
+
+    return data;
+  }
+
+  private normalizeProductionViewFilter(
+    raw: unknown,
+  ): {
+    project_id: string | null;
+    campaign_id: string | null;
+  } {
+    const filter = this.normalizeOptionalJsonObject(raw) || {};
+    return {
+      project_id: this.normalizeOptionalUuid(filter.project_id),
+      campaign_id: this.normalizeOptionalUuid(filter.campaign_id),
+    };
+  }
+
+  private toProductionSavedViewRow(row: any): {
+    id: string;
+    name: string;
+    filter: {
+      project_id: string | null;
+      campaign_id: string | null;
+    };
+    is_default: boolean;
+    created_at: string;
+    updated_at: string;
+  } {
+    const filter = this.normalizeProductionViewFilter(row?.filter_json);
+    return {
+      id: this.normalizeRequiredUuid(row?.id, 'view id가 필요합니다.'),
+      name: this.normalizeRequiredText(row?.name, 'view name이 필요합니다.'),
+      filter,
+      is_default: Boolean(row?.is_default),
+      created_at: this.normalizeRequiredText(
+        row?.created_at,
+        'view created_at이 필요합니다.',
+      ),
+      updated_at: this.normalizeRequiredText(
+        row?.updated_at,
+        'view updated_at이 필요합니다.',
+      ),
+    };
   }
 
   private async requireProductionBatch(batchId: string): Promise<any> {

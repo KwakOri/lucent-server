@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Headers,
   Param,
@@ -88,6 +89,18 @@ interface CreateProductionBatchBody {
 interface ProductionBatchActionBody {
   reason?: string | null;
   request_id?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface ProductionSavedViewFilterBody {
+  project_id?: string | null;
+  campaign_id?: string | null;
+}
+
+interface SaveProductionSavedViewBody {
+  name?: string;
+  filter?: ProductionSavedViewFilterBody | null;
+  is_default?: boolean;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -652,6 +665,64 @@ export class V2AdminController {
       dateTo: query.date_to,
       projectId: query.project_id,
       campaignId: query.campaign_id,
+    });
+    return successResponse(result);
+  }
+
+  @Get('ops/production/views')
+  async listProductionSavedViews(
+    @Headers('authorization') authorization: string | undefined,
+  ) {
+    const admin = await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.listProductionSavedViews({
+      ownerAdminId: admin.id,
+    });
+    return successResponse(result);
+  }
+
+  @Post('ops/production/views')
+  async createProductionSavedView(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: SaveProductionSavedViewBody,
+  ) {
+    const admin = await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.createProductionSavedView({
+      ownerAdminId: admin.id,
+      name: body.name,
+      filter: body.filter,
+      isDefault: body.is_default,
+      metadata: body.metadata,
+    });
+    return successResponse(result);
+  }
+
+  @Patch('ops/production/views/:viewId')
+  async updateProductionSavedView(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('viewId') viewId: string,
+    @Body() body: SaveProductionSavedViewBody,
+  ) {
+    const admin = await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.updateProductionSavedView({
+      ownerAdminId: admin.id,
+      viewId,
+      name: body.name,
+      filter: body.filter,
+      isDefault: body.is_default,
+      metadata: body.metadata,
+    });
+    return successResponse(result);
+  }
+
+  @Delete('ops/production/views/:viewId')
+  async deleteProductionSavedView(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('viewId') viewId: string,
+  ) {
+    const admin = await this.requireAdmin(authorization);
+    const result = await this.v2AdminBatchService.deleteProductionSavedView({
+      ownerAdminId: admin.id,
+      viewId,
     });
     return successResponse(result);
   }
