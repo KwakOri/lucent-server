@@ -1128,6 +1128,12 @@ export class V2AdminController {
 
   private async requireAdmin(authorization: string | undefined): Promise<any> {
     if (this.authSessionService.isLocalAdminBypassEnabled()) {
+      const bypassUser = await this.authSessionService.getUserFromAuthorizationHeader(
+        authorization,
+      );
+      if (bypassUser?.id) {
+        return bypassUser;
+      }
       return { id: 'LOCAL_ADMIN_BYPASS', email: 'local-bypass@example.com' };
     }
 
