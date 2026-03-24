@@ -2072,23 +2072,41 @@ export class V2AdminBatchService {
       );
     }
 
+    const activeRows = (data || []).filter((row: any) => {
+      const lineStatus = String(row.line_status || '').toUpperCase();
+      return lineStatus !== 'CANCELED' && lineStatus !== 'REFUNDED';
+    });
+
+    const projectIdValues = activeRows
+      .map((row: any) => this.normalizeOptionalUuid(row.project_id_snapshot))
+      .filter((value: string | null): value is string => Boolean(value));
+    const campaignIdValues = activeRows
+      .map((row: any) => this.normalizeOptionalUuid(row.campaign_id_snapshot))
+      .filter((value: string | null): value is string => Boolean(value));
+
+    const projectIds = Array.from(new Set<string>(projectIdValues));
+    const campaignIds = Array.from(new Set<string>(campaignIdValues));
+    const [projectNameById, campaignNameById] = await Promise.all([
+      this.fetchProjectNameByIds(projectIds),
+      this.fetchCampaignNameByIds(campaignIds),
+    ]);
+
     const scopeByOrderId = new Map<string, OrderScopeContext>();
 
-    for (const row of data || []) {
-      const lineStatus = String(row.line_status || '').toUpperCase();
-      if (lineStatus === 'CANCELED' || lineStatus === 'REFUNDED') {
-        continue;
-      }
-
+    for (const row of activeRows) {
       const orderId = this.normalizeOptionalUuid(row.order_id);
       if (!orderId) {
         continue;
       }
 
       const projectId = this.normalizeOptionalUuid(row.project_id_snapshot);
-      const projectName = this.normalizeOptionalText(row.project_name_snapshot);
+      const projectName =
+        this.normalizeOptionalText(row.project_name_snapshot) ||
+        (projectId ? projectNameById.get(projectId) || null : null);
       const campaignId = this.normalizeOptionalUuid(row.campaign_id_snapshot);
-      const campaignName = this.normalizeOptionalText(row.campaign_name_snapshot);
+      const campaignName =
+        this.normalizeOptionalText(row.campaign_name_snapshot) ||
+        (campaignId ? campaignNameById.get(campaignId) || null : null);
 
       const existing = scopeByOrderId.get(orderId) || {
         project_id: null,
@@ -2123,6 +2141,66 @@ export class V2AdminBatchService {
     }
 
     return scopeByOrderId;
+  }
+
+  private async fetchProjectNameByIds(projectIds: string[]): Promise<Map<string, string>> {
+    if (projectIds.length === 0) {
+      return new Map();
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_projects')
+      .select('id, name')
+      .in('id', projectIds);
+
+    if (error) {
+      throw new ApiException(
+        '프로젝트 이름 조회 실패',
+        500,
+        'V2_ADMIN_BATCH_PROJECT_NAME_FETCH_FAILED',
+      );
+    }
+
+    const map = new Map<string, string>();
+    for (const row of data || []) {
+      const projectId = this.normalizeOptionalUuid(row.id);
+      const projectName = this.normalizeOptionalText(row.name);
+      if (!projectId || !projectName) {
+        continue;
+      }
+      map.set(projectId, projectName);
+    }
+    return map;
+  }
+
+  private async fetchCampaignNameByIds(campaignIds: string[]): Promise<Map<string, string>> {
+    if (campaignIds.length === 0) {
+      return new Map();
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_campaigns')
+      .select('id, name')
+      .in('id', campaignIds);
+
+    if (error) {
+      throw new ApiException(
+        '캠페인 이름 조회 실패',
+        500,
+        'V2_ADMIN_BATCH_CAMPAIGN_NAME_FETCH_FAILED',
+      );
+    }
+
+    const map = new Map<string, string>();
+    for (const row of data || []) {
+      const campaignId = this.normalizeOptionalUuid(row.id);
+      const campaignName = this.normalizeOptionalText(row.name);
+      if (!campaignId || !campaignName) {
+        continue;
+      }
+      map.set(campaignId, campaignName);
+    }
+    return map;
   }
 
   private async fetchOrderDepositorNameByOrderIds(
