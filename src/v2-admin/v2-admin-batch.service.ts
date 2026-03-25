@@ -731,6 +731,9 @@ export class V2AdminBatchService {
   async cancelProductionBatch(input: {
     batchId: string;
     reason?: string | null;
+    requestId?: string | null;
+    metadata?: Record<string, unknown> | null;
+    actor?: V2AdminActionActor;
   }): Promise<any> {
     const batch = await this.requireProductionBatch(input.batchId);
 
@@ -742,12 +745,58 @@ export class V2AdminBatchService {
       );
     }
 
+    if (batch.status === 'CANCELED') {
+      return this.getProductionBatchDetail(batch.id);
+    }
+
+    const reason = this.normalizeOptionalText(input.reason);
+    const requestId =
+      this.normalizeOptionalText(input.requestId) || this.generateRequestId('prod-cancel');
+    const actor = this.normalizeActor(input.actor);
+    const requestMetadata = this.normalizeOptionalJsonObject(input.metadata) || {};
+    const existingMetadata = this.normalizeOptionalJsonObject(batch.metadata) || {};
+
+    if (batch.status === 'ACTIVE') {
+      const orderIds = await this.fetchProductionBatchOrderIds(batch.id);
+      if (orderIds.length > 0) {
+        const transitionResult = await this.v2AdminOrderTransitionService.execute({
+          orderIds,
+          targetStage: 'PAYMENT_CONFIRMED',
+          reason,
+          requestId,
+          metadata: {
+            ...requestMetadata,
+            source: 'PRODUCTION_BATCH_CANCEL',
+            batch_id: batch.id,
+            batch_no: batch.batch_no,
+          },
+          actor,
+        });
+
+        const rollbackStatusMap = this.buildOrderTransitionStatusMap(transitionResult);
+        if (this.hasFailedOrderTransition(rollbackStatusMap)) {
+          throw new ApiException(
+            'ACTIVE 제작 배치 취소 중 일부 주문 롤백에 실패했습니다. 실패 주문을 확인해 주세요.',
+            400,
+            'V2_ADMIN_PRODUCTION_BATCH_CANCEL_ROLLBACK_FAILED',
+          );
+        }
+      }
+    }
+
     const { error } = await this.supabase
       .from('v2_admin_production_batches')
       .update({
         status: 'CANCELED',
         canceled_at: new Date().toISOString(),
-        cancel_reason: this.normalizeOptionalText(input.reason),
+        cancel_reason: reason,
+        metadata: {
+          ...existingMetadata,
+          cancel_request_id: requestId,
+          canceled_from_status: batch.status,
+          cancel_rollback_target_stage:
+            batch.status === 'ACTIVE' ? 'PAYMENT_CONFIRMED' : null,
+        },
       })
       .eq('id', batch.id);
 

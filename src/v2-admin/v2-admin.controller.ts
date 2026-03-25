@@ -819,10 +819,13 @@ export class V2AdminController {
     @Param('batchId') batchId: string,
     @Body() body: ProductionBatchActionBody,
   ) {
-    await this.requireAdmin(authorization);
+    const admin = await this.requireAdmin(authorization);
     const result = await this.v2AdminBatchService.cancelProductionBatch({
       batchId,
       reason: body.reason,
+      requestId: body.request_id,
+      metadata: body.metadata,
+      actor: this.buildActionActor(admin),
     });
     return successResponse(result);
   }
