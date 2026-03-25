@@ -759,6 +759,26 @@ export class V2AdminBatchService {
     if (batch.status === 'ACTIVE') {
       const orderIds = await this.fetchProductionBatchOrderIds(batch.id);
       if (orderIds.length > 0) {
+        const queueMap = await this.fetchQueueMapByOrderIds(orderIds);
+        for (const orderId of orderIds) {
+          const row = queueMap.get(orderId);
+          if (!row) {
+            throw new ApiException(
+              '배치 취소 롤백 대상 주문을 찾을 수 없습니다.',
+              400,
+              'V2_ADMIN_PRODUCTION_BATCH_CANCEL_ROLLBACK_ORDER_NOT_FOUND',
+            );
+          }
+          const stage = this.resolveStageFromQueueRow(row);
+          if (stage !== 'PRODUCTION' && stage !== 'PAYMENT_CONFIRMED') {
+            throw new ApiException(
+              `현재 단계(${stage})의 주문이 포함되어 있어 ACTIVE 배치를 취소할 수 없습니다.`,
+              400,
+              'V2_ADMIN_PRODUCTION_BATCH_CANCEL_ROLLBACK_STAGE_INVALID',
+            );
+          }
+        }
+
         const transitionResult = await this.v2AdminOrderTransitionService.execute({
           orderIds,
           targetStage: 'PAYMENT_CONFIRMED',
