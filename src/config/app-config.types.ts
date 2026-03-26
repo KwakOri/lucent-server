@@ -3,6 +3,7 @@ export interface SendonTemplateRuntimeConfig {
   paymentCaptured: string;
   shipmentDispatched: string;
   shipmentDelivered: string;
+  phoneVerification: string;
 }
 
 export interface SendonRuntimeConfig {

@@ -733,9 +733,14 @@ export type Database = {
           detail_address: string | null
           email: string
           id: string
+          is_phone_verified: boolean
           main_address: string | null
           name: string | null
           phone: string | null
+          phone_verification_code: string | null
+          phone_verification_expires_at: string | null
+          phone_verification_request_count: number
+          phone_verification_request_date: string | null
           updated_at: string
         }
         Insert: {
@@ -743,9 +748,14 @@ export type Database = {
           detail_address?: string | null
           email: string
           id: string
+          is_phone_verified?: boolean
           main_address?: string | null
           name?: string | null
           phone?: string | null
+          phone_verification_code?: string | null
+          phone_verification_expires_at?: string | null
+          phone_verification_request_count?: number
+          phone_verification_request_date?: string | null
           updated_at?: string
         }
         Update: {
@@ -753,9 +763,14 @@ export type Database = {
           detail_address?: string | null
           email?: string
           id?: string
+          is_phone_verified?: boolean
           main_address?: string | null
           name?: string | null
           phone?: string | null
+          phone_verification_code?: string | null
+          phone_verification_expires_at?: string | null
+          phone_verification_request_count?: number
+          phone_verification_request_date?: string | null
           updated_at?: string
         }
         Relationships: []

@@ -55,6 +55,10 @@ export class AppConfigService {
             'SENDON_TEMPLATE_SHIPMENT_DELIVERED',
             '',
           ),
+          phoneVerification: this.readString(
+            'SENDON_TEMPLATE_PHONE_VERIFICATION',
+            '',
+          ),
         },
       },
     };
