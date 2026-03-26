@@ -2290,6 +2290,25 @@ export class V2CheckoutService {
       const quoteLineAdjustments = this.mapQuoteLineAdjustments(
         line?.adjustments,
       );
+      const lineProductNameSnapshot =
+        this.normalizeOptionalText(line?.product_name_snapshot);
+      if (!lineProductNameSnapshot) {
+        throw new ApiException(
+          `quote.lines[${index}].product_name_snapshot이 비어있습니다`,
+          500,
+          'V2_CHECKOUT_QUOTE_LINE_PRODUCT_NAME_MISSING',
+        );
+      }
+      const lineVariantNameSnapshot =
+        this.normalizeOptionalText(line?.variant_name_snapshot) ||
+        this.normalizeOptionalText(line?.title);
+      if (!lineVariantNameSnapshot) {
+        throw new ApiException(
+          `quote.lines[${index}].variant_name_snapshot이 비어있습니다`,
+          500,
+          'V2_CHECKOUT_QUOTE_LINE_VARIANT_NAME_MISSING',
+        );
+      }
 
       const isBundleLine = lineContext.productKind === 'BUNDLE';
       const bundleConfiguration = this.parseBundleConfigurationSnapshot(
@@ -2341,12 +2360,8 @@ export class V2CheckoutService {
           tax_total: 0,
           final_line_total: isFixedAmountBundlePricing ? finalLineTotal : 0,
           sku_snapshot: this.normalizeOptionalText(line?.sku),
-          product_name_snapshot:
-            this.normalizeOptionalText(line?.product_name_snapshot) || null,
-          variant_name_snapshot:
-            this.normalizeOptionalText(line?.variant_name_snapshot) ||
-            this.normalizeOptionalText(line?.title) ||
-            null,
+          product_name_snapshot: lineProductNameSnapshot,
+          variant_name_snapshot: lineVariantNameSnapshot,
           project_id_snapshot: this.normalizeOptionalUuid(line?.project_id),
           project_name_snapshot:
             this.normalizeOptionalText(line?.project_name_snapshot) || null,
@@ -2624,12 +2639,8 @@ export class V2CheckoutService {
         tax_total: 0,
         final_line_total: finalLineTotal,
         sku_snapshot: this.normalizeOptionalText(line?.sku),
-        product_name_snapshot:
-          this.normalizeOptionalText(line?.product_name_snapshot) || null,
-        variant_name_snapshot:
-          this.normalizeOptionalText(line?.variant_name_snapshot) ||
-          this.normalizeOptionalText(line?.title) ||
-          null,
+        product_name_snapshot: lineProductNameSnapshot,
+        variant_name_snapshot: lineVariantNameSnapshot,
         project_id_snapshot: this.normalizeOptionalUuid(line?.project_id),
         project_name_snapshot:
           this.normalizeOptionalText(line?.project_name_snapshot) || null,

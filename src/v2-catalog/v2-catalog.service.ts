@@ -6002,6 +6002,8 @@ export class V2CatalogService {
         product_kind: product.product_kind,
         sku: variant.sku,
         title: variant.title,
+        product_name_snapshot: this.normalizeOptionalText(product.title) || null,
+        variant_name_snapshot: this.normalizeOptionalText(variant.title) || null,
         quantity: line.quantity,
         fulfillment_type: variant.fulfillment_type,
         requires_shipping: variant.requires_shipping,
