@@ -153,9 +153,22 @@ export class V2AdminOrderTransitionService {
     const requestedAt = new Date().toISOString();
 
     const ordersById = await this.fetchOrdersById(orderIds);
-    const queueByOrderId = await this.fetchOrderQueueByOrderId(orderIds);
-    const shipmentsByOrderId = await this.fetchShipmentsByOrderId(orderIds);
+    let queueByOrderId = await this.fetchOrderQueueByOrderId(orderIds);
+    let shipmentsByOrderId = await this.fetchShipmentsByOrderId(orderIds);
     const entitlementsByOrderId = await this.fetchEntitlementsByOrderId(orderIds);
+    let shipmentBootstrapErrors = new Map<string, string>();
+
+    if (input.mode === 'EXECUTE' && this.requiresShipmentBootstrap(targetStage)) {
+      shipmentBootstrapErrors = await this.bootstrapPhysicalShipments({
+        orderIds,
+        ordersById,
+        queueByOrderId,
+        targetStage,
+        metadata,
+      });
+      queueByOrderId = await this.fetchOrderQueueByOrderId(orderIds);
+      shipmentsByOrderId = await this.fetchShipmentsByOrderId(orderIds);
+    }
 
     const rows = orderIds.map((orderId) => {
       const order = ordersById.get(orderId) || null;
@@ -169,6 +182,7 @@ export class V2AdminOrderTransitionService {
         shipments,
         entitlements,
         targetStage,
+        bootstrapError: shipmentBootstrapErrors.get(orderId) || null,
       });
     });
 
@@ -277,6 +291,7 @@ export class V2AdminOrderTransitionService {
     shipments: ShipmentRow[];
     entitlements: EntitlementRow[];
     targetStage: V2OrderLinearStage;
+    bootstrapError?: string | null;
   }): OrderLinearTransitionRow {
     if (!input.order) {
       return {
@@ -323,6 +338,9 @@ export class V2AdminOrderTransitionService {
 
     const warningReasons: string[] = [];
     const blockedReasons: string[] = [];
+    if (input.bootstrapError) {
+      blockedReasons.push(input.bootstrapError);
+    }
     const actions: OrderLinearTransitionAction[] = [];
     let sequence = 1;
 
@@ -1784,6 +1802,75 @@ export class V2AdminOrderTransitionService {
       map.set(orderId, list);
     }
     return map;
+  }
+
+  private requiresShipmentBootstrap(stage: V2OrderLinearStage): boolean {
+    return (
+      stage === 'READY_TO_SHIP' || stage === 'IN_TRANSIT' || stage === 'DELIVERED'
+    );
+  }
+
+  private async bootstrapPhysicalShipments(input: {
+    orderIds: string[];
+    ordersById: Map<string, any>;
+    queueByOrderId: Map<string, any>;
+    targetStage: V2OrderLinearStage;
+    metadata: Record<string, unknown>;
+  }): Promise<Map<string, string>> {
+    const errors = new Map<string, string>();
+
+    for (const orderId of input.orderIds) {
+      const order = input.ordersById.get(orderId) || null;
+      const queue = input.queueByOrderId.get(orderId) || null;
+      if (!order || !queue || !Boolean(queue.has_physical)) {
+        continue;
+      }
+
+      const shipmentCount =
+        Number(queue.waiting_shipment_count || 0) +
+        Number(queue.in_transit_shipment_count || 0) +
+        Number(queue.delivered_shipment_count || 0);
+      if (shipmentCount > 0) {
+        continue;
+      }
+
+      try {
+        await this.v2FulfillmentService.ensureShipmentInfrastructure({
+          order_id: orderId,
+          provider_type: 'MANUAL',
+          metadata: {
+            ...input.metadata,
+            source: 'ORDER_LINEAR_STAGE_TRANSITION',
+            target_stage: input.targetStage,
+          },
+        });
+      } catch (error) {
+        errors.set(orderId, this.resolveShipmentBootstrapErrorMessage(error));
+      }
+    }
+
+    return errors;
+  }
+
+  private resolveShipmentBootstrapErrorMessage(error: unknown): string {
+    if (error instanceof ApiException) {
+      const payload = error.getResponse();
+      if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+        const message = this.normalizeOptionalText(
+          (payload as Record<string, unknown>).message as string | null,
+        );
+        if (message) {
+          return `shipment 준비 실패: ${message}`;
+        }
+      }
+      return `shipment 준비 실패: ${error.message}`;
+    }
+
+    if (error instanceof Error) {
+      return `shipment 준비 실패: ${error.message}`;
+    }
+
+    return 'shipment 준비 실패: 알 수 없는 오류';
   }
 
   private linearStageLabel(stage: V2OrderLinearStage): string {

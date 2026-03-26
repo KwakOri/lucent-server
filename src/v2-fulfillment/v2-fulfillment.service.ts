@@ -137,6 +137,12 @@ interface OrchestrateMixedOrderInput extends GenerateFulfillmentPlanInput {
   provider_type?: string | null;
 }
 
+interface EnsureShipmentInfrastructureInput {
+  order_id?: string;
+  provider_type?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
 interface OpsLimitInput {
   limit?: string | number | null;
 }
@@ -1375,6 +1381,82 @@ export class V2FulfillmentService {
       },
       groups,
       group_results: groupResults,
+    };
+  }
+
+  async ensureShipmentInfrastructure(
+    input: EnsureShipmentInfrastructureInput,
+  ): Promise<{
+    order_id: string;
+    shipment_group_count: number;
+    created: {
+      fulfillments: number;
+      shipments: number;
+    };
+    shipment_ids: string[];
+  }> {
+    const orderId = this.requireUuid(input.order_id, 'order_id는 필수입니다');
+    const providerType = this.normalizeOptionalText(input.provider_type) || 'MANUAL';
+    const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
+    const source =
+      typeof metadata.source === 'string' && metadata.source.trim().length > 0
+        ? metadata.source.trim()
+        : 'FULFILLMENT_SHIPMENT_BOOTSTRAP';
+
+    const plan = await this.generateFulfillmentPlan({
+      order_id: orderId,
+      metadata: {
+        ...metadata,
+        source,
+      },
+    });
+    const groups = Array.isArray(plan?.groups) ? plan.groups : [];
+    const shipmentGroups = groups.filter(
+      (group: any) => this.normalizeOptionalText(group?.kind) === 'SHIPMENT',
+    );
+
+    let createdFulfillmentCount = 0;
+    let createdShipmentCount = 0;
+    const shipmentIds = new Set<string>();
+
+    for (const group of shipmentGroups) {
+      const groupId = this.requireUuid(group.id, 'fulfillment_group_id가 올바르지 않습니다');
+      const fulfillment = await this.findOrCreateFulfillmentForGroup(
+        groupId,
+        'SHIPMENT',
+        providerType,
+      );
+      if (fulfillment.created_now) {
+        createdFulfillmentCount += 1;
+      }
+
+      const shipmentResult = await this.createShipment({
+        fulfillment_id: fulfillment.record.id,
+        metadata: {
+          ...metadata,
+          source: 'FULFILLMENT_SHIPMENT_BOOTSTRAP',
+          order_id: orderId,
+          fulfillment_group_id: groupId,
+        },
+      });
+      if (!shipmentResult.idempotent_replayed) {
+        createdShipmentCount += 1;
+      }
+
+      const shipmentId = this.normalizeOptionalUuid(shipmentResult?.shipment?.id);
+      if (shipmentId) {
+        shipmentIds.add(shipmentId);
+      }
+    }
+
+    return {
+      order_id: orderId,
+      shipment_group_count: shipmentGroups.length,
+      created: {
+        fulfillments: createdFulfillmentCount,
+        shipments: createdShipmentCount,
+      },
+      shipment_ids: Array.from(shipmentIds),
     };
   }
 
