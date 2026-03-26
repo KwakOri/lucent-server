@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Headers, Param, Patch } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  Patch,
+  Post,
+} from '@nestjs/common';
 import { successResponse } from '../common/api-response';
 import { AuthSessionService } from '../auth/auth-session.service';
 import { ProfilesService } from './profiles.service';
@@ -8,6 +16,15 @@ interface UpdateProfileBody {
   phone?: string | null;
   main_address?: string | null;
   detail_address?: string | null;
+}
+
+interface RequestPhoneVerificationBody {
+  phone?: string | null;
+}
+
+interface VerifyPhoneVerificationBody {
+  code?: string;
+  phone?: string | null;
 }
 
 @Controller('profiles')
@@ -43,6 +60,33 @@ export class ProfilesController {
       body,
     );
     return successResponse(updatedProfile, '프로필이 업데이트되었습니다');
+  }
+
+  @Post('me/phone-verification/request')
+  async requestMyPhoneVerification(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: RequestPhoneVerificationBody,
+  ) {
+    const user = await this.authSessionService.requireUser(authorization);
+    const result = await this.profilesService.requestPhoneVerification(
+      user.id,
+      body.phone,
+    );
+    return successResponse(result, '휴대폰 인증 코드가 발송되었습니다');
+  }
+
+  @Post('me/phone-verification/verify')
+  async verifyMyPhoneVerification(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: VerifyPhoneVerificationBody,
+  ) {
+    const user = await this.authSessionService.requireUser(authorization);
+    const profile = await this.profilesService.verifyPhoneVerification(
+      user.id,
+      body.code || '',
+      body.phone,
+    );
+    return successResponse(profile, '휴대폰 인증이 완료되었습니다');
   }
 
   @Get(':id')
