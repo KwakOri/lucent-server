@@ -113,6 +113,11 @@ interface CheckoutPayload {
   shippingRequired: boolean;
 }
 
+interface CampaignSnapshotContext {
+  campaignId: string | null;
+  campaignName: string | null;
+}
+
 interface BundleSelectionItem {
   component_variant_id: string;
   quantity?: number;
@@ -2233,6 +2238,11 @@ export class V2CheckoutService {
     fallbackCampaignId: string | null,
   ): Promise<CreatedOrderItemContext[]> {
     const createdOrderItems: CreatedOrderItemContext[] = [];
+    const campaignSnapshots = await this.resolveCampaignSnapshotsByQuoteLines({
+      quoteLines,
+      lineContexts,
+      fallbackCampaignId,
+    });
 
     for (let index = 0; index < quoteLines.length; index += 1) {
       const line = quoteLines[index];
@@ -2270,18 +2280,35 @@ export class V2CheckoutService {
         quantity > 0 ? Math.floor(finalLineTotal / quantity) : 0;
       const lineType = this.normalizeLineType(line?.line_type);
       const lineStatus = 'PENDING' as V2OrderLineStatus;
-      const sourceCampaignId = this.normalizeOptionalUuid(line?.campaign_id);
-      const campaignIdSnapshot =
-        sourceCampaignId ||
-        lineContext.campaignId ||
-        fallbackCampaignId ||
-        null;
+      const campaignSnapshot = campaignSnapshots[index] || {
+        campaignId: null,
+        campaignName: null,
+      };
       const fulfillmentType = this.normalizeOptionalText(
         line?.fulfillment_type,
       );
       const quoteLineAdjustments = this.mapQuoteLineAdjustments(
         line?.adjustments,
       );
+      const lineProductNameSnapshot =
+        this.normalizeOptionalText(line?.product_name_snapshot);
+      if (!lineProductNameSnapshot) {
+        throw new ApiException(
+          `quote.lines[${index}].product_name_snapshot이 비어있습니다`,
+          500,
+          'V2_CHECKOUT_QUOTE_LINE_PRODUCT_NAME_MISSING',
+        );
+      }
+      const lineVariantNameSnapshot =
+        this.normalizeOptionalText(line?.variant_name_snapshot) ||
+        this.normalizeOptionalText(line?.title);
+      if (!lineVariantNameSnapshot) {
+        throw new ApiException(
+          `quote.lines[${index}].variant_name_snapshot이 비어있습니다`,
+          500,
+          'V2_CHECKOUT_QUOTE_LINE_VARIANT_NAME_MISSING',
+        );
+      }
 
       const isBundleLine = lineContext.productKind === 'BUNDLE';
       const bundleConfiguration = this.parseBundleConfigurationSnapshot(
@@ -2296,6 +2323,21 @@ export class V2CheckoutService {
         : null;
 
       if (isBundleLine && bundleDefinitionId) {
+        const resolvedBundle = await this.v2CatalogService.resolveBundle({
+          bundle_definition_id: bundleDefinitionId,
+          parent_variant_id:
+            this.normalizeOptionalUuid(line?.variant_id) ||
+            lineContext.variantId,
+          parent_quantity: quantity,
+          parent_unit_amount: finalUnitPrice,
+          selected_components: bundleConfiguration?.selected_components || [],
+        });
+        const bundlePricingStrategy = this.normalizeOptionalText(
+          resolvedBundle?.pricing_strategy,
+        );
+        const isFixedAmountBundlePricing =
+          bundlePricingStrategy === 'FIXED_AMOUNT';
+
         const parentRow = {
           order_id: orderId,
           parent_order_item_id: null,
@@ -2310,20 +2352,16 @@ export class V2CheckoutService {
           quantity,
           line_status: lineStatus,
           currency_code: currencyCode,
-          list_unit_price: 0,
-          sale_unit_price: 0,
-          final_unit_price: 0,
-          line_subtotal: 0,
-          discount_total: 0,
+          list_unit_price: isFixedAmountBundlePricing ? listUnitPrice : 0,
+          sale_unit_price: isFixedAmountBundlePricing ? saleUnitPrice : 0,
+          final_unit_price: isFixedAmountBundlePricing ? finalUnitPrice : 0,
+          line_subtotal: isFixedAmountBundlePricing ? lineSubtotal : 0,
+          discount_total: isFixedAmountBundlePricing ? discountTotal : 0,
           tax_total: 0,
-          final_line_total: 0,
+          final_line_total: isFixedAmountBundlePricing ? finalLineTotal : 0,
           sku_snapshot: this.normalizeOptionalText(line?.sku),
-          product_name_snapshot:
-            this.normalizeOptionalText(line?.product_name_snapshot) || null,
-          variant_name_snapshot:
-            this.normalizeOptionalText(line?.variant_name_snapshot) ||
-            this.normalizeOptionalText(line?.title) ||
-            null,
+          product_name_snapshot: lineProductNameSnapshot,
+          variant_name_snapshot: lineVariantNameSnapshot,
           project_id_snapshot: this.normalizeOptionalUuid(line?.project_id),
           project_name_snapshot:
             this.normalizeOptionalText(line?.project_name_snapshot) || null,
@@ -2335,9 +2373,8 @@ export class V2CheckoutService {
             typeof line?.requires_shipping === 'boolean'
               ? line.requires_shipping
               : null,
-          campaign_id_snapshot: campaignIdSnapshot,
-          campaign_name_snapshot:
-            this.normalizeOptionalText(line?.campaign_name) || null,
+          campaign_id_snapshot: campaignSnapshot.campaignId,
+          campaign_name_snapshot: campaignSnapshot.campaignName,
           bundle_component_id_snapshot: null,
           allocated_unit_amount: null,
           allocated_discount_amount: 0,
@@ -2355,7 +2392,7 @@ export class V2CheckoutService {
           metadata: {
             ...(this.normalizeOptionalJsonObject(line?.metadata) || {}),
             bundle_configuration_snapshot: bundleConfiguration,
-            bundle_parent_display_only: true,
+            bundle_parent_display_only: !isFixedAmountBundlePricing,
           },
         };
 
@@ -2363,16 +2400,6 @@ export class V2CheckoutService {
         createdOrderItems.push({
           orderItem: parentOrderItem,
           adjustments: quoteLineAdjustments,
-        });
-
-        const resolvedBundle = await this.v2CatalogService.resolveBundle({
-          bundle_definition_id: bundleDefinitionId,
-          parent_variant_id:
-            this.normalizeOptionalUuid(line?.variant_id) ||
-            lineContext.variantId,
-          parent_quantity: quantity,
-          parent_unit_amount: finalUnitPrice,
-          selected_components: bundleConfiguration?.selected_components || [],
         });
 
         const componentLines = Array.isArray(resolvedBundle?.component_lines)
@@ -2386,24 +2413,26 @@ export class V2CheckoutService {
           );
         }
 
-        const allocationWeights = componentLines.map((componentLine: any) =>
-          this.normalizeNonNegativeNumber(
-            componentLine?.allocation_weight ?? 0,
-            `bundle_component_lines[${index}].allocation_weight`,
-          ),
-        );
-        const listLineTotals = this.allocateAmountByWeights(
-          lineSubtotal,
-          allocationWeights,
-        );
-        const saleLineTotals = this.allocateAmountByWeights(
-          saleUnitPrice * quantity,
-          allocationWeights,
-        );
-        const finalLineTotals = this.allocateAmountByWeights(
-          finalLineTotal,
-          allocationWeights,
-        );
+        const allocationWeights = isFixedAmountBundlePricing
+          ? []
+          : componentLines.map((componentLine: any) =>
+              this.normalizeNonNegativeNumber(
+                componentLine?.allocation_weight ?? 0,
+                `bundle_component_lines[${index}].allocation_weight`,
+              ),
+            );
+        const listLineTotals = isFixedAmountBundlePricing
+          ? Array.from({ length: componentLines.length }, () => 0)
+          : this.allocateAmountByWeights(lineSubtotal, allocationWeights);
+        const saleLineTotals = isFixedAmountBundlePricing
+          ? Array.from({ length: componentLines.length }, () => 0)
+          : this.allocateAmountByWeights(
+              saleUnitPrice * quantity,
+              allocationWeights,
+            );
+        const finalLineTotals = isFixedAmountBundlePricing
+          ? Array.from({ length: componentLines.length }, () => 0)
+          : this.allocateAmountByWeights(finalLineTotal, allocationWeights);
 
         const componentVariantIds = Array.from(
           new Set<string>(
@@ -2466,15 +2495,18 @@ export class V2CheckoutService {
             componentQuantity > 0
               ? Math.floor(componentFinalTotal / componentQuantity)
               : componentSaleUnitPrice;
-          const componentAllocatedUnitAmount = this.normalizeNonNegativeInteger(
-            componentLine?.allocated_unit_amount ?? componentFinalUnitPrice,
-            `bundle_component_lines[${componentIndex}].allocated_unit_amount`,
-          );
-          const componentAllocatedDiscountAmount =
-            this.normalizeNonNegativeInteger(
-              componentLine?.allocated_discount_amount ?? 0,
-              `bundle_component_lines[${componentIndex}].allocated_discount_amount`,
-            ) * quantity;
+          const componentAllocatedUnitAmount = isFixedAmountBundlePricing
+            ? 0
+            : this.normalizeNonNegativeInteger(
+                componentLine?.allocated_unit_amount ?? componentFinalUnitPrice,
+                `bundle_component_lines[${componentIndex}].allocated_unit_amount`,
+              );
+          const componentAllocatedDiscountAmount = isFixedAmountBundlePricing
+            ? 0
+            : this.normalizeNonNegativeInteger(
+                componentLine?.allocated_discount_amount ?? 0,
+                `bundle_component_lines[${componentIndex}].allocated_discount_amount`,
+              ) * quantity;
           const componentVariantSnapshot =
             variantSnapshotById.get(componentVariantId) || null;
           const componentFulfillmentType = this.normalizeOptionalText(
@@ -2538,9 +2570,8 @@ export class V2CheckoutService {
               typeof componentLine?.requires_shipping === 'boolean'
                 ? componentLine.requires_shipping
                 : null,
-            campaign_id_snapshot: campaignIdSnapshot,
-            campaign_name_snapshot:
-              this.normalizeOptionalText(line?.campaign_name) || null,
+            campaign_id_snapshot: campaignSnapshot.campaignId,
+            campaign_name_snapshot: campaignSnapshot.campaignName,
             bundle_component_id_snapshot: bundleComponentIdSnapshot,
             allocated_unit_amount: componentAllocatedUnitAmount,
             allocated_discount_amount: componentAllocatedDiscountAmount,
@@ -2608,12 +2639,8 @@ export class V2CheckoutService {
         tax_total: 0,
         final_line_total: finalLineTotal,
         sku_snapshot: this.normalizeOptionalText(line?.sku),
-        product_name_snapshot:
-          this.normalizeOptionalText(line?.product_name_snapshot) || null,
-        variant_name_snapshot:
-          this.normalizeOptionalText(line?.variant_name_snapshot) ||
-          this.normalizeOptionalText(line?.title) ||
-          null,
+        product_name_snapshot: lineProductNameSnapshot,
+        variant_name_snapshot: lineVariantNameSnapshot,
         project_id_snapshot: this.normalizeOptionalUuid(line?.project_id),
         project_name_snapshot:
           this.normalizeOptionalText(line?.project_name_snapshot) || null,
@@ -2625,9 +2652,8 @@ export class V2CheckoutService {
           typeof line?.requires_shipping === 'boolean'
             ? line.requires_shipping
             : null,
-        campaign_id_snapshot: campaignIdSnapshot,
-        campaign_name_snapshot:
-          this.normalizeOptionalText(line?.campaign_name) || null,
+        campaign_id_snapshot: campaignSnapshot.campaignId,
+        campaign_name_snapshot: campaignSnapshot.campaignName,
         bundle_component_id_snapshot: null,
         allocated_unit_amount: null,
         allocated_discount_amount: 0,
@@ -2646,6 +2672,166 @@ export class V2CheckoutService {
     }
 
     return createdOrderItems;
+  }
+
+  private async resolveCampaignSnapshotsByQuoteLines(input: {
+    quoteLines: any[];
+    lineContexts: CheckoutLineContext[];
+    fallbackCampaignId: string | null;
+  }): Promise<CampaignSnapshotContext[]> {
+    const lines = Array.isArray(input.quoteLines) ? input.quoteLines : [];
+    const lineContexts = Array.isArray(input.lineContexts) ? input.lineContexts : [];
+
+    const explicitCampaignIds = new Set<string>();
+    const fallbackCampaignId = this.normalizeOptionalUuid(input.fallbackCampaignId);
+    if (fallbackCampaignId) {
+      explicitCampaignIds.add(fallbackCampaignId);
+    }
+
+    const selectedPriceListIds = new Set<string>();
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      const lineContext = lineContexts[index];
+
+      const lineCampaignId = this.normalizeOptionalUuid(line?.campaign_id);
+      if (lineCampaignId) {
+        explicitCampaignIds.add(lineCampaignId);
+      }
+
+      const contextCampaignId = this.normalizeOptionalUuid(lineContext?.campaignId);
+      if (contextCampaignId) {
+        explicitCampaignIds.add(contextCampaignId);
+      }
+
+      const selectedPriceListId =
+        this.extractSelectedPriceListIdFromQuoteLine(line);
+      if (selectedPriceListId) {
+        selectedPriceListIds.add(selectedPriceListId);
+      }
+    }
+
+    const campaignByPriceListId = await this.fetchCampaignByPriceListIds(
+      Array.from(selectedPriceListIds),
+    );
+
+    for (const value of campaignByPriceListId.values()) {
+      if (value.campaignId) {
+        explicitCampaignIds.add(value.campaignId);
+      }
+    }
+
+    const campaignNameById = await this.fetchCampaignNameByIds(
+      Array.from(explicitCampaignIds),
+    );
+
+    const snapshots: CampaignSnapshotContext[] = [];
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      const lineContext = lineContexts[index];
+
+      const lineCampaignId = this.normalizeOptionalUuid(line?.campaign_id);
+      const contextCampaignId = this.normalizeOptionalUuid(lineContext?.campaignId);
+      const explicitCampaignId =
+        lineCampaignId || contextCampaignId || fallbackCampaignId || null;
+      const explicitCampaignName = this.normalizeOptionalText(line?.campaign_name);
+
+      const selectedPriceListId =
+        this.extractSelectedPriceListIdFromQuoteLine(line);
+      const campaignFromPriceList = selectedPriceListId
+        ? campaignByPriceListId.get(selectedPriceListId) || null
+        : null;
+
+      const campaignId =
+        campaignFromPriceList?.campaignId || explicitCampaignId || null;
+      const campaignName = campaignFromPriceList?.campaignName
+        || explicitCampaignName
+        || (campaignId ? campaignNameById.get(campaignId) || null : null);
+
+      snapshots.push({
+        campaignId,
+        campaignName,
+      });
+    }
+
+    return snapshots;
+  }
+
+  private async fetchCampaignByPriceListIds(
+    priceListIds: string[],
+  ): Promise<Map<string, CampaignSnapshotContext>> {
+    if (priceListIds.length === 0) {
+      return new Map();
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_price_lists')
+      .select('id, campaign_id, campaign:v2_campaigns(name)')
+      .in('id', priceListIds);
+
+    if (error) {
+      throw new ApiException(
+        '가격표 기반 캠페인 조회 실패',
+        500,
+        'V2_ORDER_PRICE_LIST_CAMPAIGN_FETCH_FAILED',
+      );
+    }
+
+    const campaignByPriceListId = new Map<string, CampaignSnapshotContext>();
+    for (const row of data || []) {
+      const priceListId = this.normalizeOptionalUuid(row.id);
+      const campaignId = this.normalizeOptionalUuid(row.campaign_id);
+      if (!priceListId || !campaignId) {
+        continue;
+      }
+
+      const campaignRow = Array.isArray(row.campaign)
+        ? row.campaign[0]
+        : row.campaign;
+      const campaignName = this.normalizeOptionalText(campaignRow?.name) || null;
+      campaignByPriceListId.set(priceListId, {
+        campaignId,
+        campaignName,
+      });
+    }
+
+    return campaignByPriceListId;
+  }
+
+  private async fetchCampaignNameByIds(campaignIds: string[]): Promise<Map<string, string>> {
+    if (campaignIds.length === 0) {
+      return new Map();
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_campaigns')
+      .select('id, name')
+      .in('id', campaignIds);
+
+    if (error) {
+      throw new ApiException(
+        '캠페인 이름 조회 실패',
+        500,
+        'V2_ORDER_CAMPAIGN_NAME_FETCH_FAILED',
+      );
+    }
+
+    const campaignNameById = new Map<string, string>();
+    for (const row of data || []) {
+      const campaignId = this.normalizeOptionalUuid(row.id);
+      const campaignName = this.normalizeOptionalText(row.name);
+      if (!campaignId || !campaignName) {
+        continue;
+      }
+      campaignNameById.set(campaignId, campaignName);
+    }
+
+    return campaignNameById;
+  }
+
+  private extractSelectedPriceListIdFromQuoteLine(line: unknown): string | null {
+    const lineRecord = this.normalizeOptionalJsonObject(line);
+    const pricing = this.normalizeOptionalJsonObject(lineRecord?.pricing);
+    return this.normalizeOptionalUuid(pricing?.selected_price_list_id);
   }
 
   private async createOrderItemAdjustments(

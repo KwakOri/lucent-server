@@ -6002,6 +6002,8 @@ export class V2CatalogService {
         product_kind: product.product_kind,
         sku: variant.sku,
         title: variant.title,
+        product_name_snapshot: this.normalizeOptionalText(product.title) || null,
+        variant_name_snapshot: this.normalizeOptionalText(variant.title) || null,
         quantity: line.quantity,
         fulfillment_type: variant.fulfillment_type,
         requires_shipping: variant.requires_shipping,
@@ -6988,7 +6990,7 @@ export class V2CatalogService {
 
     const mode = input.mode ?? 'FIXED';
     const status = input.status ?? 'DRAFT';
-    const pricingStrategy = input.pricing_strategy ?? 'WEIGHTED';
+    const pricingStrategy = input.pricing_strategy ?? 'FIXED_AMOUNT';
 
     this.assertBundleMode(mode);
     this.assertBundleStatus(status);
@@ -7853,6 +7855,10 @@ export class V2CatalogService {
     }
 
     const definition = await this.getBundleDefinitionById(bundleDefinitionId);
+    const pricingStrategy: V2BundlePricingStrategy =
+      definition.pricing_strategy === 'FIXED_AMOUNT'
+        ? 'FIXED_AMOUNT'
+        : 'WEIGHTED';
     const validation = await this.validateBundleDefinition(bundleDefinitionId, {
       selected_components: input.selected_components,
     });
@@ -7943,7 +7949,11 @@ export class V2CatalogService {
       })
       .filter((line): line is NonNullable<typeof line> => line !== null);
 
-    if (parentUnitAmount !== null && componentLines.length > 0) {
+    if (
+      parentUnitAmount !== null &&
+      pricingStrategy === 'WEIGHTED' &&
+      componentLines.length > 0
+    ) {
       const allocations = this.allocateAmountByWeights(
         parentUnitAmount,
         componentLines.map((line) => line.allocation_weight),
@@ -7976,6 +7986,7 @@ export class V2CatalogService {
       bundle_definition_id: bundleDefinitionId,
       mode: definition.mode,
       status: definition.status,
+      pricing_strategy: pricingStrategy,
       parent_line: {
         line_type: 'BUNDLE_PARENT',
         bundle_definition_id_snapshot: bundleDefinitionId,

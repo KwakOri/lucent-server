@@ -22,6 +22,9 @@ type NotificationPersistStatus = 'ACCEPTED' | 'FAILED' | 'DISABLED' | 'SKIPPED';
 export class CommerceNotificationsService {
   private readonly logger = new Logger(CommerceNotificationsService.name);
   private notificationLogUnavailable = false;
+  private readonly temporarilyDisabledEvents = new Set<CommerceNotificationEvent>(
+    ['PAYMENT_CAPTURED', 'SHIPMENT_DISPATCHED'],
+  );
 
   private get supabase(): any {
     return getSupabaseClient() as any;
@@ -66,6 +69,21 @@ export class CommerceNotificationsService {
     const templateId = this.resolveTemplateId(input.event);
     const phone = this.resolveRecipientPhone(input.order);
     const variables = this.buildVariables(input);
+
+    if (this.temporarilyDisabledEvents.has(input.event)) {
+      this.logger.warn(
+        `Skip ${input.event}: temporarily disabled by service configuration.`,
+      );
+      await this.persistNotificationLog({
+        input,
+        templateId,
+        phone,
+        variables,
+        status: 'SKIPPED',
+        errorMessage: 'SENDON_EVENT_TEMPORARILY_DISABLED',
+      });
+      return;
+    }
 
     if (!this.configService.sendon.commerceNotifyEnabled) {
       await this.persistNotificationLog({
@@ -223,43 +241,43 @@ export class CommerceNotificationsService {
     const customerName = this.resolveCustomerName(order);
 
     const base = {
-      '#{주문번호}': this.valueOrDash(order.order_no || order.id),
-      '#{고객명}': this.valueOrDash(customerName),
-      '#{주문상태}': this.valueOrDash(order.order_status),
-      '#{결제상태}': this.valueOrDash(order.payment_status),
-      '#{배송상태}': this.valueOrDash(order.fulfillment_status),
-      '#{주문금액}': this.formatKrw(order.grand_total),
-      '#{주문일시}': this.formatDateTime(order.placed_at),
+      '#{order_no}': this.valueOrDash(order.order_no || order.id),
+      '#{customer_name}': this.valueOrDash(customerName),
+      '#{order_status}': this.valueOrDash(order.order_status),
+      '#{payment_status}': this.valueOrDash(order.payment_status),
+      '#{fulfillment_status}': this.valueOrDash(order.fulfillment_status),
+      '#{order_amount}': this.formatKrw(order.grand_total),
+      '#{ordered_at}': this.formatDateTime(order.placed_at),
     };
 
     if (input.event === 'PAYMENT_CAPTURED') {
       return {
         ...base,
-        '#{결제금액}': this.formatKrw(order.grand_total),
-        '#{결제일시}': this.formatDateTime(order.confirmed_at),
+        '#{payment_amount}': this.formatKrw(order.grand_total),
+        '#{paid_at}': this.formatDateTime(order.confirmed_at),
       };
     }
 
     if (input.event === 'SHIPMENT_DISPATCHED') {
       return {
         ...base,
-        '#{배송상태}': this.valueOrDash(
+        '#{fulfillment_status}': this.valueOrDash(
           shipment.status || order.fulfillment_status,
         ),
-        '#{택배사}': this.valueOrDash(shipment.carrier),
-        '#{송장번호}': this.valueOrDash(shipment.tracking_no),
-        '#{송장URL}': this.valueOrDash(shipment.tracking_url),
-        '#{출고일시}': this.formatDateTime(shipment.shipped_at),
+        '#{carrier}': this.valueOrDash(shipment.carrier),
+        '#{tracking_no}': this.valueOrDash(shipment.tracking_no),
+        '#{tracking_url}': this.valueOrDash(shipment.tracking_url),
+        '#{shipped_at}': this.formatDateTime(shipment.shipped_at),
       };
     }
 
     if (input.event === 'SHIPMENT_DELIVERED') {
       return {
         ...base,
-        '#{배송상태}': this.valueOrDash(
+        '#{fulfillment_status}': this.valueOrDash(
           shipment.status || order.fulfillment_status,
         ),
-        '#{배송완료일시}': this.formatDateTime(shipment.delivered_at),
+        '#{delivered_at}': this.formatDateTime(shipment.delivered_at),
       };
     }
 
