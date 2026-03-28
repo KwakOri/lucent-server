@@ -22,6 +22,9 @@ type NotificationPersistStatus = 'ACCEPTED' | 'FAILED' | 'DISABLED' | 'SKIPPED';
 export class CommerceNotificationsService {
   private readonly logger = new Logger(CommerceNotificationsService.name);
   private notificationLogUnavailable = false;
+  private readonly temporarilyDisabledEvents = new Set<CommerceNotificationEvent>(
+    ['PAYMENT_CAPTURED', 'SHIPMENT_DISPATCHED'],
+  );
 
   private get supabase(): any {
     return getSupabaseClient() as any;
@@ -66,6 +69,21 @@ export class CommerceNotificationsService {
     const templateId = this.resolveTemplateId(input.event);
     const phone = this.resolveRecipientPhone(input.order);
     const variables = this.buildVariables(input);
+
+    if (this.temporarilyDisabledEvents.has(input.event)) {
+      this.logger.warn(
+        `Skip ${input.event}: temporarily disabled by service configuration.`,
+      );
+      await this.persistNotificationLog({
+        input,
+        templateId,
+        phone,
+        variables,
+        status: 'SKIPPED',
+        errorMessage: 'SENDON_EVENT_TEMPORARILY_DISABLED',
+      });
+      return;
+    }
 
     if (!this.configService.sendon.commerceNotifyEnabled) {
       await this.persistNotificationLog({
