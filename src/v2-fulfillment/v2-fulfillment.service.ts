@@ -143,6 +143,11 @@ interface EnsureShipmentInfrastructureInput {
   metadata?: Record<string, unknown> | null;
 }
 
+interface EnsureDigitalEntitlementsForOrderInput {
+  order_id?: string;
+  metadata?: Record<string, unknown> | null;
+}
+
 interface OpsLimitInput {
   limit?: string | number | null;
 }
@@ -1460,6 +1465,132 @@ export class V2FulfillmentService {
     };
   }
 
+  async ensureDigitalEntitlementsForOrder(
+    input: EnsureDigitalEntitlementsForOrderInput,
+  ): Promise<{
+    order_id: string;
+    digital_order_item_count: number;
+    created_count: number;
+    reissued_count: number;
+    already_granted_count: number;
+    entitlement_ids: string[];
+  }> {
+    const orderId = this.requireUuid(input.order_id, 'order_id는 필수입니다');
+    const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
+    const order = await this.fetchOrderForCutover(orderId);
+    const orderItems = await this.fetchOrderItemsForCutover(orderId);
+    const digitalOrderItems = orderItems.filter((item) => this.isOrderItemDigital(item));
+
+    if (digitalOrderItems.length === 0) {
+      return {
+        order_id: orderId,
+        digital_order_item_count: 0,
+        created_count: 0,
+        reissued_count: 0,
+        already_granted_count: 0,
+        entitlement_ids: [],
+      };
+    }
+
+    this.assertCutoverPolicyOrThrow({
+      order,
+      orderItems: digitalOrderItems,
+      reserveInventory: false,
+      grantEntitlement: true,
+    });
+
+    let createdCount = 0;
+    let reissuedCount = 0;
+    let alreadyGrantedCount = 0;
+    const entitlementIds = new Set<string>();
+
+    for (const orderItem of digitalOrderItems) {
+      const orderItemId = this.requireUuid(
+        orderItem.id,
+        'order_item.id가 올바르지 않습니다',
+      );
+      const activeEntitlement =
+        await this.findActiveEntitlementByOrderItem(orderItemId);
+      if (!activeEntitlement) {
+        const latestEntitlement =
+          await this.findLatestEntitlementByOrderItem(orderItemId);
+        const latestStatus = this.normalizeOptionalText(latestEntitlement?.status);
+        if (latestStatus === 'FAILED' || latestStatus === 'REVOKED') {
+          throw new ApiException(
+            `order_item(${orderItemId}) entitlement 상태가 ${latestStatus}라 자동 지급할 수 없습니다`,
+            409,
+            'ENTITLEMENT_INVALID_STATE',
+          );
+        }
+
+        const grantResult = await this.grantEntitlement({
+          order_id: orderId,
+          order_item_id: orderItemId,
+          access_type: 'DOWNLOAD',
+          token_reference: `AUTO:${orderItemId}`,
+          metadata: this.mergeMetadata(metadata, {
+            source: 'ORDER_DIGITAL_ENTITLEMENT_ENSURE',
+            order_item_id: orderItemId,
+          }),
+        });
+        const grantedId = this.normalizeOptionalUuid(grantResult?.entitlement?.id);
+        if (grantedId) {
+          entitlementIds.add(grantedId);
+        }
+        if (grantResult?.idempotent_replayed) {
+          alreadyGrantedCount += 1;
+        } else {
+          createdCount += 1;
+        }
+        continue;
+      }
+
+      const entitlementId = this.requireUuid(
+        activeEntitlement.id,
+        'entitlement.id가 올바르지 않습니다',
+      );
+      const status = this.normalizeOptionalText(activeEntitlement.status);
+      entitlementIds.add(entitlementId);
+      if (status === 'GRANTED') {
+        alreadyGrantedCount += 1;
+        continue;
+      }
+      if (status === 'PENDING' || status === 'EXPIRED') {
+        await this.reissueEntitlement(entitlementId, {
+          metadata: this.mergeMetadata(metadata, {
+            source: 'ORDER_DIGITAL_ENTITLEMENT_ENSURE',
+            order_item_id: orderItemId,
+            status_before: status,
+          }),
+        });
+        reissuedCount += 1;
+        continue;
+      }
+      if (status === 'FAILED' || status === 'REVOKED') {
+        throw new ApiException(
+          `order_item(${orderItemId}) entitlement 상태가 ${status}라 자동 지급할 수 없습니다`,
+          409,
+          'ENTITLEMENT_INVALID_STATE',
+        );
+      }
+
+      throw new ApiException(
+        `지원하지 않는 entitlement 상태입니다: ${status || 'UNKNOWN'}`,
+        409,
+        'ENTITLEMENT_INVALID_STATE',
+      );
+    }
+
+    return {
+      order_id: orderId,
+      digital_order_item_count: digitalOrderItems.length,
+      created_count: createdCount,
+      reissued_count: reissuedCount,
+      already_granted_count: alreadyGrantedCount,
+      entitlement_ids: Array.from(entitlementIds),
+    };
+  }
+
   async createShipment(input: CreateShipmentInput): Promise<any> {
     const fulfillmentId = this.requireUuid(
       input.fulfillment_id,
@@ -2603,6 +2734,29 @@ export class V2FulfillmentService {
     if (error) {
       throw new ApiException(
         'entitlement 중복 조회 실패',
+        500,
+        'ENTITLEMENT_FETCH_FAILED',
+      );
+    }
+    if (!Array.isArray(data) || data.length === 0) {
+      return null;
+    }
+    return data[0];
+  }
+
+  private async findLatestEntitlementByOrderItem(
+    orderItemId: string,
+  ): Promise<any | null> {
+    const { data, error } = await this.supabase
+      .from('v2_digital_entitlements')
+      .select('*')
+      .eq('order_item_id', orderItemId)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (error) {
+      throw new ApiException(
+        'entitlement 최신 상태 조회 실패',
         500,
         'ENTITLEMENT_FETCH_FAILED',
       );
