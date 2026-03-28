@@ -460,6 +460,13 @@ interface UpdateV2CampaignTargetInput {
   metadata?: Record<string, unknown>;
 }
 
+interface CampaignTargetScopeRow {
+  id?: string;
+  target_type: V2CampaignTargetType | null;
+  target_id: string | null;
+  is_excluded: boolean;
+}
+
 interface CreateV2PriceListInput {
   campaign_id?: string | null;
   name?: string;
@@ -3399,6 +3406,13 @@ export class V2CatalogService {
     const status = input.status ?? 'DRAFT';
     this.assertCampaignType(campaignType);
     this.assertCampaignStatus(status);
+    if (campaignType === 'ALWAYS_ON' && status === 'ACTIVE') {
+      throw new ApiException(
+        '상시 운영 캠페인은 대상 설정 후 ACTIVE로 전환해 주세요',
+        400,
+        'V2_ALWAYS_ON_CAMPAIGN_TARGET_REQUIRED',
+      );
+    }
 
     const startsAt = this.normalizeOptionalTimestamp(input.starts_at, 'starts_at');
     const endsAt = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
@@ -3427,6 +3441,7 @@ export class V2CatalogService {
         purchase_limit_json: this.normalizeOptionalObjectJson(
           input.purchase_limit_json,
         ),
+        project_id: null,
         source_type: this.normalizeOptionalText(input.source_type),
         source_id: this.normalizeOptionalText(input.source_id),
         source_snapshot_json: this.normalizeOptionalObjectJson(
@@ -3544,19 +3559,18 @@ export class V2CatalogService {
     const nextCampaignStatus =
       (updateData.status as V2CampaignStatus | undefined) ??
       (current.status as V2CampaignStatus);
-    if (nextCampaignType === 'ALWAYS_ON' && nextCampaignStatus === 'ACTIVE') {
+    if (nextCampaignType === 'ALWAYS_ON') {
       const projectIds = await this.resolveCampaignIncludedProjectIds(campaignId);
-      if (projectIds.length === 0) {
-        throw new ApiException(
-          '상시 운영 캠페인을 ACTIVE로 전환하려면 대상 프로젝트를 1개 이상 포함해야 합니다',
-          400,
-          'V2_ALWAYS_ON_CAMPAIGN_TARGET_REQUIRED',
-        );
+      this.assertAlwaysOnCampaignProjectScope(projectIds, nextCampaignStatus === 'ACTIVE');
+      if (nextCampaignStatus === 'ACTIVE' && projectIds.length > 0) {
+        await this.assertNoActiveAlwaysOnCampaignProjectConflicts({
+          campaignId,
+          projectIds,
+        });
       }
-      await this.assertNoActiveAlwaysOnCampaignProjectConflicts({
-        campaignId,
-        projectIds,
-      });
+      updateData.project_id = projectIds[0] ?? null;
+    } else if (current.project_id) {
+      updateData.project_id = null;
     }
 
     if (Object.keys(updateData).length === 0) {
@@ -3604,20 +3618,16 @@ export class V2CatalogService {
     const current = await this.getCampaignById(campaignId);
     this.assertCampaignStatusTransition(current.status as V2CampaignStatus, 'ACTIVE');
     const nowIso = new Date().toISOString();
+    let alwaysOnProjectId: string | null = null;
 
     if ((current.campaign_type as V2CampaignType) === 'ALWAYS_ON') {
       const projectIds = await this.resolveCampaignIncludedProjectIds(campaignId);
-      if (projectIds.length === 0) {
-        throw new ApiException(
-          '상시 운영 캠페인을 ACTIVE로 전환하려면 대상 프로젝트를 1개 이상 포함해야 합니다',
-          400,
-          'V2_ALWAYS_ON_CAMPAIGN_TARGET_REQUIRED',
-        );
-      }
+      this.assertAlwaysOnCampaignProjectScope(projectIds, true);
       await this.assertNoActiveAlwaysOnCampaignProjectConflicts({
         campaignId,
         projectIds,
       });
+      alwaysOnProjectId = projectIds[0];
     }
 
     const endsAt = this.normalizeOptionalTimestamp(
@@ -3633,6 +3643,10 @@ export class V2CatalogService {
         status: 'ACTIVE',
         starts_at: current.starts_at ?? nowIso,
         ends_at: shouldClearEndsAt ? null : endsAt,
+        project_id:
+          (current.campaign_type as V2CampaignType) === 'ALWAYS_ON'
+            ? alwaysOnProjectId
+            : null,
       })
       .eq('id', campaignId)
       .select('*')
@@ -3791,10 +3805,12 @@ export class V2CatalogService {
     return [];
   }
 
-  private async resolveCampaignIncludedProjectIds(campaignId: string): Promise<string[]> {
+  private async fetchCampaignTargetScopeRows(
+    campaignId: string,
+  ): Promise<CampaignTargetScopeRow[]> {
     const { data, error } = await this.supabase
       .from('v2_campaign_targets')
-      .select('target_type,target_id,is_excluded')
+      .select('id,target_type,target_id,is_excluded')
       .eq('campaign_id', campaignId)
       .is('deleted_at', null);
     if (error) {
@@ -3804,14 +3820,31 @@ export class V2CatalogService {
         'V2_CAMPAIGN_TARGETS_FETCH_FAILED',
       );
     }
+    return (data || []).map((row: any) => ({
+      id: this.normalizeOptionalText(row.id as string | null | undefined) || undefined,
+      target_type: (row.target_type as V2CampaignTargetType | null) ?? null,
+      target_id: this.normalizeOptionalText(
+        row.target_id as string | null | undefined,
+      ),
+      is_excluded: (row.is_excluded as boolean | null | undefined) ?? false,
+    }));
+  }
+
+  private async resolveCampaignIncludedProjectIds(
+    campaignId: string,
+    targetRowsOverride?: CampaignTargetScopeRow[],
+  ): Promise<string[]> {
+    const rows =
+      targetRowsOverride ??
+      (await this.fetchCampaignTargetScopeRows(campaignId));
 
     const projectIds = new Set<string>();
-    for (const row of data || []) {
+    for (const row of rows) {
       if (row.is_excluded) {
         continue;
       }
-      const targetType = row.target_type as V2CampaignTargetType | null;
-      const targetId = this.normalizeOptionalText(row.target_id as string | null | undefined);
+      const targetType = row.target_type;
+      const targetId = row.target_id;
       if (!targetType || !targetId) {
         continue;
       }
@@ -3826,42 +3859,50 @@ export class V2CatalogService {
       });
     }
 
-    if (projectIds.size === 0) {
-      const campaign = await this.getCampaignById(campaignId);
-      const sourceType = this.normalizeOptionalText(
-        campaign.source_type as string | null | undefined,
-      );
-      const sourceId = this.normalizeOptionalText(
-        campaign.source_id as string | null | undefined,
-      );
-
-      if (
-        sourceId &&
-        (!sourceType || sourceType.toUpperCase() === 'PROJECT')
-      ) {
-        const { data: sourceProject, error: sourceProjectError } = await this.supabase
-          .from('v2_projects')
-          .select('id')
-          .eq('id', sourceId)
-          .is('deleted_at', null)
-          .maybeSingle();
-        if (sourceProjectError) {
-          throw new ApiException(
-            'campaign source 프로젝트 매핑 실패',
-            500,
-            'V2_CAMPAIGN_SOURCE_PROJECT_RESOLVE_FAILED',
-          );
-        }
-        const sourceProjectId = this.normalizeOptionalText(
-          sourceProject?.id as string | null | undefined,
-        );
-        if (sourceProjectId) {
-          projectIds.add(sourceProjectId);
-        }
-      }
-    }
-
     return Array.from(projectIds);
+  }
+
+  private assertAlwaysOnCampaignProjectScope(
+    projectIds: string[],
+    requireIncludedProject: boolean,
+  ): void {
+    const uniqueProjectIds = Array.from(
+      new Set((projectIds || []).filter((projectId) => !!projectId)),
+    );
+    if (uniqueProjectIds.length > 1) {
+      throw new ApiException(
+        '상시 운영 캠페인은 하나의 프로젝트만 포함할 수 있습니다',
+        400,
+        'V2_ALWAYS_ON_CAMPAIGN_SINGLE_PROJECT_REQUIRED',
+      );
+    }
+    if (requireIncludedProject && uniqueProjectIds.length === 0) {
+      throw new ApiException(
+        '상시 운영 캠페인을 ACTIVE로 전환하려면 대상 프로젝트를 1개 이상 포함해야 합니다',
+        400,
+        'V2_ALWAYS_ON_CAMPAIGN_TARGET_REQUIRED',
+      );
+    }
+  }
+
+  private async updateCampaignProjectScope(
+    campaignId: string,
+    projectId: string | null,
+  ): Promise<void> {
+    const { error } = await this.supabase
+      .from('v2_campaigns')
+      .update({
+        project_id: projectId,
+      })
+      .eq('id', campaignId)
+      .is('deleted_at', null);
+    if (error) {
+      throw new ApiException(
+        'campaign 프로젝트 범위 동기화 실패',
+        500,
+        'V2_CAMPAIGN_UPDATE_FAILED',
+      );
+    }
   }
 
   private async assertNoActiveAlwaysOnCampaignProjectConflicts(params: {
@@ -3936,16 +3977,31 @@ export class V2CatalogService {
     );
     await this.ensureCampaignTargetEntityExists(targetType, targetId);
 
-    if (
-      campaign.campaign_type === 'ALWAYS_ON' &&
-      campaign.status === 'ACTIVE' &&
-      !(input.is_excluded ?? false)
-    ) {
-      const projectIds = await this.resolveProjectIdsByCampaignTarget(targetType, targetId);
-      await this.assertNoActiveAlwaysOnCampaignProjectConflicts({
+    let alwaysOnProjectIds: string[] = [];
+    if (campaign.campaign_type === 'ALWAYS_ON') {
+      const currentTargetRows = await this.fetchCampaignTargetScopeRows(campaignId);
+      const nextTargetRows: CampaignTargetScopeRow[] = [
+        ...currentTargetRows,
+        {
+          target_type: targetType,
+          target_id: targetId,
+          is_excluded: input.is_excluded ?? false,
+        },
+      ];
+      alwaysOnProjectIds = await this.resolveCampaignIncludedProjectIds(
         campaignId,
-        projectIds,
-      });
+        nextTargetRows,
+      );
+      this.assertAlwaysOnCampaignProjectScope(
+        alwaysOnProjectIds,
+        campaign.status === 'ACTIVE',
+      );
+      if (campaign.status === 'ACTIVE' && alwaysOnProjectIds.length > 0) {
+        await this.assertNoActiveAlwaysOnCampaignProjectConflicts({
+          campaignId,
+          projectIds: alwaysOnProjectIds,
+        });
+      }
     }
 
     if (input.sort_order !== undefined) {
@@ -3976,6 +4032,10 @@ export class V2CatalogService {
         500,
         'V2_CAMPAIGN_TARGET_CREATE_FAILED',
       );
+    }
+
+    if (campaign.campaign_type === 'ALWAYS_ON') {
+      await this.updateCampaignProjectScope(campaignId, alwaysOnProjectIds[0] ?? null);
     }
 
     return data;
@@ -4028,19 +4088,36 @@ export class V2CatalogService {
     }
 
     const nextExcluded = (input.is_excluded ?? current.is_excluded) as boolean;
-    if (
-      campaign.campaign_type === 'ALWAYS_ON' &&
-      campaign.status === 'ACTIVE' &&
-      !nextExcluded
-    ) {
-      const projectIds = await this.resolveProjectIdsByCampaignTarget(
-        nextTargetType,
-        nextTargetId,
+    let alwaysOnProjectIds: string[] = [];
+    if (campaign.campaign_type === 'ALWAYS_ON') {
+      const currentTargetRows = await this.fetchCampaignTargetScopeRows(
+        campaign.id as string,
       );
-      await this.assertNoActiveAlwaysOnCampaignProjectConflicts({
-        campaignId: campaign.id as string,
-        projectIds,
+      const nextTargetRows = currentTargetRows.map((row) => {
+        if (row.id !== targetId) {
+          return row;
+        }
+        return {
+          ...row,
+          target_type: nextTargetType,
+          target_id: nextTargetId,
+          is_excluded: nextExcluded,
+        };
       });
+      alwaysOnProjectIds = await this.resolveCampaignIncludedProjectIds(
+        campaign.id as string,
+        nextTargetRows,
+      );
+      this.assertAlwaysOnCampaignProjectScope(
+        alwaysOnProjectIds,
+        campaign.status === 'ACTIVE',
+      );
+      if (campaign.status === 'ACTIVE' && alwaysOnProjectIds.length > 0) {
+        await this.assertNoActiveAlwaysOnCampaignProjectConflicts({
+          campaignId: campaign.id as string,
+          projectIds: alwaysOnProjectIds,
+        });
+      }
     }
 
     if (Object.keys(updateData).length === 0) {
@@ -4062,11 +4139,40 @@ export class V2CatalogService {
       );
     }
 
+    if (campaign.campaign_type === 'ALWAYS_ON') {
+      await this.updateCampaignProjectScope(
+        campaign.id as string,
+        alwaysOnProjectIds[0] ?? null,
+      );
+    }
+
     return data;
   }
 
   async deleteCampaignTarget(targetId: string): Promise<void> {
-    await this.getCampaignTargetById(targetId);
+    const current = await this.getCampaignTargetById(targetId);
+    const campaign = await this.getCampaignById(current.campaign_id as string);
+    let alwaysOnProjectIds: string[] = [];
+    if (campaign.campaign_type === 'ALWAYS_ON') {
+      const currentTargetRows = await this.fetchCampaignTargetScopeRows(
+        campaign.id as string,
+      );
+      const nextTargetRows = currentTargetRows.filter((row) => row.id !== targetId);
+      alwaysOnProjectIds = await this.resolveCampaignIncludedProjectIds(
+        campaign.id as string,
+        nextTargetRows,
+      );
+      this.assertAlwaysOnCampaignProjectScope(
+        alwaysOnProjectIds,
+        campaign.status === 'ACTIVE',
+      );
+      if (campaign.status === 'ACTIVE' && alwaysOnProjectIds.length > 0) {
+        await this.assertNoActiveAlwaysOnCampaignProjectConflicts({
+          campaignId: campaign.id as string,
+          projectIds: alwaysOnProjectIds,
+        });
+      }
+    }
     const { error } = await this.supabase
       .from('v2_campaign_targets')
       .update({
@@ -4079,6 +4185,13 @@ export class V2CatalogService {
         'campaign target 삭제 실패',
         500,
         'V2_CAMPAIGN_TARGET_DELETE_FAILED',
+      );
+    }
+
+    if (campaign.campaign_type === 'ALWAYS_ON') {
+      await this.updateCampaignProjectScope(
+        campaign.id as string,
+        alwaysOnProjectIds[0] ?? null,
       );
     }
   }
