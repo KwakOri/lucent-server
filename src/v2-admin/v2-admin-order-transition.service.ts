@@ -21,6 +21,7 @@ type V2OrderTransitionActionKey =
   | 'ORDER_PAYMENT_MARK_AUTHORIZED'
   | 'ORDER_PAYMENT_MARK_CAPTURED'
   | 'ORDER_PAYMENT_MARK_PENDING'
+  | 'FULFILLMENT_ENTITLEMENT_ENSURE'
   | 'FULFILLMENT_SHIPMENT_FORCE_STATUS'
   | 'FULFILLMENT_ENTITLEMENT_FORCE_STATUS'
   | 'FULFILLMENT_SHIPMENT_DISPATCH'
@@ -556,20 +557,41 @@ export class V2AdminOrderTransitionService {
           }
 
           addDigitalCompletionActions();
-        } else if (paymentNeedsAuthorize) {
-          addAction({
-            action_key: 'ORDER_PAYMENT_MARK_AUTHORIZED',
-            resource_type: 'ORDER',
-            resource_id: input.order.id,
-            from_state: statuses.payment_status,
-            to_state: 'AUTHORIZED',
-            requires_approval: false,
-            note: '입금 확인(결제 AUTHORIZED) 처리',
-          });
-        } else if (paymentStatus !== 'AUTHORIZED') {
-          blockedReasons.push(
-            `현재 결제 상태(${paymentStatus})에서는 입금 확인 단계로 전환할 수 없습니다.`,
-          );
+        } else {
+          let canProceedPaymentConfirmed = false;
+          if (paymentNeedsAuthorize) {
+            addAction({
+              action_key: 'ORDER_PAYMENT_MARK_AUTHORIZED',
+              resource_type: 'ORDER',
+              resource_id: input.order.id,
+              from_state: statuses.payment_status,
+              to_state: 'AUTHORIZED',
+              requires_approval: false,
+              note: '입금 확인(결제 AUTHORIZED) 처리',
+            });
+            canProceedPaymentConfirmed = true;
+          } else if (paymentStatus === 'AUTHORIZED') {
+            canProceedPaymentConfirmed = true;
+          } else {
+            blockedReasons.push(
+              `현재 결제 상태(${paymentStatus})에서는 입금 확인 단계로 전환할 수 없습니다.`,
+            );
+          }
+
+          if (canProceedPaymentConfirmed && composition.has_digital) {
+            addAction({
+              action_key: 'FULFILLMENT_ENTITLEMENT_ENSURE',
+              resource_type: 'ORDER',
+              resource_id: input.order.id,
+              from_state:
+                input.entitlements.length > 0
+                  ? 'EXISTING_ENTITLEMENTS'
+                  : 'MISSING_ENTITLEMENTS',
+              to_state: 'GRANTED',
+              requires_approval: false,
+              note: '입금 확인 시 디지털 entitlement 발급/지급 보장',
+            });
+          }
         }
       }
 
@@ -755,7 +777,10 @@ export class V2AdminOrderTransitionService {
         shipmentStatuses.every((status) => status === 'DELIVERED');
 
       if (allDelivered) {
-        if (input.composition.has_digital && input.entitlements.length > 0) {
+        if (input.composition.has_digital) {
+          if (input.entitlements.length === 0) {
+            return 'IN_TRANSIT';
+          }
           const hasPendingDigital = input.entitlements.some((entitlement) => {
             const status = String(entitlement.status || '').toUpperCase();
             return status !== 'GRANTED';
@@ -1143,6 +1168,52 @@ export class V2AdminOrderTransitionService {
           }),
           execute: () =>
             this.v2FulfillmentService.reissueEntitlement(input.action.resource_id, {
+              metadata: {
+                source: 'ORDER_LINEAR_STAGE_TRANSITION',
+                target_stage: input.targetStage,
+                order_id: input.row.order_id,
+                order_no: input.row.order_no,
+                reason: input.reason,
+              },
+            }),
+        });
+        return {
+          status: 'SUCCEEDED',
+          order_id: input.row.order_id,
+          order_no: input.row.order_no,
+          action_key: input.action.action_key,
+          resource_type: input.action.resource_type,
+          resource_id: input.action.resource_id,
+          action_log_id: execution.action_log_id,
+        };
+      }
+
+      if (input.action.action_key === 'FULFILLMENT_ENTITLEMENT_ENSURE') {
+        const execution = await this.v2AdminActionExecutorService.execute({
+          actionKey: 'FULFILLMENT_ENTITLEMENT_ENSURE',
+          domain: 'FULFILLMENT',
+          actor: input.actor,
+          requiredPermissionCode: 'ENTITLEMENT_REISSUE',
+          resourceType: 'ORDER',
+          resourceId: input.row.order_id,
+          requestId: actionRequestId,
+          inputPayload: {
+            source: 'ORDER_LINEAR_STAGE_TRANSITION',
+            order_id: input.row.order_id,
+            order_no: input.row.order_no,
+            target_stage: input.targetStage,
+            reason: input.reason,
+            metadata: input.metadata,
+          },
+          transition: () => ({
+            transitionKey: 'ORDER_DIGITAL_ENTITLEMENT_ENSURE',
+            fromState: input.action.from_state,
+            toState: input.action.to_state,
+            reason: input.reason,
+          }),
+          execute: () =>
+            this.v2FulfillmentService.ensureDigitalEntitlementsForOrder({
+              order_id: input.row.order_id,
               metadata: {
                 source: 'ORDER_LINEAR_STAGE_TRANSITION',
                 target_stage: input.targetStage,
