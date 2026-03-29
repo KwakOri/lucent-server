@@ -238,7 +238,8 @@ export class V2FulfillmentController {
     @Body() body: GenerateFulfillmentPlanBody,
   ) {
     await this.requireAdmin(authorization);
-    const result = await this.v2FulfillmentService.generateFulfillmentPlan(body);
+    const result =
+      await this.v2FulfillmentService.generateFulfillmentPlan(body);
     return successResponse(result, 'fulfillment plan이 생성/갱신되었습니다');
   }
 
@@ -259,7 +260,10 @@ export class V2FulfillmentController {
   ) {
     await this.requireAdmin(authorization);
     const result = await this.v2FulfillmentService.orchestrateMixedOrder(body);
-    return successResponse(result, 'mixed order orchestration이 완료되었습니다');
+    return successResponse(
+      result,
+      'mixed order orchestration이 완료되었습니다',
+    );
   }
 
   @Get('ops/queue-summary')
@@ -370,7 +374,8 @@ export class V2FulfillmentController {
         transitionKey: 'SHIPMENT_DISPATCH',
         toState: 'SHIPPED',
       }),
-      execute: () => this.v2FulfillmentService.dispatchShipment(shipmentId, body),
+      execute: () =>
+        this.v2FulfillmentService.dispatchShipment(shipmentId, body),
     });
     return successResponse(execution.result, 'shipment가 출고되었습니다');
   }
@@ -395,7 +400,8 @@ export class V2FulfillmentController {
     @Param('shipmentId') shipmentId: string,
   ) {
     await this.requireAdmin(authorization);
-    const shipment = await this.v2FulfillmentService.getShipmentById(shipmentId);
+    const shipment =
+      await this.v2FulfillmentService.getShipmentById(shipmentId);
     return successResponse(shipment);
   }
 
@@ -486,7 +492,10 @@ export class V2FulfillmentController {
       entitlementId,
       body,
     );
-    return successResponse(result, 'entitlement 다운로드 이력이 기록되었습니다');
+    return successResponse(
+      result,
+      'entitlement 다운로드 이력이 기록되었습니다',
+    );
   }
 
   @Get('entitlements/:entitlementId')
@@ -512,7 +521,11 @@ export class V2FulfillmentController {
     }
 
     const user = await this.authSessionService.requireUser(authorization);
-    if (!this.authSessionService.isAdmin(user.email)) {
+    const isAdmin = await this.authSessionService.isAdmin({
+      userId: user.id,
+      email: user.email,
+    });
+    if (!isAdmin) {
       throw new ApiException('관리자 권한이 필요합니다', 403, 'ADMIN_REQUIRED');
     }
 

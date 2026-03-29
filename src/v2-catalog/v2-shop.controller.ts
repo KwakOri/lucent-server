@@ -86,7 +86,11 @@ export class V2ShopController {
   @Post('price-preview')
   async getShopPricePreview(@Body() body: V2ShopPricePreviewBody) {
     if (!body.variant_id) {
-      throw new ApiException('variant_id는 필수입니다', 400, 'VALIDATION_ERROR');
+      throw new ApiException(
+        'variant_id는 필수입니다',
+        400,
+        'VALIDATION_ERROR',
+      );
     }
     const preview = await this.v2CatalogService.getShopPricePreview(body);
     return successResponse(preview);
@@ -118,6 +122,10 @@ export class V2ShopController {
     if (normalized === 'false' || normalized === '0') {
       return false;
     }
-    throw new ApiException('boolean 파라미터 값이 유효하지 않습니다', 400, 'VALIDATION_ERROR');
+    throw new ApiException(
+      'boolean 파라미터 값이 유효하지 않습니다',
+      400,
+      'VALIDATION_ERROR',
+    );
   }
 }

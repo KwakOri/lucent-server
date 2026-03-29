@@ -46,14 +46,20 @@ describe('NotificationsService', () => {
   it('normalizes recipients and forwards official request schema', async () => {
     await service.sendKakaoAlimtalk({
       templateId: 'WELCOME',
-      to: ['010-1234-5678', { phone: '+82 10-7777-8888', variables: { '#{이름}': '홍길동' } }],
+      to: [
+        '010-1234-5678',
+        { phone: '+82 10-7777-8888', variables: { '#{이름}': '홍길동' } },
+      ],
       useCredit: true,
     });
 
     expect(sendonService.sendAlimtalk).toHaveBeenCalledWith({
       sendProfileId: 'PF-KAKAO-DEFAULT',
       templateId: 'WELCOME',
-      to: ['01012345678', { phone: '+821077778888', variables: { '#{이름}': '홍길동' } }],
+      to: [
+        '01012345678',
+        { phone: '+821077778888', variables: { '#{이름}': '홍길동' } },
+      ],
       reservation: undefined,
       useCredit: true,
       fallback: undefined,

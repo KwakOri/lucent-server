@@ -164,7 +164,7 @@ export class V2CheckoutController {
       result,
       result.idempotent_replayed
         ? '중복 요청으로 기존 주문을 반환했습니다'
-      : 'v2 주문이 생성되었습니다',
+        : 'v2 주문이 생성되었습니다',
     );
   }
 
@@ -173,10 +173,16 @@ export class V2CheckoutController {
     @Headers('authorization') authorization: string | undefined,
   ) {
     const user = await this.authSessionService.requireUser(authorization);
-    const isAdmin = this.authSessionService.isAdmin(user.email);
-    const result = await this.v2CheckoutService.listDigitalEntitlements(user.id, {
-      includeAllForAdmin: isAdmin,
+    const isAdmin = await this.authSessionService.isAdmin({
+      userId: user.id,
+      email: user.email,
     });
+    const result = await this.v2CheckoutService.listDigitalEntitlements(
+      user.id,
+      {
+        includeAllForAdmin: isAdmin,
+      },
+    );
     return successResponse(result);
   }
 
@@ -189,17 +195,21 @@ export class V2CheckoutController {
     @Res() response: Response,
   ) {
     const user = await this.authSessionService.requireUser(authorization);
-    const isAdmin = this.authSessionService.isAdmin(user.email);
+    const isAdmin = await this.authSessionService.isAdmin({
+      userId: user.id,
+      email: user.email,
+    });
     const ipAddress = forwardedFor?.split(',')[0]?.trim() || null;
-    const result = await this.v2CheckoutService.createDigitalEntitlementDownloadRedirect(
-      user.id,
-      entitlementId,
-      {
-        includeAllForAdmin: isAdmin,
-        ipAddress,
-        userAgent: userAgent || null,
-      },
-    );
+    const result =
+      await this.v2CheckoutService.createDigitalEntitlementDownloadRedirect(
+        user.id,
+        entitlementId,
+        {
+          includeAllForAdmin: isAdmin,
+          ipAddress,
+          userAgent: userAgent || null,
+        },
+      );
 
     return response.redirect(result.download_url);
   }
@@ -210,7 +220,10 @@ export class V2CheckoutController {
     @Query() query: ListV2OrdersQuery,
   ) {
     const user = await this.authSessionService.requireUser(authorization);
-    const isAdmin = this.authSessionService.isAdmin(user.email);
+    const isAdmin = await this.authSessionService.isAdmin({
+      userId: user.id,
+      email: user.email,
+    });
     const result = await this.v2CheckoutService.listOrders(user.id, {
       page: query.page,
       limit: query.limit,
@@ -312,7 +325,11 @@ export class V2CheckoutController {
     }
 
     const user = await this.authSessionService.requireUser(authorization);
-    if (!this.authSessionService.isAdmin(user.email)) {
+    const isAdmin = await this.authSessionService.isAdmin({
+      userId: user.id,
+      email: user.email,
+    });
+    if (!isAdmin) {
       throw new ApiException('관리자 권한이 필요합니다', 403, 'ADMIN_REQUIRED');
     }
 

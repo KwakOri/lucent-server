@@ -91,7 +91,11 @@ const LINEAR_STAGE_ORDER: V2OrderLinearStage[] = [
   'DELIVERED',
 ];
 
-const PAYMENT_CAPTURED_STATUSES = new Set(['CAPTURED', 'PARTIALLY_REFUNDED', 'REFUNDED']);
+const PAYMENT_CAPTURED_STATUSES = new Set([
+  'CAPTURED',
+  'PARTIALLY_REFUNDED',
+  'REFUNDED',
+]);
 const MAX_ACTION_REQUEST_ID_LENGTH = 120;
 
 @Injectable()
@@ -156,10 +160,14 @@ export class V2AdminOrderTransitionService {
     const ordersById = await this.fetchOrdersById(orderIds);
     let queueByOrderId = await this.fetchOrderQueueByOrderId(orderIds);
     let shipmentsByOrderId = await this.fetchShipmentsByOrderId(orderIds);
-    const entitlementsByOrderId = await this.fetchEntitlementsByOrderId(orderIds);
+    const entitlementsByOrderId =
+      await this.fetchEntitlementsByOrderId(orderIds);
     let shipmentBootstrapErrors = new Map<string, string>();
 
-    if (input.mode === 'EXECUTE' && this.requiresShipmentBootstrap(targetStage)) {
+    if (
+      input.mode === 'EXECUTE' &&
+      this.requiresShipmentBootstrap(targetStage)
+    ) {
       shipmentBootstrapErrors = await this.bootstrapPhysicalShipments({
         orderIds,
         ordersById,
@@ -230,11 +238,7 @@ export class V2AdminOrderTransitionService {
       const hasPendingApproval = rowLogs.some(
         (log) => log.status === 'PENDING_APPROVAL',
       );
-      if (
-        !hasFailed &&
-        !hasPendingApproval &&
-        targetStage === 'DELIVERED'
-      ) {
+      if (!hasFailed && !hasPendingApproval && targetStage === 'DELIVERED') {
         const syncLog = await this.syncOrderDeliveredState({
           row,
           reason,
@@ -248,12 +252,14 @@ export class V2AdminOrderTransitionService {
 
     const executeSummary = {
       attempted_action_count: executionLogs.length,
-      succeeded_count: executionLogs.filter((item) => item.status === 'SUCCEEDED')
-        .length,
+      succeeded_count: executionLogs.filter(
+        (item) => item.status === 'SUCCEEDED',
+      ).length,
       pending_approval_count: executionLogs.filter(
         (item) => item.status === 'PENDING_APPROVAL',
       ).length,
-      failed_count: executionLogs.filter((item) => item.status === 'FAILED').length,
+      failed_count: executionLogs.filter((item) => item.status === 'FAILED')
+        .length,
     };
 
     return {
@@ -277,7 +283,8 @@ export class V2AdminOrderTransitionService {
       requested_order_count: orderIds.length,
       found_order_count: rows.filter((row) => row.exists).length,
       executable_order_count: rows.filter((row) => row.executable).length,
-      blocked_order_count: rows.filter((row) => row.blocked_reasons.length > 0).length,
+      blocked_order_count: rows.filter((row) => row.blocked_reasons.length > 0)
+        .length,
       total_action_count: rows.reduce(
         (sum, row) => sum + Number(row.action_count || 0),
         0,
@@ -322,7 +329,8 @@ export class V2AdminOrderTransitionService {
       has_digital:
         Boolean(input.queue?.has_digital) || input.entitlements.length > 0,
     };
-    const isDigitalOnlyOrder = composition.has_digital && !composition.has_physical;
+    const isDigitalOnlyOrder =
+      composition.has_digital && !composition.has_physical;
 
     const statuses = {
       order_status: String(input.order.order_status || ''),
@@ -354,7 +362,9 @@ export class V2AdminOrderTransitionService {
       paymentStatus === 'PENDING' || paymentStatus === 'FAILED';
     const paymentNeedsCapture = !PAYMENT_CAPTURED_STATUSES.has(paymentStatus);
 
-    const addAction = (action: Omit<OrderLinearTransitionAction, 'sequence'>) => {
+    const addAction = (
+      action: Omit<OrderLinearTransitionAction, 'sequence'>,
+    ) => {
       actions.push({
         sequence,
         ...action,
@@ -380,7 +390,9 @@ export class V2AdminOrderTransitionService {
           action_key: 'ORDER_PAYMENT_MARK_CAPTURED',
           resource_type: 'ORDER',
           resource_id: input.order.id,
-          from_state: paymentNeedsAuthorize ? 'AUTHORIZED' : statuses.payment_status,
+          from_state: paymentNeedsAuthorize
+            ? 'AUTHORIZED'
+            : statuses.payment_status,
           to_state: 'CAPTURED',
           requires_approval: false,
           note: '결제 확정(CAPTURED) 처리',
@@ -493,7 +505,8 @@ export class V2AdminOrderTransitionService {
           );
         } else {
           const desiredEntitlementStatus =
-            input.targetStage === 'DELIVERED' || input.targetStage === 'IN_TRANSIT'
+            input.targetStage === 'DELIVERED' ||
+            input.targetStage === 'IN_TRANSIT'
               ? 'GRANTED'
               : 'PENDING';
 
@@ -537,7 +550,10 @@ export class V2AdminOrderTransitionService {
 
       addForceRollbackActions();
     } else {
-      if (paymentStatus === 'CANCELED' && input.targetStage !== 'PAYMENT_PENDING') {
+      if (
+        paymentStatus === 'CANCELED' &&
+        input.targetStage !== 'PAYMENT_PENDING'
+      ) {
         blockedReasons.push(
           '결제 상태가 CANCELED인 주문은 선형 단계 전환을 자동 실행할 수 없습니다.',
         );
@@ -607,7 +623,9 @@ export class V2AdminOrderTransitionService {
             '실물 이행이 없는 주문은 배송 대기 단계로 전환할 수 없습니다.',
           );
         } else if (input.shipments.length === 0) {
-          blockedReasons.push('실물 shipment가 없어 배송 대기 전환을 수행할 수 없습니다.');
+          blockedReasons.push(
+            '실물 shipment가 없어 배송 대기 전환을 수행할 수 없습니다.',
+          );
         } else {
           if (paymentNeedsCapture) {
             addPaymentActionsUpToCaptured();
@@ -630,7 +648,9 @@ export class V2AdminOrderTransitionService {
             '실물 이행이 없는 주문은 배송 중 단계로 전환할 수 없습니다.',
           );
         } else if (input.shipments.length === 0) {
-          blockedReasons.push('실물 shipment가 없어 배송 중 전환을 수행할 수 없습니다.');
+          blockedReasons.push(
+            '실물 shipment가 없어 배송 중 전환을 수행할 수 없습니다.',
+          );
         } else {
           if (paymentNeedsCapture) {
             addPaymentActionsUpToCaptured();
@@ -1077,15 +1097,18 @@ export class V2AdminOrderTransitionService {
             reason: input.reason,
           }),
           execute: () =>
-            this.v2FulfillmentService.dispatchShipment(input.action.resource_id, {
-              metadata: {
-                source: 'ORDER_LINEAR_STAGE_TRANSITION',
-                target_stage: input.targetStage,
-                order_id: input.row.order_id,
-                order_no: input.row.order_no,
-                reason: input.reason,
+            this.v2FulfillmentService.dispatchShipment(
+              input.action.resource_id,
+              {
+                metadata: {
+                  source: 'ORDER_LINEAR_STAGE_TRANSITION',
+                  target_stage: input.targetStage,
+                  order_id: input.row.order_id,
+                  order_no: input.row.order_no,
+                  reason: input.reason,
+                },
               },
-            }),
+            ),
         });
         return {
           status: 'SUCCEEDED',
@@ -1122,15 +1145,18 @@ export class V2AdminOrderTransitionService {
             reason: input.reason,
           }),
           execute: () =>
-            this.v2FulfillmentService.deliverShipment(input.action.resource_id, {
-              metadata: {
-                source: 'ORDER_LINEAR_STAGE_TRANSITION',
-                target_stage: input.targetStage,
-                order_id: input.row.order_id,
-                order_no: input.row.order_no,
-                reason: input.reason,
+            this.v2FulfillmentService.deliverShipment(
+              input.action.resource_id,
+              {
+                metadata: {
+                  source: 'ORDER_LINEAR_STAGE_TRANSITION',
+                  target_stage: input.targetStage,
+                  order_id: input.row.order_id,
+                  order_no: input.row.order_no,
+                  reason: input.reason,
+                },
               },
-            }),
+            ),
         });
         return {
           status: 'SUCCEEDED',
@@ -1167,15 +1193,18 @@ export class V2AdminOrderTransitionService {
             reason: input.reason,
           }),
           execute: () =>
-            this.v2FulfillmentService.reissueEntitlement(input.action.resource_id, {
-              metadata: {
-                source: 'ORDER_LINEAR_STAGE_TRANSITION',
-                target_stage: input.targetStage,
-                order_id: input.row.order_id,
-                order_no: input.row.order_no,
-                reason: input.reason,
+            this.v2FulfillmentService.reissueEntitlement(
+              input.action.resource_id,
+              {
+                metadata: {
+                  source: 'ORDER_LINEAR_STAGE_TRANSITION',
+                  target_stage: input.targetStage,
+                  order_id: input.row.order_id,
+                  order_no: input.row.order_no,
+                  reason: input.reason,
+                },
               },
-            }),
+            ),
         });
         return {
           status: 'SUCCEEDED',
@@ -1241,8 +1270,10 @@ export class V2AdminOrderTransitionService {
       );
     } catch (error) {
       const parsed = this.parseActionError(error);
-      const actionLogId = await this.findActionLogIdByRequestId(actionRequestId);
-      const pendingApproval = parsed.error_code === 'V2_ADMIN_APPROVAL_REQUIRED';
+      const actionLogId =
+        await this.findActionLogIdByRequestId(actionRequestId);
+      const pendingApproval =
+        parsed.error_code === 'V2_ADMIN_APPROVAL_REQUIRED';
       return {
         status: pendingApproval ? 'PENDING_APPROVAL' : 'FAILED',
         order_id: input.row.order_id,
@@ -1376,7 +1407,8 @@ export class V2AdminOrderTransitionService {
     } else if (desiredStatus === 'DELIVERED') {
       statusPayload.packed_at = shipment.packed_at || now;
       statusPayload.shipped_at = shipment.shipped_at || now;
-      statusPayload.in_transit_at = shipment.in_transit_at || shipment.shipped_at || now;
+      statusPayload.in_transit_at =
+        shipment.in_transit_at || shipment.shipped_at || now;
       statusPayload.delivered_at = now;
       statusPayload.returned_at = null;
       statusPayload.canceled_at = null;
@@ -1458,7 +1490,8 @@ export class V2AdminOrderTransitionService {
       .from('v2_digital_entitlements')
       .update({
         status: desiredStatus,
-        granted_at: desiredStatus === 'GRANTED' ? entitlement.granted_at || now : null,
+        granted_at:
+          desiredStatus === 'GRANTED' ? entitlement.granted_at || now : null,
         revoked_at: null,
         revoke_reason: null,
         failed_at: null,
@@ -1530,7 +1563,9 @@ export class V2AdminOrderTransitionService {
 
       const { data: currentOrder, error: orderError } = await this.supabase
         .from('v2_orders')
-        .select('id, order_status, fulfillment_status, confirmed_at, completed_at, metadata')
+        .select(
+          'id, order_status, fulfillment_status, confirmed_at, completed_at, metadata',
+        )
         .eq('id', orderId)
         .maybeSingle();
 
@@ -1622,7 +1657,10 @@ export class V2AdminOrderTransitionService {
       return rawRequestId;
     }
 
-    const digest = createHash('sha1').update(rawRequestId).digest('hex').slice(0, 24);
+    const digest = createHash('sha1')
+      .update(rawRequestId)
+      .digest('hex')
+      .slice(0, 24);
     return `linear-stage:${input.action.action_key}:${input.actionIndex}:${digest}`.slice(
       0,
       MAX_ACTION_REQUEST_ID_LENGTH,
@@ -1866,7 +1904,8 @@ export class V2AdminOrderTransitionService {
         order_id: orderId,
         status: this.normalizeOptionalText(row.status) || 'PENDING',
         download_count:
-          typeof row.download_count === 'number' && Number.isFinite(row.download_count)
+          typeof row.download_count === 'number' &&
+          Number.isFinite(row.download_count)
             ? Math.max(0, Math.floor(row.download_count))
             : 0,
       });
@@ -1877,7 +1916,9 @@ export class V2AdminOrderTransitionService {
 
   private requiresShipmentBootstrap(stage: V2OrderLinearStage): boolean {
     return (
-      stage === 'READY_TO_SHIP' || stage === 'IN_TRANSIT' || stage === 'DELIVERED'
+      stage === 'READY_TO_SHIP' ||
+      stage === 'IN_TRANSIT' ||
+      stage === 'DELIVERED'
     );
   }
 

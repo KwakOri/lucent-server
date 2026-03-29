@@ -373,8 +373,7 @@ export class AuthService {
   async syncOAuthProfile(
     authorizationHeader?: string,
   ): Promise<{ isNewUser: boolean }> {
-    const user =
-      await this.authSessionService.requireUser(authorizationHeader);
+    const user = await this.authSessionService.requireUser(authorizationHeader);
     const supabase = getSupabaseClient();
 
     const { data: existingProfile, error: existingProfileError } =
@@ -473,7 +472,10 @@ export class AuthService {
         email: user.email,
         name: user.user_metadata?.name,
       },
-      isAdmin: this.authSessionService.isAdmin(user.email),
+      isAdmin: await this.authSessionService.isAdmin({
+        userId: user.id,
+        email: user.email,
+      }),
     };
   }
 

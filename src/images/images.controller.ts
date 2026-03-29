@@ -43,7 +43,7 @@ export class ImagesController {
     @Query('is_active') isActiveParam?: string,
   ) {
     const user = await this.authSessionService.requireUser(authorization);
-    this.requireAdmin(user.email);
+    await this.requireAdmin(user.id, user.email);
 
     const page = this.parseOrDefault(rawPage, 1);
     const limit = this.parseOrDefault(rawLimit, 20);
@@ -81,7 +81,7 @@ export class ImagesController {
     @Body() body: UploadBody,
   ) {
     const user = await this.authSessionService.requireUser(authorization);
-    this.requireAdmin(user.email);
+    await this.requireAdmin(user.id, user.email);
 
     if (!file) {
       throw new ApiException(
@@ -155,7 +155,7 @@ export class ImagesController {
     @Param('id') id: string,
   ) {
     const user = await this.authSessionService.requireUser(authorization);
-    this.requireAdmin(user.email);
+    await this.requireAdmin(user.id, user.email);
 
     await this.imagesService.softDeleteImage(id);
     return successResponse({ message: '이미지가 비활성화되었습니다' });
@@ -178,8 +178,15 @@ export class ImagesController {
     return parsed;
   }
 
-  private requireAdmin(email?: string | null): void {
-    if (!this.authSessionService.isAdmin(email)) {
+  private async requireAdmin(
+    userId: string,
+    email?: string | null,
+  ): Promise<void> {
+    const isAdmin = await this.authSessionService.isAdmin({
+      userId,
+      email,
+    });
+    if (!isAdmin) {
       throw new ApiException('관리자 권한이 필요합니다', 403, 'ADMIN_REQUIRED');
     }
   }

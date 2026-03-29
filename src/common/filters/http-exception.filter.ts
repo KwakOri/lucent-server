@@ -1,4 +1,10 @@
-import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from '@nestjs/common';
+import {
+  ArgumentsHost,
+  Catch,
+  ExceptionFilter,
+  HttpException,
+  HttpStatus,
+} from '@nestjs/common';
 import { Response } from 'express';
 
 @Catch()
@@ -10,7 +16,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
       const exceptionResponse = exception.getResponse();
-      const normalized = this.normalizeExceptionResponse(exceptionResponse, status);
+      const normalized = this.normalizeExceptionResponse(
+        exceptionResponse,
+        status,
+      );
       response.status(status).json(normalized);
       return;
     }
@@ -31,7 +40,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
     });
   }
 
-  private normalizeExceptionResponse(exceptionResponse: string | object, status: number) {
+  private normalizeExceptionResponse(
+    exceptionResponse: string | object,
+    status: number,
+  ) {
     if (typeof exceptionResponse === 'string') {
       return {
         status: 'error',
@@ -42,7 +54,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     const payload = exceptionResponse as Record<string, unknown>;
     const message = this.extractMessage(payload.message);
-    const errorCode = (payload.errorCode as string) || this.defaultErrorCodeByStatus(status);
+    const errorCode =
+      (payload.errorCode as string) || this.defaultErrorCodeByStatus(status);
 
     return {
       status: 'error',

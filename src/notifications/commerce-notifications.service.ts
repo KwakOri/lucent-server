@@ -22,9 +22,11 @@ type NotificationPersistStatus = 'ACCEPTED' | 'FAILED' | 'DISABLED' | 'SKIPPED';
 export class CommerceNotificationsService {
   private readonly logger = new Logger(CommerceNotificationsService.name);
   private notificationLogUnavailable = false;
-  private readonly temporarilyDisabledEvents = new Set<CommerceNotificationEvent>(
-    ['PAYMENT_CAPTURED', 'SHIPMENT_DISPATCHED'],
-  );
+  private readonly temporarilyDisabledEvents =
+    new Set<CommerceNotificationEvent>([
+      'PAYMENT_CAPTURED',
+      'SHIPMENT_DISPATCHED',
+    ]);
 
   private get supabase(): any {
     return getSupabaseClient() as any;
