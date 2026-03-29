@@ -1,6 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { AppConfigService } from '../../config/app-config.service';
-import { SendonAlimtalkPayload, SendonAlimtalkResult, SendonGateway } from '../sendon.types';
+import {
+  SendonAlimtalkPayload,
+  SendonAlimtalkResult,
+  SendonGateway,
+} from '../sendon.types';
 
 @Injectable()
 export class SendonSdkGateway implements SendonGateway {
@@ -9,7 +13,9 @@ export class SendonSdkGateway implements SendonGateway {
 
   constructor(private readonly configService: AppConfigService) {}
 
-  async sendAlimtalk(payload: SendonAlimtalkPayload): Promise<SendonAlimtalkResult> {
+  async sendAlimtalk(
+    payload: SendonAlimtalkPayload,
+  ): Promise<SendonAlimtalkResult> {
     const client = await this.getClient();
     const sendMethod = client?.kakao?.sendAlimTalk;
 
@@ -78,12 +84,17 @@ export class SendonSdkGateway implements SendonGateway {
     };
 
     this.sdkClient = this.createClientFromModule(sdkModule, clientOptions);
-    this.logger.log(`Sendon SDK client initialized from package "${config.sdkPackage}".`);
+    this.logger.log(
+      `Sendon SDK client initialized from package "${config.sdkPackage}".`,
+    );
 
     return this.sdkClient;
   }
 
-  private createClientFromModule(sdkModule: any, clientOptions: Record<string, unknown>) {
+  private createClientFromModule(
+    sdkModule: any,
+    clientOptions: Record<string, unknown>,
+  ) {
     const constructors = [
       sdkModule?.Sendon,
       sdkModule?.default?.Sendon,

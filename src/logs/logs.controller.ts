@@ -27,10 +27,7 @@ export class LogsController {
     @Query('filter[date_to]') dateTo?: string,
     @Query('search') search?: string,
   ) {
-    const user = await this.authSessionService.requireUser(authorization);
-    if (!this.authSessionService.isAdmin(user.email)) {
-      throw new ApiException('관리자 권한이 필요합니다', 403, 'UNAUTHORIZED');
-    }
+    await this.requireAdmin(authorization);
 
     const page = this.parseOrDefault(rawPage, 1);
     const limit = Math.min(this.parseOrDefault(rawLimit, 50), 200);
@@ -62,10 +59,7 @@ export class LogsController {
     @Query('date_from') dateFrom?: string,
     @Query('date_to') dateTo?: string,
   ) {
-    const user = await this.authSessionService.requireUser(authorization);
-    if (!this.authSessionService.isAdmin(user.email)) {
-      throw new ApiException('관리자 권한이 필요합니다', 403, 'UNAUTHORIZED');
-    }
+    await this.requireAdmin(authorization);
 
     const stats = await this.logsService.getStats({ dateFrom, dateTo });
     return successResponse(stats);
@@ -76,10 +70,7 @@ export class LogsController {
     @Headers('authorization') authorization: string | undefined,
     @Param('id') id: string,
   ) {
-    const user = await this.authSessionService.requireUser(authorization);
-    if (!this.authSessionService.isAdmin(user.email)) {
-      throw new ApiException('관리자 권한이 필요합니다', 403, 'UNAUTHORIZED');
-    }
+    await this.requireAdmin(authorization);
 
     const log = await this.logsService.getLogById(id);
     if (!log) {
@@ -104,5 +95,16 @@ export class LogsController {
     }
 
     return parsed;
+  }
+
+  private async requireAdmin(authorization: string | undefined): Promise<void> {
+    const user = await this.authSessionService.requireUser(authorization);
+    const isAdmin = await this.authSessionService.isAdmin({
+      userId: user.id,
+      email: user.email,
+    });
+    if (!isAdmin) {
+      throw new ApiException('관리자 권한이 필요합니다', 403, 'UNAUTHORIZED');
+    }
   }
 }

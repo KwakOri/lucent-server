@@ -178,6 +178,28 @@ interface CutoverPolicyCheckBody {
   requires_approval?: boolean;
 }
 
+interface RbacUsersQuery {
+  limit?: string;
+  search?: string;
+}
+
+interface AssignRbacRoleBody {
+  user_id?: string;
+  user_email?: string;
+  role_code?: string;
+  scope_type?: string;
+  scope_id?: string | null;
+  expires_at?: string | null;
+  assigned_reason?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface RevokeRbacRoleBody {
+  assignment_id?: string;
+  reason?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
 interface CutoverDomainsQuery {
   limit?: string;
   status?: string;
@@ -329,6 +351,60 @@ export class V2AdminController {
     return successResponse(rbac);
   }
 
+  @Get('rbac/users')
+  async listRbacUsers(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: RbacUsersQuery,
+  ) {
+    await this.requireAdminPermission(authorization, 'RBAC_MANAGE');
+    const result = await this.v2AdminService.listRbacUsers({
+      limit: query.limit,
+      search: query.search,
+    });
+    return successResponse(result);
+  }
+
+  @Post('rbac/users/assign')
+  async assignRbacRole(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: AssignRbacRoleBody,
+  ) {
+    const admin = await this.requireAdminPermission(
+      authorization,
+      'RBAC_MANAGE',
+    );
+    const result = await this.v2AdminService.assignRbacRole({
+      actorId: admin?.id || null,
+      userId: body.user_id,
+      userEmail: body.user_email,
+      roleCode: body.role_code,
+      scopeType: body.scope_type,
+      scopeId: body.scope_id,
+      expiresAt: body.expires_at,
+      assignedReason: body.assigned_reason,
+      metadata: body.metadata,
+    });
+    return successResponse(result);
+  }
+
+  @Post('rbac/users/revoke')
+  async revokeRbacRole(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: RevokeRbacRoleBody,
+  ) {
+    const admin = await this.requireAdminPermission(
+      authorization,
+      'RBAC_MANAGE',
+    );
+    const result = await this.v2AdminService.revokeRbacRoleAssignment({
+      assignmentId: body.assignment_id,
+      actorId: admin?.id || null,
+      reason: body.reason,
+      metadata: body.metadata,
+    });
+    return successResponse(result);
+  }
+
   @Get('actions/catalog')
   async getActionCatalog(
     @Headers('authorization') authorization: string | undefined,
@@ -383,7 +459,9 @@ export class V2AdminController {
     const result = await this.v2AdminService.updateCutoverDomain(domainKey, {
       status: body.status,
       currentStage:
-        body.current_stage !== undefined ? String(body.current_stage) : undefined,
+        body.current_stage !== undefined
+          ? String(body.current_stage)
+          : undefined,
       nextAction: body.next_action,
       ownerRoleCode: body.owner_role_code,
       lastGateResult: body.last_gate_result,
@@ -775,7 +853,8 @@ export class V2AdminController {
     @Param('batchId') batchId: string,
   ) {
     await this.requireAdmin(authorization);
-    const result = await this.v2AdminBatchService.getProductionBatchDetail(batchId);
+    const result =
+      await this.v2AdminBatchService.getProductionBatchDetail(batchId);
     return successResponse(result);
   }
 
@@ -895,7 +974,8 @@ export class V2AdminController {
     @Param('batchId') batchId: string,
   ) {
     await this.requireAdmin(authorization);
-    const result = await this.v2AdminBatchService.getShippingBatchDetail(batchId);
+    const result =
+      await this.v2AdminBatchService.getShippingBatchDetail(batchId);
     return successResponse(result);
   }
 
@@ -1131,9 +1211,10 @@ export class V2AdminController {
 
   private async requireAdmin(authorization: string | undefined): Promise<any> {
     if (this.authSessionService.isLocalAdminBypassEnabled()) {
-      const bypassUser = await this.authSessionService.getUserFromAuthorizationHeader(
-        authorization,
-      );
+      const bypassUser =
+        await this.authSessionService.getUserFromAuthorizationHeader(
+          authorization,
+        );
       if (bypassUser?.id) {
         return bypassUser;
       }
@@ -1141,9 +1222,42 @@ export class V2AdminController {
     }
 
     const user = await this.authSessionService.requireUser(authorization);
-    if (!this.authSessionService.isAdmin(user.email)) {
+    const isAdmin = await this.authSessionService.isAdmin({
+      userId: user.id,
+      email: user.email,
+    });
+    if (!isAdmin) {
       throw new ApiException('관리자 권한이 필요합니다', 403, 'ADMIN_REQUIRED');
     }
     return user;
+  }
+
+  private async requireAdminPermission(
+    authorization: string | undefined,
+    permissionCode: string,
+  ): Promise<any> {
+    const admin = await this.requireAdmin(authorization);
+    if (admin?.id === 'LOCAL_ADMIN_BYPASS') {
+      return admin;
+    }
+
+    const myRbac = await this.v2AdminService.getMyRbac(admin.id);
+    if (!Array.isArray(myRbac?.permissions)) {
+      throw new ApiException(
+        '권한 정보를 확인할 수 없습니다',
+        403,
+        'V2_ADMIN_ACTION_FORBIDDEN',
+      );
+    }
+
+    if (!myRbac.permissions.includes(permissionCode)) {
+      throw new ApiException(
+        '해당 액션을 실행할 권한이 없습니다',
+        403,
+        'V2_ADMIN_ACTION_FORBIDDEN',
+      );
+    }
+
+    return admin;
   }
 }

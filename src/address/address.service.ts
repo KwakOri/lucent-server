@@ -32,7 +32,11 @@ export class AddressService {
 
     const apiKey = process.env.KAKAO_REST_API_KEY;
     if (!apiKey) {
-      throw new ApiException('카카오 API 키가 설정되지 않았습니다', 500, 'KAKAO_API_KEY_MISSING');
+      throw new ApiException(
+        '카카오 API 키가 설정되지 않았습니다',
+        500,
+        'KAKAO_API_KEY_MISSING',
+      );
     }
 
     const kakaoResponse = await fetch(
@@ -45,7 +49,11 @@ export class AddressService {
     );
 
     if (!kakaoResponse.ok) {
-      throw new ApiException('주소 검색에 실패했습니다', kakaoResponse.status, 'ADDRESS_SEARCH_FAILED');
+      throw new ApiException(
+        '주소 검색에 실패했습니다',
+        kakaoResponse.status,
+        'ADDRESS_SEARCH_FAILED',
+      );
     }
 
     const data = (await kakaoResponse.json()) as KakaoAddressResponse;

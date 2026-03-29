@@ -77,9 +77,8 @@ export class V2CatalogController {
     @Param('id') definitionId: string,
   ) {
     await this.requireAdmin(authorization);
-    const definition = await this.v2CatalogService.getBundleDefinitionById(
-      definitionId,
-    );
+    const definition =
+      await this.v2CatalogService.getBundleDefinitionById(definitionId);
     return successResponse(definition);
   }
 
@@ -113,9 +112,8 @@ export class V2CatalogController {
     @Param('id') definitionId: string,
   ) {
     await this.requireAdmin(authorization);
-    const definition = await this.v2CatalogService.publishBundleDefinition(
-      definitionId,
-    );
+    const definition =
+      await this.v2CatalogService.publishBundleDefinition(definitionId);
     return successResponse(
       definition,
       'bundle definition이 ACTIVE 상태로 변경되었습니다',
@@ -128,9 +126,8 @@ export class V2CatalogController {
     @Param('id') definitionId: string,
   ) {
     await this.requireAdmin(authorization);
-    const definition = await this.v2CatalogService.archiveBundleDefinition(
-      definitionId,
-    );
+    const definition =
+      await this.v2CatalogService.archiveBundleDefinition(definitionId);
     return successResponse(
       definition,
       'bundle definition이 ARCHIVED 상태로 변경되었습니다',
@@ -148,7 +145,10 @@ export class V2CatalogController {
       definitionId,
       body,
     );
-    return successResponse(definition, 'bundle definition 신규 버전이 생성되었습니다');
+    return successResponse(
+      definition,
+      'bundle definition 신규 버전이 생성되었습니다',
+    );
   }
 
   @Get('bundles/definitions/:id/components')
@@ -157,7 +157,8 @@ export class V2CatalogController {
     @Param('id') definitionId: string,
   ) {
     await this.requireAdmin(authorization);
-    const components = await this.v2CatalogService.getBundleComponents(definitionId);
+    const components =
+      await this.v2CatalogService.getBundleComponents(definitionId);
     return successResponse(components);
   }
 
@@ -224,7 +225,9 @@ export class V2CatalogController {
   ) {
     await this.requireAdmin(authorization);
     await this.v2CatalogService.deleteBundleComponentOption(optionId);
-    return successResponse({ message: 'bundle component option이 삭제되었습니다' });
+    return successResponse({
+      message: 'bundle component option이 삭제되었습니다',
+    });
   }
 
   @Delete('bundles/components/:id')
@@ -349,7 +352,10 @@ export class V2CatalogController {
   ) {
     await this.requireAdmin(authorization);
     const project = await this.v2CatalogService.unpublishProject(projectId);
-    return successResponse(project, '프로젝트가 unpublish 상태로 변경되었습니다');
+    return successResponse(
+      project,
+      '프로젝트가 unpublish 상태로 변경되었습니다',
+    );
   }
 
   @Delete('projects/:id')
@@ -427,7 +433,9 @@ export class V2CatalogController {
   ) {
     await this.requireAdmin(authorization);
     await this.v2CatalogService.unlinkArtistFromProject(projectId, artistId);
-    return successResponse({ message: '프로젝트-아티스트 연결이 해제되었습니다' });
+    return successResponse({
+      message: '프로젝트-아티스트 연결이 해제되었습니다',
+    });
   }
 
   @Get('products')
@@ -437,7 +445,10 @@ export class V2CatalogController {
     @Query('status') status?: 'DRAFT' | 'ACTIVE' | 'INACTIVE' | 'ARCHIVED',
   ) {
     await this.requireAdmin(authorization);
-    const products = await this.v2CatalogService.getProducts({ projectId, status });
+    const products = await this.v2CatalogService.getProducts({
+      projectId,
+      status,
+    });
     return successResponse(products);
   }
 
@@ -549,13 +560,20 @@ export class V2CatalogController {
     await this.requireAdmin(authorization);
     const upload = await this.v2CatalogService.prepareMediaAssetUpload({
       file_name:
-        typeof body.file_name === 'string' ? (body.file_name as string) : undefined,
+        typeof body.file_name === 'string'
+          ? (body.file_name as string)
+          : undefined,
       mime_type:
-        typeof body.mime_type === 'string' ? (body.mime_type as string) : undefined,
+        typeof body.mime_type === 'string'
+          ? (body.mime_type as string)
+          : undefined,
       file_size: this.parsePositiveInteger(body.file_size, 'file_size'),
       asset_kind:
-        typeof body.asset_kind === 'string' ? (body.asset_kind as string) : undefined,
-      status: typeof body.status === 'string' ? (body.status as string) : undefined,
+        typeof body.asset_kind === 'string'
+          ? (body.asset_kind as string)
+          : undefined,
+      status:
+        typeof body.status === 'string' ? (body.status as string) : undefined,
       metadata: this.parseMetadata(body.metadata),
     });
     return successResponse(upload);
@@ -573,18 +591,27 @@ export class V2CatalogController {
           ? (body.storage_path as string)
           : undefined,
       file_name:
-        typeof body.file_name === 'string' ? (body.file_name as string) : undefined,
+        typeof body.file_name === 'string'
+          ? (body.file_name as string)
+          : undefined,
       mime_type:
-        typeof body.mime_type === 'string' ? (body.mime_type as string) : undefined,
+        typeof body.mime_type === 'string'
+          ? (body.mime_type as string)
+          : undefined,
       file_size:
         body.file_size === undefined
           ? undefined
           : this.parsePositiveInteger(body.file_size, 'file_size'),
       asset_kind:
-        typeof body.asset_kind === 'string' ? (body.asset_kind as string) : undefined,
-      status: typeof body.status === 'string' ? (body.status as string) : undefined,
+        typeof body.asset_kind === 'string'
+          ? (body.asset_kind as string)
+          : undefined,
+      status:
+        typeof body.status === 'string' ? (body.status as string) : undefined,
       checksum:
-        typeof body.checksum === 'string' ? (body.checksum as string) : undefined,
+        typeof body.checksum === 'string'
+          ? (body.checksum as string)
+          : undefined,
       metadata: this.parseMetadata(body.metadata),
     });
     return successResponse(asset);
@@ -596,17 +623,25 @@ export class V2CatalogController {
     @Body() body: Record<string, unknown>,
   ) {
     await this.requireAdmin(authorization);
-    const session = await this.v2CatalogService.initiateMultipartMediaAssetUpload({
-      file_name:
-        typeof body.file_name === 'string' ? (body.file_name as string) : undefined,
-      mime_type:
-        typeof body.mime_type === 'string' ? (body.mime_type as string) : undefined,
-      file_size: this.parsePositiveInteger(body.file_size, 'file_size'),
-      asset_kind:
-        typeof body.asset_kind === 'string' ? (body.asset_kind as string) : undefined,
-      status: typeof body.status === 'string' ? (body.status as string) : undefined,
-      metadata: this.parseMetadata(body.metadata),
-    });
+    const session =
+      await this.v2CatalogService.initiateMultipartMediaAssetUpload({
+        file_name:
+          typeof body.file_name === 'string'
+            ? (body.file_name as string)
+            : undefined,
+        mime_type:
+          typeof body.mime_type === 'string'
+            ? (body.mime_type as string)
+            : undefined,
+        file_size: this.parsePositiveInteger(body.file_size, 'file_size'),
+        asset_kind:
+          typeof body.asset_kind === 'string'
+            ? (body.asset_kind as string)
+            : undefined,
+        status:
+          typeof body.status === 'string' ? (body.status as string) : undefined,
+        metadata: this.parseMetadata(body.metadata),
+      });
     return successResponse(session);
   }
 
@@ -616,11 +651,17 @@ export class V2CatalogController {
     @Body() body: Record<string, unknown>,
   ) {
     await this.requireAdmin(authorization);
-    const signed = await this.v2CatalogService.signMultipartMediaAssetUploadParts({
-      session_id:
-        typeof body.session_id === 'string' ? (body.session_id as string) : undefined,
-      part_numbers: this.parsePositiveIntegerArray(body.part_numbers, 'part_numbers'),
-    });
+    const signed =
+      await this.v2CatalogService.signMultipartMediaAssetUploadParts({
+        session_id:
+          typeof body.session_id === 'string'
+            ? (body.session_id as string)
+            : undefined,
+        part_numbers: this.parsePositiveIntegerArray(
+          body.part_numbers,
+          'part_numbers',
+        ),
+      });
     return successResponse(signed);
   }
 
@@ -630,11 +671,15 @@ export class V2CatalogController {
     @Body() body: Record<string, unknown>,
   ) {
     await this.requireAdmin(authorization);
-    const asset = await this.v2CatalogService.completeMultipartMediaAssetUpload({
-      session_id:
-        typeof body.session_id === 'string' ? (body.session_id as string) : undefined,
-      parts: this.parseMultipartParts(body.parts),
-    });
+    const asset = await this.v2CatalogService.completeMultipartMediaAssetUpload(
+      {
+        session_id:
+          typeof body.session_id === 'string'
+            ? (body.session_id as string)
+            : undefined,
+        parts: this.parseMultipartParts(body.parts),
+      },
+    );
     return successResponse(asset);
   }
 
@@ -645,7 +690,9 @@ export class V2CatalogController {
   ) {
     await this.requireAdmin(authorization);
     const session = await this.v2CatalogService.abortMultipartMediaAssetUpload(
-      typeof body.session_id === 'string' ? (body.session_id as string) : undefined,
+      typeof body.session_id === 'string'
+        ? (body.session_id as string)
+        : undefined,
     );
     return successResponse(session, 'multipart 업로드가 중단되었습니다');
   }
@@ -657,7 +704,10 @@ export class V2CatalogController {
     @Body() body: Record<string, unknown>,
   ) {
     await this.requireAdmin(authorization);
-    const asset = await this.v2CatalogService.updateMediaAsset(mediaAssetId, body);
+    const asset = await this.v2CatalogService.updateMediaAsset(
+      mediaAssetId,
+      body,
+    );
     return successResponse(asset);
   }
 
@@ -668,7 +718,10 @@ export class V2CatalogController {
   ) {
     await this.requireAdmin(authorization);
     const asset = await this.v2CatalogService.deleteMediaAsset(mediaAssetId);
-    return successResponse(asset, 'media asset가 레지스트리에서 제거되었습니다');
+    return successResponse(
+      asset,
+      'media asset가 레지스트리에서 제거되었습니다',
+    );
   }
 
   @Get('products/:productId/media')
@@ -688,7 +741,10 @@ export class V2CatalogController {
     @Body() body: Record<string, unknown>,
   ) {
     await this.requireAdmin(authorization);
-    const media = await this.v2CatalogService.createProductMedia(productId, body);
+    const media = await this.v2CatalogService.createProductMedia(
+      productId,
+      body,
+    );
     return successResponse(media);
   }
 
@@ -730,7 +786,10 @@ export class V2CatalogController {
     @Body() body: Record<string, unknown>,
   ) {
     await this.requireAdmin(authorization);
-    const asset = await this.v2CatalogService.createDigitalAsset(variantId, body);
+    const asset = await this.v2CatalogService.createDigitalAsset(
+      variantId,
+      body,
+    );
     return successResponse(asset);
   }
 
@@ -771,17 +830,18 @@ export class V2CatalogController {
     @Param('productId') productId: string,
   ) {
     await this.requireAdmin(authorization);
-    const readiness = await this.v2CatalogService.getProductPublishReadiness(
-      productId,
-    );
+    const readiness =
+      await this.v2CatalogService.getProductPublishReadiness(productId);
     return successResponse(readiness);
   }
 
   @Get('campaigns')
   async getCampaigns(
     @Headers('authorization') authorization: string | undefined,
-    @Query('status') status?: 'DRAFT' | 'ACTIVE' | 'SUSPENDED' | 'CLOSED' | 'ARCHIVED',
-    @Query('campaignType') campaignType?: 'POPUP' | 'EVENT' | 'SALE' | 'DROP' | 'ALWAYS_ON',
+    @Query('status')
+    status?: 'DRAFT' | 'ACTIVE' | 'SUSPENDED' | 'CLOSED' | 'ARCHIVED',
+    @Query('campaignType')
+    campaignType?: 'POPUP' | 'EVENT' | 'SALE' | 'DROP' | 'ALWAYS_ON',
   ) {
     await this.requireAdmin(authorization);
     const campaigns = await this.v2CatalogService.getCampaigns({
@@ -818,7 +878,10 @@ export class V2CatalogController {
     @Body() body: Record<string, unknown>,
   ) {
     await this.requireAdmin(authorization);
-    const campaign = await this.v2CatalogService.updateCampaign(campaignId, body);
+    const campaign = await this.v2CatalogService.updateCampaign(
+      campaignId,
+      body,
+    );
     return successResponse(campaign);
   }
 
@@ -839,7 +902,10 @@ export class V2CatalogController {
   ) {
     await this.requireAdmin(authorization);
     const campaign = await this.v2CatalogService.suspendCampaign(campaignId);
-    return successResponse(campaign, 'campaign이 SUSPENDED 상태로 전환되었습니다');
+    return successResponse(
+      campaign,
+      'campaign이 SUSPENDED 상태로 전환되었습니다',
+    );
   }
 
   @Post('campaigns/:id/close')
@@ -869,7 +935,10 @@ export class V2CatalogController {
     @Body() body: Record<string, unknown>,
   ) {
     await this.requireAdmin(authorization);
-    const target = await this.v2CatalogService.createCampaignTarget(campaignId, body);
+    const target = await this.v2CatalogService.createCampaignTarget(
+      campaignId,
+      body,
+    );
     return successResponse(target);
   }
 
@@ -880,7 +949,10 @@ export class V2CatalogController {
     @Body() body: Record<string, unknown>,
   ) {
     await this.requireAdmin(authorization);
-    const target = await this.v2CatalogService.updateCampaignTarget(targetId, body);
+    const target = await this.v2CatalogService.updateCampaignTarget(
+      targetId,
+      body,
+    );
     return successResponse(target);
   }
 
@@ -899,7 +971,8 @@ export class V2CatalogController {
     @Headers('authorization') authorization: string | undefined,
     @Query('campaignId') campaignId?: string,
     @Query('scopeType') scopeType?: 'BASE' | 'OVERRIDE',
-    @Query('status') status?: 'DRAFT' | 'PUBLISHED' | 'ROLLED_BACK' | 'ARCHIVED',
+    @Query('status')
+    status?: 'DRAFT' | 'PUBLISHED' | 'ROLLED_BACK' | 'ARCHIVED',
   ) {
     await this.requireAdmin(authorization);
     const priceLists = await this.v2CatalogService.getPriceLists({
@@ -937,7 +1010,10 @@ export class V2CatalogController {
     @Body() body: Record<string, unknown>,
   ) {
     await this.requireAdmin(authorization);
-    const priceList = await this.v2CatalogService.updatePriceList(priceListId, body);
+    const priceList = await this.v2CatalogService.updatePriceList(
+      priceListId,
+      body,
+    );
     return successResponse(priceList);
   }
 
@@ -948,7 +1024,10 @@ export class V2CatalogController {
   ) {
     await this.requireAdmin(authorization);
     const priceList = await this.v2CatalogService.publishPriceList(priceListId);
-    return successResponse(priceList, 'price list가 PUBLISHED 상태로 전환되었습니다');
+    return successResponse(
+      priceList,
+      'price list가 PUBLISHED 상태로 전환되었습니다',
+    );
   }
 
   @Post('price-lists/:id/rollback')
@@ -978,7 +1057,10 @@ export class V2CatalogController {
     @Body() body: Record<string, unknown>,
   ) {
     await this.requireAdmin(authorization);
-    const item = await this.v2CatalogService.createPriceListItem(priceListId, body);
+    const item = await this.v2CatalogService.createPriceListItem(
+      priceListId,
+      body,
+    );
     return successResponse(item);
   }
 
@@ -1000,7 +1082,10 @@ export class V2CatalogController {
   ) {
     await this.requireAdmin(authorization);
     const item = await this.v2CatalogService.deactivatePriceListItem(itemId);
-    return successResponse(item, 'price list item이 INACTIVE 상태로 전환되었습니다');
+    return successResponse(
+      item,
+      'price list item이 INACTIVE 상태로 전환되었습니다',
+    );
   }
 
   @Get('promotions')
@@ -1046,7 +1131,10 @@ export class V2CatalogController {
     @Body() body: Record<string, unknown>,
   ) {
     await this.requireAdmin(authorization);
-    const promotion = await this.v2CatalogService.updatePromotion(promotionId, body);
+    const promotion = await this.v2CatalogService.updatePromotion(
+      promotionId,
+      body,
+    );
     return successResponse(promotion);
   }
 
@@ -1067,7 +1155,10 @@ export class V2CatalogController {
     @Body() body: Record<string, unknown>,
   ) {
     await this.requireAdmin(authorization);
-    const rule = await this.v2CatalogService.createPromotionRule(promotionId, body);
+    const rule = await this.v2CatalogService.createPromotionRule(
+      promotionId,
+      body,
+    );
     return successResponse(rule);
   }
 
@@ -1086,7 +1177,8 @@ export class V2CatalogController {
   async getCoupons(
     @Headers('authorization') authorization: string | undefined,
     @Query('promotionId') promotionId?: string,
-    @Query('status') status?:
+    @Query('status')
+    status?:
       | 'DRAFT'
       | 'ACTIVE'
       | 'PAUSED'
@@ -1117,7 +1209,8 @@ export class V2CatalogController {
     @Headers('authorization') authorization: string | undefined,
     @Query('couponId') couponId?: string,
     @Query('userId') userId?: string,
-    @Query('status') status?: 'RESERVED' | 'APPLIED' | 'RELEASED' | 'CANCELED' | 'EXPIRED',
+    @Query('status')
+    status?: 'RESERVED' | 'APPLIED' | 'RELEASED' | 'CANCELED' | 'EXPIRED',
     @Query('quoteReference') quoteReference?: string,
   ) {
     await this.requireAdmin(authorization);
@@ -1245,7 +1338,11 @@ export class V2CatalogController {
     }
 
     const user = await this.authSessionService.requireUser(authorization);
-    if (!this.authSessionService.isAdmin(user.email)) {
+    const isAdmin = await this.authSessionService.isAdmin({
+      userId: user.id,
+      email: user.email,
+    });
+    if (!isAdmin) {
       throw new ApiException('관리자 권한이 필요합니다', 403, 'ADMIN_REQUIRED');
     }
   }

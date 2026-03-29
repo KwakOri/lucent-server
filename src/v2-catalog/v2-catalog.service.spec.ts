@@ -16,7 +16,9 @@ function createCampaignEligibilityScope(productId: string) {
   };
 }
 
-function createUpdateCampaignSupabaseMock(updatedCampaign: Record<string, unknown>) {
+function createUpdateCampaignSupabaseMock(
+  updatedCampaign: Record<string, unknown>,
+) {
   const campaignSingle = jest
     .fn()
     .mockResolvedValue({ data: updatedCampaign, error: null });
@@ -168,7 +170,8 @@ describe('V2CatalogService', () => {
         starts_at: '2026-03-21T23:00:00.000Z',
         ends_at: '2026-04-22T05:00:00.000Z',
       };
-      const { supabase, mocks } = createUpdateCampaignSupabaseMock(updatedCampaign);
+      const { supabase, mocks } =
+        createUpdateCampaignSupabaseMock(updatedCampaign);
 
       jest
         .spyOn(service as any, 'supabase', 'get')
@@ -197,7 +200,8 @@ describe('V2CatalogService', () => {
         ...currentCampaign,
         name: 'Updated Campaign',
       };
-      const { supabase, mocks } = createUpdateCampaignSupabaseMock(updatedCampaign);
+      const { supabase, mocks } =
+        createUpdateCampaignSupabaseMock(updatedCampaign);
 
       jest
         .spyOn(service as any, 'supabase', 'get')

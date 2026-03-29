@@ -34,7 +34,8 @@ export class NotificationsService {
   }
 
   private resolveSendProfileId(sendProfileId?: string): string {
-    const requestValue = typeof sendProfileId === 'string' ? sendProfileId.trim() : '';
+    const requestValue =
+      typeof sendProfileId === 'string' ? sendProfileId.trim() : '';
     if (requestValue) {
       return requestValue;
     }
@@ -69,11 +70,20 @@ export class NotificationsService {
         return this.normalizeAndValidatePhone(recipient, 'to');
       }
 
-      if (!recipient || typeof recipient !== 'object' || Array.isArray(recipient)) {
-        throw new BadRequestException('Each recipient in "to" must be a string or object.');
+      if (
+        !recipient ||
+        typeof recipient !== 'object' ||
+        Array.isArray(recipient)
+      ) {
+        throw new BadRequestException(
+          'Each recipient in "to" must be a string or object.',
+        );
       }
 
-      const phone = this.normalizeAndValidatePhone(recipient.phone, 'to[].phone');
+      const phone = this.normalizeAndValidatePhone(
+        recipient.phone,
+        'to[].phone',
+      );
       const variables = this.normalizeVariables(recipient.variables);
 
       if (variables) {
@@ -103,11 +113,15 @@ export class NotificationsService {
     const normalized: Record<string, string> = {};
     for (const [key, value] of Object.entries(variables)) {
       if (key.trim().length === 0) {
-        throw new BadRequestException('to[].variables keys must be non-empty strings.');
+        throw new BadRequestException(
+          'to[].variables keys must be non-empty strings.',
+        );
       }
 
       if (value === null || value === undefined) {
-        throw new BadRequestException(`to[].variables.${key} must not be null.`);
+        throw new BadRequestException(
+          `to[].variables.${key} must not be null.`,
+        );
       }
 
       normalized[key] = String(value);
@@ -137,7 +151,9 @@ export class NotificationsService {
     }
 
     if (typeof dateTime !== 'string' || dateTime.trim().length === 0) {
-      throw new BadRequestException('reservation.dateTime must be string or null.');
+      throw new BadRequestException(
+        'reservation.dateTime must be string or null.',
+      );
     }
 
     return { dateTime: dateTime.trim() };

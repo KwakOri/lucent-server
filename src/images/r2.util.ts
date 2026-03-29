@@ -245,7 +245,9 @@ export async function getR2ObjectMetadata(key: string): Promise<{
   return {
     contentType: response.ContentType ?? null,
     contentLength:
-      typeof response.ContentLength === 'number' ? response.ContentLength : null,
+      typeof response.ContentLength === 'number'
+        ? response.ContentLength
+        : null,
     eTag: response.ETag ?? null,
   };
 }

@@ -1,7 +1,11 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AppConfigService } from '../config/app-config.service';
 import { SENDON_GATEWAY } from './sendon.constants';
-import { SendonAlimtalkPayload, SendonAlimtalkResult, SendonGateway } from './sendon.types';
+import {
+  SendonAlimtalkPayload,
+  SendonAlimtalkResult,
+  SendonGateway,
+} from './sendon.types';
 
 @Injectable()
 export class SendonService {
@@ -12,7 +16,9 @@ export class SendonService {
     @Inject(SENDON_GATEWAY) private readonly gateway: SendonGateway,
   ) {}
 
-  async sendAlimtalk(payload: SendonAlimtalkPayload): Promise<SendonAlimtalkResult> {
+  async sendAlimtalk(
+    payload: SendonAlimtalkPayload,
+  ): Promise<SendonAlimtalkResult> {
     if (!this.configService.sendon.enabled) {
       this.logger.warn('Sendon delivery is disabled by SENDON_ENABLED=false.');
       return {
@@ -25,7 +31,10 @@ export class SendonService {
     try {
       return await this.gateway.sendAlimtalk(payload);
     } catch (error) {
-      this.logger.error('Sendon alimtalk delivery failed.', error instanceof Error ? error.stack : undefined);
+      this.logger.error(
+        'Sendon alimtalk delivery failed.',
+        error instanceof Error ? error.stack : undefined,
+      );
       return {
         provider: 'sendon',
         status: 'failed',
