@@ -769,7 +769,8 @@ export class V2CheckoutService {
       ),
     );
 
-    const variantSnapshotById = await this.fetchVariantSnapshotsByIds(variantIds);
+    const variantSnapshotById =
+      await this.fetchVariantSnapshotsByIds(variantIds);
     const productIds = Array.from(
       new Set(
         rows
@@ -842,7 +843,9 @@ export class V2CheckoutService {
         const variantId = this.normalizeOptionalUuid(
           orderItem?.variant_id as string | null | undefined,
         );
-        const variantSnapshot = variantId ? variantSnapshotById.get(variantId) : null;
+        const variantSnapshot = variantId
+          ? variantSnapshotById.get(variantId)
+          : null;
         const productId =
           this.normalizeOptionalUuid(
             orderItem?.product_id as string | null | undefined,
@@ -892,7 +895,8 @@ export class V2CheckoutService {
         const availability = this.evaluateEntitlementAvailability({
           entitlement: row,
           hasReadyAsset: Boolean(
-            legacyDownloadUrl || this.normalizeOptionalText(digitalAsset?.storage_path),
+            legacyDownloadUrl ||
+            this.normalizeOptionalText(digitalAsset?.storage_path),
           ),
         });
 
@@ -1557,7 +1561,9 @@ export class V2CheckoutService {
       callbackStatus === 'CAPTURED' &&
       (order.payment_status as V2PaymentStatus) !== 'CAPTURED'
     ) {
-      void this.commerceNotificationsService.notifyPaymentCaptured(updatedOrder);
+      void this.commerceNotificationsService.notifyPaymentCaptured(
+        updatedOrder,
+      );
     }
 
     return updatedOrder;
@@ -1742,7 +1748,10 @@ export class V2CheckoutService {
   }
 
   private async deleteOrderForRollback(orderId: string): Promise<void> {
-    const { error } = await this.supabase.from('v2_orders').delete().eq('id', orderId);
+    const { error } = await this.supabase
+      .from('v2_orders')
+      .delete()
+      .eq('id', orderId);
     if (error) {
       throw new ApiException(
         '주문 롤백 중 주문 삭제 실패',
@@ -1924,7 +1933,9 @@ export class V2CheckoutService {
 
     const { data, error } = await this.supabase
       .from('v2_product_media')
-      .select('product_id,public_url,media_role,is_primary,sort_order,created_at')
+      .select(
+        'product_id,public_url,media_role,is_primary,sort_order,created_at',
+      )
       .in('product_id', productIds)
       .eq('status', 'ACTIVE')
       .is('deleted_at', null)
@@ -1963,15 +1974,21 @@ export class V2CheckoutService {
       const primaryByFlag = mediaRows.find(
         (media) =>
           media.is_primary &&
-          this.normalizeOptionalText(media.public_url as string | null | undefined),
+          this.normalizeOptionalText(
+            media.public_url as string | null | undefined,
+          ),
       );
       const primaryByRole = mediaRows.find(
         (media) =>
           media.media_role === 'PRIMARY' &&
-          this.normalizeOptionalText(media.public_url as string | null | undefined),
+          this.normalizeOptionalText(
+            media.public_url as string | null | undefined,
+          ),
       );
       const fallback = mediaRows.find((media) =>
-        this.normalizeOptionalText(media.public_url as string | null | undefined),
+        this.normalizeOptionalText(
+          media.public_url as string | null | undefined,
+        ),
       );
       const thumbnailUrl = this.normalizeOptionalText(
         (primaryByFlag || primaryByRole || fallback)?.public_url as
@@ -2290,8 +2307,9 @@ export class V2CheckoutService {
       const quoteLineAdjustments = this.mapQuoteLineAdjustments(
         line?.adjustments,
       );
-      const lineProductNameSnapshot =
-        this.normalizeOptionalText(line?.product_name_snapshot);
+      const lineProductNameSnapshot = this.normalizeOptionalText(
+        line?.product_name_snapshot,
+      );
       if (!lineProductNameSnapshot) {
         throw new ApiException(
           `quote.lines[${index}].product_name_snapshot이 비어있습니다`,
@@ -2680,10 +2698,14 @@ export class V2CheckoutService {
     fallbackCampaignId: string | null;
   }): Promise<CampaignSnapshotContext[]> {
     const lines = Array.isArray(input.quoteLines) ? input.quoteLines : [];
-    const lineContexts = Array.isArray(input.lineContexts) ? input.lineContexts : [];
+    const lineContexts = Array.isArray(input.lineContexts)
+      ? input.lineContexts
+      : [];
 
     const explicitCampaignIds = new Set<string>();
-    const fallbackCampaignId = this.normalizeOptionalUuid(input.fallbackCampaignId);
+    const fallbackCampaignId = this.normalizeOptionalUuid(
+      input.fallbackCampaignId,
+    );
     if (fallbackCampaignId) {
       explicitCampaignIds.add(fallbackCampaignId);
     }
@@ -2698,7 +2720,9 @@ export class V2CheckoutService {
         explicitCampaignIds.add(lineCampaignId);
       }
 
-      const contextCampaignId = this.normalizeOptionalUuid(lineContext?.campaignId);
+      const contextCampaignId = this.normalizeOptionalUuid(
+        lineContext?.campaignId,
+      );
       if (contextCampaignId) {
         explicitCampaignIds.add(contextCampaignId);
       }
@@ -2730,10 +2754,14 @@ export class V2CheckoutService {
       const lineContext = lineContexts[index];
 
       const lineCampaignId = this.normalizeOptionalUuid(line?.campaign_id);
-      const contextCampaignId = this.normalizeOptionalUuid(lineContext?.campaignId);
+      const contextCampaignId = this.normalizeOptionalUuid(
+        lineContext?.campaignId,
+      );
       const explicitCampaignId =
         lineCampaignId || contextCampaignId || fallbackCampaignId || null;
-      const explicitCampaignName = this.normalizeOptionalText(line?.campaign_name);
+      const explicitCampaignName = this.normalizeOptionalText(
+        line?.campaign_name,
+      );
 
       const selectedPriceListId =
         this.extractSelectedPriceListIdFromQuoteLine(line);
@@ -2743,9 +2771,10 @@ export class V2CheckoutService {
 
       const campaignId =
         campaignFromPriceList?.campaignId || explicitCampaignId || null;
-      const campaignName = campaignFromPriceList?.campaignName
-        || explicitCampaignName
-        || (campaignId ? campaignNameById.get(campaignId) || null : null);
+      const campaignName =
+        campaignFromPriceList?.campaignName ||
+        explicitCampaignName ||
+        (campaignId ? campaignNameById.get(campaignId) || null : null);
 
       snapshots.push({
         campaignId,
@@ -2787,7 +2816,8 @@ export class V2CheckoutService {
       const campaignRow = Array.isArray(row.campaign)
         ? row.campaign[0]
         : row.campaign;
-      const campaignName = this.normalizeOptionalText(campaignRow?.name) || null;
+      const campaignName =
+        this.normalizeOptionalText(campaignRow?.name) || null;
       campaignByPriceListId.set(priceListId, {
         campaignId,
         campaignName,
@@ -2797,7 +2827,9 @@ export class V2CheckoutService {
     return campaignByPriceListId;
   }
 
-  private async fetchCampaignNameByIds(campaignIds: string[]): Promise<Map<string, string>> {
+  private async fetchCampaignNameByIds(
+    campaignIds: string[],
+  ): Promise<Map<string, string>> {
     if (campaignIds.length === 0) {
       return new Map();
     }
@@ -2828,7 +2860,9 @@ export class V2CheckoutService {
     return campaignNameById;
   }
 
-  private extractSelectedPriceListIdFromQuoteLine(line: unknown): string | null {
+  private extractSelectedPriceListIdFromQuoteLine(
+    line: unknown,
+  ): string | null {
     const lineRecord = this.normalizeOptionalJsonObject(line);
     const pricing = this.normalizeOptionalJsonObject(lineRecord?.pricing);
     return this.normalizeOptionalUuid(pricing?.selected_price_list_id);
@@ -3359,12 +3393,15 @@ export class V2CheckoutService {
       new Set(
         items
           .map((item) =>
-            this.normalizeOptionalUuid(item?.variant_id as string | null | undefined),
+            this.normalizeOptionalUuid(
+              item?.variant_id as string | null | undefined,
+            ),
           )
           .filter((variantId): variantId is string => Boolean(variantId)),
       ),
     );
-    const variantSnapshotById = await this.fetchVariantSnapshotsByIds(variantIds);
+    const variantSnapshotById =
+      await this.fetchVariantSnapshotsByIds(variantIds);
 
     const productIds = Array.from(
       new Set(
@@ -3397,7 +3434,9 @@ export class V2CheckoutService {
       const variantId = this.normalizeOptionalUuid(
         item?.variant_id as string | null | undefined,
       );
-      const variantSnapshot = variantId ? variantSnapshotById.get(variantId) : null;
+      const variantSnapshot = variantId
+        ? variantSnapshotById.get(variantId)
+        : null;
       const displaySnapshot =
         item?.display_snapshot &&
         typeof item.display_snapshot === 'object' &&
@@ -3406,7 +3445,9 @@ export class V2CheckoutService {
           : {};
 
       const productId =
-        this.normalizeOptionalUuid(item?.product_id as string | null | undefined) ||
+        this.normalizeOptionalUuid(
+          item?.product_id as string | null | undefined,
+        ) ||
         this.normalizeOptionalUuid(
           variantSnapshot?.product_id as string | null | undefined,
         );
@@ -3430,7 +3471,9 @@ export class V2CheckoutService {
         this.normalizeOptionalText(
           displaySnapshot.title as string | null | undefined,
         ) ||
-        this.normalizeOptionalText(variantSnapshot?.title as string | null | undefined);
+        this.normalizeOptionalText(
+          variantSnapshot?.title as string | null | undefined,
+        );
       const thumbnailUrl =
         (productId ? thumbnailByProductId.get(productId) : null) ||
         this.normalizeOptionalText(
@@ -3439,8 +3482,10 @@ export class V2CheckoutService {
 
       return {
         ...item,
-        product_name_snapshot: productTitle || item?.product_name_snapshot || null,
-        variant_name_snapshot: variantTitle || item?.variant_name_snapshot || null,
+        product_name_snapshot:
+          productTitle || item?.product_name_snapshot || null,
+        variant_name_snapshot:
+          variantTitle || item?.variant_name_snapshot || null,
         display_snapshot: {
           ...displaySnapshot,
           product_id: productId || null,
@@ -3461,7 +3506,9 @@ export class V2CheckoutService {
     return data;
   }
 
-  private async fetchDigitalEntitlementById(entitlementId: string): Promise<any> {
+  private async fetchDigitalEntitlementById(
+    entitlementId: string,
+  ): Promise<any> {
     const { data, error } = await this.supabase
       .from('v2_digital_entitlements')
       .select(
@@ -3710,7 +3757,8 @@ export class V2CheckoutService {
     blocked_reason: string | null;
     remaining_downloads: number | null;
   } {
-    const status = this.normalizeOptionalText(input.entitlement?.status) || 'PENDING';
+    const status =
+      this.normalizeOptionalText(input.entitlement?.status) || 'PENDING';
     const downloadCount = this.normalizeNonNegativeInteger(
       input.entitlement?.download_count ?? 0,
       'download_count',
@@ -3749,7 +3797,9 @@ export class V2CheckoutService {
       can_download: canDownload,
       blocked_reason: blockedReason,
       remaining_downloads:
-        maxDownloads !== null ? Math.max(maxDownloads - downloadCount, 0) : null,
+        maxDownloads !== null
+          ? Math.max(maxDownloads - downloadCount, 0)
+          : null,
     };
   }
 
@@ -3881,10 +3931,7 @@ export class V2CheckoutService {
     return normalized;
   }
 
-  private readNonNegativeIntegerEnv(
-    key: string,
-    defaultValue: number,
-  ): number {
+  private readNonNegativeIntegerEnv(key: string, defaultValue: number): number {
     const raw = process.env[key];
     if (typeof raw !== 'string' || raw.trim().length === 0) {
       return defaultValue;

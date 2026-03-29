@@ -140,7 +140,11 @@ export class ArtistsController {
 
   private async requireAdmin(authorization: string | undefined): Promise<void> {
     const user = await this.authSessionService.requireUser(authorization);
-    if (!this.authSessionService.isAdmin(user.email)) {
+    const isAdmin = await this.authSessionService.isAdmin({
+      userId: user.id,
+      email: user.email,
+    });
+    if (!isAdmin) {
       throw new ApiException('관리자 권한이 필요합니다', 403, 'ADMIN_REQUIRED');
     }
   }

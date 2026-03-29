@@ -23,7 +23,10 @@ export interface ApiPaginatedResponse<T> {
   pagination: PaginationMeta;
 }
 
-export function successResponse<T>(data: T, message?: string): ApiSuccessResponse<T> {
+export function successResponse<T>(
+  data: T,
+  message?: string,
+): ApiSuccessResponse<T> {
   return {
     status: 'success',
     data,

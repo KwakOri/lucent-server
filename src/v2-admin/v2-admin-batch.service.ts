@@ -1,9 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ApiException } from '../common/errors/api.exception';
 import { getSupabaseClient } from '../supabase/supabase.client';
-import {
-  V2AdminActionActor,
-} from './v2-admin-action-executor.service';
+import { V2AdminActionActor } from './v2-admin-action-executor.service';
 import { V2AdminOrderTransitionService } from './v2-admin-order-transition.service';
 
 type QueueLinearStage =
@@ -79,7 +77,8 @@ export class V2AdminBatchService {
     campaignId?: string;
   }): Promise<any> {
     const limit = this.normalizeLimit(params.limit, 200, 1000);
-    const keyword = this.normalizeOptionalText(params.keyword)?.toLowerCase() || null;
+    const keyword =
+      this.normalizeOptionalText(params.keyword)?.toLowerCase() || null;
     const dateFrom = this.normalizeOptionalDate(params.dateFrom, 'date_from');
     const dateTo = this.normalizeOptionalDate(params.dateTo, 'date_to');
     const projectId = this.normalizeOptionalUuid(params.projectId);
@@ -89,12 +88,22 @@ export class V2AdminBatchService {
     const orderScopeByOrderId = await this.fetchOrderScopeByOrderIds(
       rows
         .map((row) => this.normalizeOptionalUuid(row.order_id))
-        .filter((orderId: string | null): orderId is string => Boolean(orderId)),
+        .filter((orderId: string | null): orderId is string =>
+          Boolean(orderId),
+        ),
     );
 
     const items = rows
-      .filter((row) => this.resolveStageFromQueueRow(row) === 'PAYMENT_CONFIRMED')
-      .filter((row) => this.matchesDateRange(row.placed_at || row.created_at, dateFrom, dateTo))
+      .filter(
+        (row) => this.resolveStageFromQueueRow(row) === 'PAYMENT_CONFIRMED',
+      )
+      .filter((row) =>
+        this.matchesDateRange(
+          row.placed_at || row.created_at,
+          dateFrom,
+          dateTo,
+        ),
+      )
       .map((row) => {
         const normalizedOrderId = this.normalizeOptionalUuid(row.order_id);
         const scope = normalizedOrderId
@@ -127,10 +136,16 @@ export class V2AdminBatchService {
         }
         return (
           row.order_no.toLowerCase().includes(keyword) ||
-          String(row.depositor_name || '').toLowerCase().includes(keyword) ||
+          String(row.depositor_name || '')
+            .toLowerCase()
+            .includes(keyword) ||
           row.order_id.toLowerCase().includes(keyword) ||
-          String(row.project_name || '').toLowerCase().includes(keyword) ||
-          String(row.campaign_name || '').toLowerCase().includes(keyword)
+          String(row.project_name || '')
+            .toLowerCase()
+            .includes(keyword) ||
+          String(row.campaign_name || '')
+            .toLowerCase()
+            .includes(keyword)
         );
       })
       .map((row) => ({
@@ -183,7 +198,10 @@ export class V2AdminBatchService {
       input.ownerAdminId,
       'owner_admin_id가 필요합니다.',
     );
-    const name = this.normalizeRequiredText(input.name, '뷰 이름이 필요합니다.');
+    const name = this.normalizeRequiredText(
+      input.name,
+      '뷰 이름이 필요합니다.',
+    );
     const filter = this.normalizeProductionViewFilter(input.filter);
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
     const isDefault = Boolean(input.isDefault);
@@ -238,7 +256,10 @@ export class V2AdminBatchService {
       input.ownerAdminId,
       'owner_admin_id가 필요합니다.',
     );
-    const viewId = this.normalizeRequiredUuid(input.viewId, 'view_id가 필요합니다.');
+    const viewId = this.normalizeRequiredUuid(
+      input.viewId,
+      'view_id가 필요합니다.',
+    );
     const current = await this.requireProductionSavedView(viewId, ownerAdminId);
 
     const nextName =
@@ -250,7 +271,9 @@ export class V2AdminBatchService {
         ? this.normalizeProductionViewFilter(input.filter)
         : this.normalizeProductionViewFilter(current.filter_json);
     const nextIsDefault =
-      input.isDefault !== undefined ? Boolean(input.isDefault) : Boolean(current.is_default);
+      input.isDefault !== undefined
+        ? Boolean(input.isDefault)
+        : Boolean(current.is_default);
     const nextMetadata =
       input.metadata !== undefined
         ? this.normalizeOptionalJsonObject(input.metadata) || {}
@@ -304,7 +327,10 @@ export class V2AdminBatchService {
       input.ownerAdminId,
       'owner_admin_id가 필요합니다.',
     );
-    const viewId = this.normalizeRequiredUuid(input.viewId, 'view_id가 필요합니다.');
+    const viewId = this.normalizeRequiredUuid(
+      input.viewId,
+      'view_id가 필요합니다.',
+    );
 
     await this.requireProductionSavedView(viewId, ownerAdminId);
 
@@ -328,9 +354,7 @@ export class V2AdminBatchService {
     };
   }
 
-  async previewProductionBatch(input: {
-    orderIds?: string[];
-  }): Promise<any> {
+  async previewProductionBatch(input: { orderIds?: string[] }): Promise<any> {
     const orderIds = this.normalizeOrderIds(input.orderIds);
     const queueMap = await this.fetchQueueMapByOrderIds(orderIds);
 
@@ -404,8 +428,10 @@ export class V2AdminBatchService {
       );
     }
 
-    const title = requestedTitle || (await this.generateProductionSnapshotTitle());
-    const projectSummary = await this.buildProductionProjectSummary(validOrderIds);
+    const title =
+      requestedTitle || (await this.generateProductionSnapshotTitle());
+    const projectSummary =
+      await this.buildProductionProjectSummary(validOrderIds);
 
     const batchNo = this.generateBatchNo('PB');
     const snapshot = {
@@ -606,7 +632,8 @@ export class V2AdminBatchService {
     const actor = this.normalizeActor(input.actor);
     const reason = this.normalizeOptionalText(input.reason);
     const requestId =
-      this.normalizeOptionalText(input.requestId) || this.generateRequestId('prod-activate');
+      this.normalizeOptionalText(input.requestId) ||
+      this.generateRequestId('prod-activate');
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
 
     const orderIds = await this.fetchProductionBatchOrderIds(batch.id);
@@ -669,7 +696,8 @@ export class V2AdminBatchService {
     const actor = this.normalizeActor(input.actor);
     const reason = this.normalizeOptionalText(input.reason);
     const requestId =
-      this.normalizeOptionalText(input.requestId) || this.generateRequestId('prod-complete');
+      this.normalizeOptionalText(input.requestId) ||
+      this.generateRequestId('prod-complete');
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
 
     const orderIds = await this.fetchProductionBatchOrderIds(batch.id);
@@ -751,10 +779,13 @@ export class V2AdminBatchService {
 
     const reason = this.normalizeOptionalText(input.reason);
     const requestId =
-      this.normalizeOptionalText(input.requestId) || this.generateRequestId('prod-cancel');
+      this.normalizeOptionalText(input.requestId) ||
+      this.generateRequestId('prod-cancel');
     const actor = this.normalizeActor(input.actor);
-    const requestMetadata = this.normalizeOptionalJsonObject(input.metadata) || {};
-    const existingMetadata = this.normalizeOptionalJsonObject(batch.metadata) || {};
+    const requestMetadata =
+      this.normalizeOptionalJsonObject(input.metadata) || {};
+    const existingMetadata =
+      this.normalizeOptionalJsonObject(batch.metadata) || {};
 
     if (batch.status === 'ACTIVE') {
       const orderIds = await this.fetchProductionBatchOrderIds(batch.id);
@@ -779,21 +810,23 @@ export class V2AdminBatchService {
           }
         }
 
-        const transitionResult = await this.v2AdminOrderTransitionService.execute({
-          orderIds,
-          targetStage: 'PAYMENT_CONFIRMED',
-          reason,
-          requestId,
-          metadata: {
-            ...requestMetadata,
-            source: 'PRODUCTION_BATCH_CANCEL',
-            batch_id: batch.id,
-            batch_no: batch.batch_no,
-          },
-          actor,
-        });
+        const transitionResult =
+          await this.v2AdminOrderTransitionService.execute({
+            orderIds,
+            targetStage: 'PAYMENT_CONFIRMED',
+            reason,
+            requestId,
+            metadata: {
+              ...requestMetadata,
+              source: 'PRODUCTION_BATCH_CANCEL',
+              batch_id: batch.id,
+              batch_no: batch.batch_no,
+            },
+            actor,
+          });
 
-        const rollbackStatusMap = this.buildOrderTransitionStatusMap(transitionResult);
+        const rollbackStatusMap =
+          this.buildOrderTransitionStatusMap(transitionResult);
         if (this.hasFailedOrderTransition(rollbackStatusMap)) {
           throw new ApiException(
             'ACTIVE 제작 배치 취소 중 일부 주문 롤백에 실패했습니다. 실패 주문을 확인해 주세요.',
@@ -840,7 +873,8 @@ export class V2AdminBatchService {
     campaignId?: string;
   }): Promise<any> {
     const limit = this.normalizeLimit(params.limit, 200, 1000);
-    const keyword = this.normalizeOptionalText(params.keyword)?.toLowerCase() || null;
+    const keyword =
+      this.normalizeOptionalText(params.keyword)?.toLowerCase() || null;
     const dateFrom = this.normalizeOptionalDate(params.dateFrom, 'date_from');
     const dateTo = this.normalizeOptionalDate(params.dateTo, 'date_to');
     const projectId = this.normalizeOptionalUuid(params.projectId);
@@ -850,12 +884,20 @@ export class V2AdminBatchService {
     const orderScopeByOrderId = await this.fetchOrderScopeByOrderIds(
       rows
         .map((row) => this.normalizeOptionalUuid(row.order_id))
-        .filter((orderId: string | null): orderId is string => Boolean(orderId)),
+        .filter((orderId: string | null): orderId is string =>
+          Boolean(orderId),
+        ),
     );
 
     const items = rows
       .filter((row) => this.resolveStageFromQueueRow(row) === 'READY_TO_SHIP')
-      .filter((row) => this.matchesDateRange(row.placed_at || row.created_at, dateFrom, dateTo))
+      .filter((row) =>
+        this.matchesDateRange(
+          row.placed_at || row.created_at,
+          dateFrom,
+          dateTo,
+        ),
+      )
       .map((row) => {
         const normalizedOrderId = this.normalizeOptionalUuid(row.order_id);
         const scope = normalizedOrderId
@@ -888,10 +930,16 @@ export class V2AdminBatchService {
         }
         return (
           row.order_no.toLowerCase().includes(keyword) ||
-          String(row.depositor_name || '').toLowerCase().includes(keyword) ||
+          String(row.depositor_name || '')
+            .toLowerCase()
+            .includes(keyword) ||
           row.order_id.toLowerCase().includes(keyword) ||
-          String(row.project_name || '').toLowerCase().includes(keyword) ||
-          String(row.campaign_name || '').toLowerCase().includes(keyword)
+          String(row.project_name || '')
+            .toLowerCase()
+            .includes(keyword) ||
+          String(row.campaign_name || '')
+            .toLowerCase()
+            .includes(keyword)
         );
       })
       .map((row) => ({
@@ -905,9 +953,7 @@ export class V2AdminBatchService {
     };
   }
 
-  async previewShippingBatch(input: {
-    orderIds?: string[];
-  }): Promise<any> {
+  async previewShippingBatch(input: { orderIds?: string[] }): Promise<any> {
     const orderIds = this.normalizeOrderIds(input.orderIds);
     const queueMap = await this.fetchQueueMapByOrderIds(orderIds);
     const ordersMap = await this.fetchOrdersMapByIds(orderIds);
@@ -992,7 +1038,10 @@ export class V2AdminBatchService {
     metadata?: Record<string, unknown> | null;
     actor?: V2AdminActionActor;
   }): Promise<any> {
-    const title = this.normalizeRequiredText(input.title, 'title이 필요합니다.');
+    const title = this.normalizeRequiredText(
+      input.title,
+      'title이 필요합니다.',
+    );
     const notes = this.normalizeOptionalText(input.notes);
     const idempotencyKey = this.normalizeOptionalText(input.idempotencyKey);
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
@@ -1057,10 +1106,12 @@ export class V2AdminBatchService {
         stage_at_snapshot: this.resolveStageFromQueueRow(queue || {}),
         recipient_name:
           this.readSnapshotText(shippingSnapshot, 'name') ||
-          this.readSnapshotText(shippingSnapshot, 'receiver_name') || null,
+          this.readSnapshotText(shippingSnapshot, 'receiver_name') ||
+          null,
         recipient_phone:
           this.readSnapshotText(shippingSnapshot, 'phone') ||
-          this.readSnapshotText(shippingSnapshot, 'receiver_phone') || null,
+          this.readSnapshotText(shippingSnapshot, 'receiver_phone') ||
+          null,
         shipping_address_snapshot: shippingSnapshot || null,
         line_items_snapshot: items,
         metadata: {},
@@ -1266,9 +1317,7 @@ export class V2AdminBatchService {
     return this.getShippingBatchDetail(batch.id);
   }
 
-  async activateShippingBatch(input: {
-    batchId: string;
-  }): Promise<any> {
+  async activateShippingBatch(input: { batchId: string }): Promise<any> {
     const batch = await this.requireShippingBatch(input.batchId);
 
     if (
@@ -1332,7 +1381,8 @@ export class V2AdminBatchService {
     const actor = this.normalizeActor(input.actor);
     const reason = this.normalizeOptionalText(input.reason);
     const requestId =
-      this.normalizeOptionalText(input.requestId) || this.generateRequestId('ship-dispatch');
+      this.normalizeOptionalText(input.requestId) ||
+      this.generateRequestId('ship-dispatch');
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
 
     const orderIds = await this.fetchShippingBatchOrderIds(batch.id);
@@ -1414,7 +1464,8 @@ export class V2AdminBatchService {
     const actor = this.normalizeActor(input.actor);
     const reason = this.normalizeOptionalText(input.reason);
     const requestId =
-      this.normalizeOptionalText(input.requestId) || this.generateRequestId('ship-complete');
+      this.normalizeOptionalText(input.requestId) ||
+      this.generateRequestId('ship-complete');
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
 
     const orderIds = await this.fetchShippingBatchOrderIds(batch.id);
@@ -1529,9 +1580,7 @@ export class V2AdminBatchService {
     return data;
   }
 
-  private normalizeProductionViewFilter(
-    raw: unknown,
-  ): {
+  private normalizeProductionViewFilter(raw: unknown): {
     project_id: string | null;
     campaign_id: string | null;
   } {
@@ -1614,7 +1663,9 @@ export class V2AdminBatchService {
     return data;
   }
 
-  private async fetchProductionBatchOrderIds(batchId: string): Promise<string[]> {
+  private async fetchProductionBatchOrderIds(
+    batchId: string,
+  ): Promise<string[]> {
     const { data, error } = await this.supabase
       .from('v2_admin_production_batch_orders')
       .select('order_id')
@@ -1660,7 +1711,9 @@ export class V2AdminBatchService {
     statusMap: Map<string, BatchTransitionOrderStatus>,
   ): Promise<void> {
     const fieldName =
-      mode === 'activate' ? 'transition_activate_status' : 'transition_complete_status';
+      mode === 'activate'
+        ? 'transition_activate_status'
+        : 'transition_complete_status';
 
     const { data, error } = await this.supabase
       .from('v2_admin_production_batch_orders')
@@ -1744,10 +1797,14 @@ export class V2AdminBatchService {
     }
   }
 
-  private buildOrderTransitionStatusMap(result: any): Map<string, BatchTransitionOrderStatus> {
+  private buildOrderTransitionStatusMap(
+    result: any,
+  ): Map<string, BatchTransitionOrderStatus> {
     const map = new Map<string, BatchTransitionOrderStatus>();
     const rows = Array.isArray(result?.rows) ? result.rows : [];
-    const logs = Array.isArray(result?.execute?.logs) ? result.execute.logs : [];
+    const logs = Array.isArray(result?.execute?.logs)
+      ? result.execute.logs
+      : [];
 
     for (const row of rows) {
       const orderId = this.normalizeOptionalUuid(row?.order_id);
@@ -1861,13 +1918,16 @@ export class V2AdminBatchService {
 
       const variantId = this.normalizeOptionalUuid(row.variant_id);
       const productId = this.normalizeOptionalUuid(row.product_id);
-      const key = variantId || `product:${productId || 'unknown'}:${String(row.product_name_snapshot || '')}`;
+      const key =
+        variantId ||
+        `product:${productId || 'unknown'}:${String(row.product_name_snapshot || '')}`;
 
       const existing = aggregateMap.get(key) || {
         product_id: productId,
         variant_id: variantId,
         product_name:
-          this.normalizeOptionalText(row.product_name_snapshot) || '이름 없는 상품',
+          this.normalizeOptionalText(row.product_name_snapshot) ||
+          '이름 없는 상품',
         variant_name: this.normalizeOptionalText(row.variant_name_snapshot),
         quantity_total: 0,
         order_id_set: new Set<string>(),
@@ -1931,7 +1991,9 @@ export class V2AdminBatchService {
     return `${datePart}${String(nextSequence).padStart(2, '0')}`;
   }
 
-  private async buildProductionProjectSummary(orderIds: string[]): Promise<string> {
+  private async buildProductionProjectSummary(
+    orderIds: string[],
+  ): Promise<string> {
     const scopeByOrderId = await this.fetchOrderScopeByOrderIds(orderIds);
     const projectNames: string[] = [];
 
@@ -1972,20 +2034,23 @@ export class V2AdminBatchService {
       .map((row) => this.normalizeOptionalUuid(row.order_id))
       .filter((orderId: string | null): orderId is string => Boolean(orderId));
 
-    const depositorNameByOrderId = await this.fetchOrderDepositorNameByOrderIds(
-      orderIds,
-    );
+    const depositorNameByOrderId =
+      await this.fetchOrderDepositorNameByOrderIds(orderIds);
 
     return rows.map((row) => {
       const orderId = this.normalizeOptionalUuid(row.order_id);
       return {
         ...row,
-        depositor_name: orderId ? depositorNameByOrderId.get(orderId) || null : null,
+        depositor_name: orderId
+          ? depositorNameByOrderId.get(orderId) || null
+          : null,
       };
     });
   }
 
-  private async fetchQueueMapByOrderIds(orderIds: string[]): Promise<Map<string, QueueRow>> {
+  private async fetchQueueMapByOrderIds(
+    orderIds: string[],
+  ): Promise<Map<string, QueueRow>> {
     if (orderIds.length === 0) {
       return new Map();
     }
@@ -2004,7 +2069,8 @@ export class V2AdminBatchService {
     }
 
     const rows = (data || []) as QueueRow[];
-    const depositorNameByOrderId = await this.fetchOrderDepositorNameByOrderIds(orderIds);
+    const depositorNameByOrderId =
+      await this.fetchOrderDepositorNameByOrderIds(orderIds);
 
     const map = new Map<string, QueueRow>();
     for (const row of rows) {
@@ -2021,7 +2087,9 @@ export class V2AdminBatchService {
     return map;
   }
 
-  private async fetchOrdersMapByIds(orderIds: string[]): Promise<Map<string, any>> {
+  private async fetchOrdersMapByIds(
+    orderIds: string[],
+  ): Promise<Map<string, any>> {
     if (orderIds.length === 0) {
       return new Map();
     }
@@ -2051,7 +2119,9 @@ export class V2AdminBatchService {
     return map;
   }
 
-  private async fetchOrderItemsMapByOrderIds(orderIds: string[]): Promise<Map<string, any[]>> {
+  private async fetchOrderItemsMapByOrderIds(
+    orderIds: string[],
+  ): Promise<Map<string, any[]>> {
     if (orderIds.length === 0) {
       return new Map();
     }
@@ -2172,7 +2242,8 @@ export class V2AdminBatchService {
         ...Array.from(campaignIdByPriceListId.values()),
       ]),
     );
-    const campaignNameById = await this.fetchCampaignNameByIds(resolvedCampaignIds);
+    const campaignNameById =
+      await this.fetchCampaignNameByIds(resolvedCampaignIds);
 
     const scopeByOrderId = new Map<string, OrderScopeContext>();
 
@@ -2234,7 +2305,9 @@ export class V2AdminBatchService {
     return scopeByOrderId;
   }
 
-  private async fetchProjectNameByIds(projectIds: string[]): Promise<Map<string, string>> {
+  private async fetchProjectNameByIds(
+    projectIds: string[],
+  ): Promise<Map<string, string>> {
     if (projectIds.length === 0) {
       return new Map();
     }
@@ -2264,7 +2337,9 @@ export class V2AdminBatchService {
     return map;
   }
 
-  private async fetchCampaignNameByIds(campaignIds: string[]): Promise<Map<string, string>> {
+  private async fetchCampaignNameByIds(
+    campaignIds: string[],
+  ): Promise<Map<string, string>> {
     if (campaignIds.length === 0) {
       return new Map();
     }
@@ -2386,13 +2461,19 @@ export class V2AdminBatchService {
   private resolveStageFromQueueRow(row: Partial<QueueRow>): QueueLinearStage {
     const orderStatus = String(row.order_status || '').toUpperCase();
     const paymentStatus = String(row.payment_status || '').toUpperCase();
-    const fulfillmentStatus = String(row.fulfillment_status || '').toUpperCase();
+    const fulfillmentStatus = String(
+      row.fulfillment_status || '',
+    ).toUpperCase();
 
     if (paymentStatus === 'AUTHORIZED') {
       return 'PAYMENT_CONFIRMED';
     }
 
-    const paymentCapturedStatuses = ['CAPTURED', 'PARTIALLY_REFUNDED', 'REFUNDED'];
+    const paymentCapturedStatuses = [
+      'CAPTURED',
+      'PARTIALLY_REFUNDED',
+      'REFUNDED',
+    ];
     const isPaymentCaptured = paymentCapturedStatuses.includes(paymentStatus);
     if (!isPaymentCaptured) {
       return 'PAYMENT_PENDING';
@@ -2440,7 +2521,9 @@ export class V2AdminBatchService {
     return 'PRODUCTION';
   }
 
-  private buildAddressSummary(snapshot: Record<string, unknown> | null): string | null {
+  private buildAddressSummary(
+    snapshot: Record<string, unknown> | null,
+  ): string | null {
     if (!snapshot) {
       return null;
     }
@@ -2521,12 +2604,17 @@ export class V2AdminBatchService {
       day: '2-digit',
     });
     const snapshotDate = dateFormatter.format(baseDate);
-    const [year, month, day] = snapshotDate.split('-').map((value) => Number.parseInt(value, 10));
+    const [year, month, day] = snapshotDate
+      .split('-')
+      .map((value) => Number.parseInt(value, 10));
 
     const utcStartMillis = Date.UTC(year, month - 1, day, -9, 0, 0, 0);
     const utcEndMillis = utcStartMillis + 24 * 60 * 60 * 1000;
 
-    return [new Date(utcStartMillis).toISOString(), new Date(utcEndMillis).toISOString()];
+    return [
+      new Date(utcStartMillis).toISOString(),
+      new Date(utcEndMillis).toISOString(),
+    ];
   }
 
   private generateRequestId(prefix: string): string {
@@ -2638,9 +2726,7 @@ export class V2AdminBatchService {
     const pricingSnapshot = this.normalizeOptionalJsonObject(
       displaySnapshot?.pricing,
     );
-    return this.normalizeOptionalUuid(
-      pricingSnapshot?.selected_price_list_id,
-    );
+    return this.normalizeOptionalUuid(pricingSnapshot?.selected_price_list_id);
   }
 
   private normalizeOptionalUuid(value: unknown): string | null {

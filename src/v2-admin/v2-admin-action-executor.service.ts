@@ -35,7 +35,10 @@ interface ExecuteV2AdminActionInput<T> {
   resourceId?: string | null;
   requestId?: string | null;
   inputPayload?: Record<string, unknown> | null;
-  precheck?: () => Promise<Record<string, unknown> | null> | Record<string, unknown> | null;
+  precheck?: () =>
+    | Promise<Record<string, unknown> | null>
+    | Record<string, unknown>
+    | null;
   transition?:
     | (() => Promise<V2AdminTransitionInput[] | V2AdminTransitionInput | null>)
     | (() => V2AdminTransitionInput[] | V2AdminTransitionInput | null);
@@ -70,13 +73,20 @@ export class V2AdminActionExecutorService {
       input.actionKey,
       'actionKey는 필수입니다',
     );
-    const domain = this.normalizeRequiredText(input.domain, 'domain은 필수입니다');
+    const domain = this.normalizeRequiredText(
+      input.domain,
+      'domain은 필수입니다',
+    );
     const resourceType = this.normalizeOptionalText(input.resourceType);
     const resourceId = this.normalizeOptionalUuid(input.resourceId);
     const requestId = this.normalizeOptionalText(input.requestId);
-    const inputPayload = this.normalizeOptionalJsonObject(input.inputPayload) || {};
+    const inputPayload =
+      this.normalizeOptionalJsonObject(input.inputPayload) || {};
     const approval = this.normalizeApproval(input.approval);
-    const approvalEnforced = this.isApprovalEnforced(actionKey, approval.required);
+    const approvalEnforced = this.isApprovalEnforced(
+      actionKey,
+      approval.required,
+    );
 
     const { data: createdLog, error: createLogError } = await this.supabase
       .from('v2_admin_action_logs')
@@ -110,10 +120,11 @@ export class V2AdminActionExecutorService {
 
     try {
       if (input.precheck) {
-        precheckResult =
-          this.normalizeOptionalJsonObject(await input.precheck()) || {
-            ok: true,
-          };
+        precheckResult = this.normalizeOptionalJsonObject(
+          await input.precheck(),
+        ) || {
+          ok: true,
+        };
       }
 
       const evaluatedPermission = await this.evaluatePermission({
@@ -207,7 +218,9 @@ export class V2AdminActionExecutorService {
         }
       }
 
-      const mappedResourceId = this.normalizeOptionalUuid(input.mapResourceId?.(result));
+      const mappedResourceId = this.normalizeOptionalUuid(
+        input.mapResourceId?.(result),
+      );
       const executionResult = input.mapExecutionResult
         ? input.mapExecutionResult(result)
         : this.normalizeOptionalJsonObject(result) || { ok: true };
@@ -235,7 +248,8 @@ export class V2AdminActionExecutorService {
       };
     } catch (error) {
       const parsed = this.parseError(error);
-      const isApprovalPending = parsed.errorCode === 'V2_ADMIN_APPROVAL_REQUIRED';
+      const isApprovalPending =
+        parsed.errorCode === 'V2_ADMIN_APPROVAL_REQUIRED';
       await this.updateActionLog(actionLogId, {
         action_status: isApprovalPending ? 'PENDING' : 'FAILED',
         requires_approval: approval.required,
@@ -274,7 +288,10 @@ export class V2AdminActionExecutorService {
     };
   }
 
-  private isApprovalEnforced(actionKey: string, approvalRequired: boolean): boolean {
+  private isApprovalEnforced(
+    actionKey: string,
+    approvalRequired: boolean,
+  ): boolean {
     if (!approvalRequired) {
       return false;
     }
@@ -439,7 +456,9 @@ export class V2AdminActionExecutorService {
       required_permission_code: requiredPermissionCode,
       granted: grantedRoleCodes.length > 0,
       reason:
-        grantedRoleCodes.length > 0 ? 'PERMISSION_GRANTED' : 'PERMISSION_DENIED',
+        grantedRoleCodes.length > 0
+          ? 'PERMISSION_GRANTED'
+          : 'PERMISSION_DENIED',
       role_codes: grantedRoleCodes,
     };
   }

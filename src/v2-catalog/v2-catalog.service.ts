@@ -24,7 +24,13 @@ type V2MediaRole = 'PRIMARY' | 'GALLERY' | 'DETAIL';
 type V2MediaStatus = 'DRAFT' | 'ACTIVE' | 'INACTIVE' | 'ARCHIVED';
 type V2AssetRole = 'PRIMARY' | 'BONUS';
 type V2DigitalAssetStatus = 'DRAFT' | 'READY' | 'RETIRED';
-type V2MediaAssetKind = 'IMAGE' | 'VIDEO' | 'AUDIO' | 'DOCUMENT' | 'ARCHIVE' | 'FILE';
+type V2MediaAssetKind =
+  | 'IMAGE'
+  | 'VIDEO'
+  | 'AUDIO'
+  | 'DOCUMENT'
+  | 'ARCHIVE'
+  | 'FILE';
 type V2MediaAssetStatus = 'ACTIVE' | 'INACTIVE' | 'ARCHIVED';
 type V2MediaAssetUploadSessionStatus =
   | 'INITIATED'
@@ -38,7 +44,12 @@ type V2BundleMode = 'FIXED' | 'CUSTOMIZABLE';
 type V2BundleStatus = 'DRAFT' | 'ACTIVE' | 'ARCHIVED';
 type V2BundlePricingStrategy = 'WEIGHTED' | 'FIXED_AMOUNT';
 type V2CampaignType = 'POPUP' | 'EVENT' | 'SALE' | 'DROP' | 'ALWAYS_ON';
-type V2CampaignStatus = 'DRAFT' | 'ACTIVE' | 'SUSPENDED' | 'CLOSED' | 'ARCHIVED';
+type V2CampaignStatus =
+  | 'DRAFT'
+  | 'ACTIVE'
+  | 'SUSPENDED'
+  | 'CLOSED'
+  | 'ARCHIVED';
 type V2CampaignTargetType =
   | 'PROJECT'
   | 'PRODUCT'
@@ -674,7 +685,12 @@ interface BuildV2PriceQuoteInput {
   evaluated_at?: string | null;
 }
 
-type V2ShopSort = 'SORT_ORDER' | 'LATEST' | 'OLDEST' | 'TITLE_ASC' | 'TITLE_DESC';
+type V2ShopSort =
+  | 'SORT_ORDER'
+  | 'LATEST'
+  | 'OLDEST'
+  | 'TITLE_ASC'
+  | 'TITLE_DESC';
 
 interface GetV2ShopProductsInput {
   cursor?: string;
@@ -790,8 +806,14 @@ export class V2CatalogService {
   }
 
   async createProject(input: CreateV2ProjectInput): Promise<any> {
-    const name = this.normalizeRequiredText(input.name, '프로젝트 이름은 필수입니다');
-    const slug = this.normalizeRequiredText(input.slug, '프로젝트 slug는 필수입니다');
+    const name = this.normalizeRequiredText(
+      input.name,
+      '프로젝트 이름은 필수입니다',
+    );
+    const slug = this.normalizeRequiredText(
+      input.slug,
+      '프로젝트 slug는 필수입니다',
+    );
     const coverMediaAssetId = await this.resolveProjectCoverMediaAssetId(
       input.cover_media_asset_id,
     );
@@ -825,15 +847,24 @@ export class V2CatalogService {
     return data;
   }
 
-  async updateProject(projectId: string, input: UpdateV2ProjectInput): Promise<any> {
+  async updateProject(
+    projectId: string,
+    input: UpdateV2ProjectInput,
+  ): Promise<any> {
     const current = await this.getProjectById(projectId);
     const updateData: Record<string, unknown> = {};
 
     if (input.name !== undefined) {
-      updateData.name = this.normalizeRequiredText(input.name, '프로젝트 이름은 필수입니다');
+      updateData.name = this.normalizeRequiredText(
+        input.name,
+        '프로젝트 이름은 필수입니다',
+      );
     }
     if (input.slug !== undefined) {
-      const slug = this.normalizeRequiredText(input.slug, '프로젝트 slug는 필수입니다');
+      const slug = this.normalizeRequiredText(
+        input.slug,
+        '프로젝트 slug는 필수입니다',
+      );
       await this.assertProjectSlugAvailable(slug, projectId);
       updateData.slug = slug;
     }
@@ -841,9 +872,8 @@ export class V2CatalogService {
       updateData.description = this.normalizeOptionalText(input.description);
     }
     if (input.cover_media_asset_id !== undefined) {
-      updateData.cover_media_asset_id = await this.resolveProjectCoverMediaAssetId(
-        input.cover_media_asset_id,
-      );
+      updateData.cover_media_asset_id =
+        await this.resolveProjectCoverMediaAssetId(input.cover_media_asset_id);
     }
     if (input.sort_order !== undefined) {
       this.assertSortOrder(input.sort_order);
@@ -1028,8 +1058,14 @@ export class V2CatalogService {
   }
 
   async createArtist(input: CreateV2ArtistInput): Promise<any> {
-    const name = this.normalizeRequiredText(input.name, '아티스트 이름은 필수입니다');
-    const slug = this.normalizeRequiredText(input.slug, '아티스트 slug는 필수입니다');
+    const name = this.normalizeRequiredText(
+      input.name,
+      '아티스트 이름은 필수입니다',
+    );
+    const slug = this.normalizeRequiredText(
+      input.slug,
+      '아티스트 slug는 필수입니다',
+    );
 
     await this.assertArtistSlugAvailable(slug);
     if (input.status !== undefined) {
@@ -1060,15 +1096,24 @@ export class V2CatalogService {
     return data;
   }
 
-  async updateArtist(artistId: string, input: UpdateV2ArtistInput): Promise<any> {
+  async updateArtist(
+    artistId: string,
+    input: UpdateV2ArtistInput,
+  ): Promise<any> {
     const current = await this.getArtistById(artistId);
     const updateData: Record<string, unknown> = {};
 
     if (input.name !== undefined) {
-      updateData.name = this.normalizeRequiredText(input.name, '아티스트 이름은 필수입니다');
+      updateData.name = this.normalizeRequiredText(
+        input.name,
+        '아티스트 이름은 필수입니다',
+      );
     }
     if (input.slug !== undefined) {
-      const slug = this.normalizeRequiredText(input.slug, '아티스트 slug는 필수입니다');
+      const slug = this.normalizeRequiredText(
+        input.slug,
+        '아티스트 slug는 필수입니다',
+      );
       await this.assertArtistSlugAvailable(slug, artistId);
       updateData.slug = slug;
     }
@@ -1146,7 +1191,10 @@ export class V2CatalogService {
         {
           project_id: projectId,
           artist_id: artistId,
-          role: this.normalizeRequiredText(input.role ?? 'ARTIST', 'role은 필수입니다'),
+          role: this.normalizeRequiredText(
+            input.role ?? 'ARTIST',
+            'role은 필수입니다',
+          ),
           sort_order: sortOrder,
           is_primary: input.is_primary ?? false,
           status,
@@ -1171,7 +1219,10 @@ export class V2CatalogService {
     return data;
   }
 
-  async unlinkArtistFromProject(projectId: string, artistId: string): Promise<void> {
+  async unlinkArtistFromProject(
+    projectId: string,
+    artistId: string,
+  ): Promise<void> {
     const { data: relation, error: relationError } = await this.supabase
       .from('v2_project_artists')
       .select('id')
@@ -1287,7 +1338,10 @@ export class V2CatalogService {
           .is('deleted_at', null),
       );
 
-      const { data, error, count } = await query.range(offset, offset + limit - 1);
+      const { data, error, count } = await query.range(
+        offset,
+        offset + limit - 1,
+      );
       if (error) {
         throw new ApiException(
           'v2 shop 상품 목록 조회 실패',
@@ -1356,7 +1410,9 @@ export class V2CatalogService {
         campaignId,
         evaluatedAt,
       });
-      const visibleItems = chunkItems.filter((item) => item.display_price !== null);
+      const visibleItems = chunkItems.filter(
+        (item) => item.display_price !== null,
+      );
       const remaining = limit - exposedItems.length;
       exposedItems.push(...visibleItems.slice(0, remaining));
 
@@ -1431,7 +1487,11 @@ export class V2CatalogService {
           return true;
         }
 
-        return this.isTimestampInRange(campaign.starts_at, campaign.ends_at, nowIso);
+        return this.isTimestampInRange(
+          campaign.starts_at,
+          campaign.ends_at,
+          nowIso,
+        );
       })
       .map((campaign: any) => {
         const shopBannerAsset =
@@ -1494,7 +1554,9 @@ export class V2CatalogService {
 
     return (data || [])
       .filter((coupon: any) => {
-        if (!this.isTimestampInRange(coupon.starts_at, coupon.ends_at, nowIso)) {
+        if (
+          !this.isTimestampInRange(coupon.starts_at, coupon.ends_at, nowIso)
+        ) {
           return false;
         }
         if (!this.matchesChannelScope(coupon.channel_scope_json, channel)) {
@@ -1505,7 +1567,13 @@ export class V2CatalogService {
         if (!promotion || promotion.status !== 'ACTIVE') {
           return false;
         }
-        if (!this.isTimestampInRange(promotion.starts_at, promotion.ends_at, nowIso)) {
+        if (
+          !this.isTimestampInRange(
+            promotion.starts_at,
+            promotion.ends_at,
+            nowIso,
+          )
+        ) {
           return false;
         }
         if (!this.matchesChannelScope(promotion.channel_scope_json, channel)) {
@@ -1580,7 +1648,10 @@ export class V2CatalogService {
       priceItems,
       campaignTargetEligibilityByCampaignId,
       projectStatusById,
-    } = await this.loadShopContext([productId], [product.project_id as string | null]);
+    } = await this.loadShopContext(
+      [productId],
+      [product.project_id as string | null],
+    );
     const variants = variantsByProductId.get(productId) || [];
     const media = mediaByProductId.get(productId) || [];
     const projectStatus = this.resolveShopProjectStatus(
@@ -1627,7 +1698,8 @@ export class V2CatalogService {
           ? {
               amount: priceSelection.selected.unit_amount,
               compare_at_amount: priceSelection.selected.compare_at_amount,
-              currency_code: priceSelection.selected.price_list?.currency_code ?? 'KRW',
+              currency_code:
+                priceSelection.selected.price_list?.currency_code ?? 'KRW',
               source:
                 priceSelection.selected.price_list?.scope_type === 'OVERRIDE'
                   ? 'OVERRIDE'
@@ -1789,8 +1861,14 @@ export class V2CatalogService {
       input.project_id,
       'project_id는 필수입니다',
     );
-    const title = this.normalizeRequiredText(input.title, '상품명은 필수입니다');
-    const slug = this.normalizeRequiredText(input.slug, '상품 slug는 필수입니다');
+    const title = this.normalizeRequiredText(
+      input.title,
+      '상품명은 필수입니다',
+    );
+    const slug = this.normalizeRequiredText(
+      input.slug,
+      '상품 slug는 필수입니다',
+    );
     const productKind = input.product_kind ?? 'STANDARD';
     this.assertProductKind(productKind);
     const fulfillmentType = input.fulfillment_type ?? null;
@@ -1840,11 +1918,15 @@ export class V2CatalogService {
     return data;
   }
 
-  async updateProduct(productId: string, input: UpdateV2ProductInput): Promise<any> {
+  async updateProduct(
+    productId: string,
+    input: UpdateV2ProductInput,
+  ): Promise<any> {
     const current = await this.getProductById(productId);
     const updateData: Record<string, unknown> = {};
     let nextProductKind = current.product_kind as V2ProductKind;
-    let nextFulfillmentType = (current.fulfillment_type as V2FulfillmentType | null) ?? null;
+    let nextFulfillmentType =
+      (current.fulfillment_type as V2FulfillmentType | null) ?? null;
 
     let projectIdForSlug = current.project_id as string;
     if (input.project_id !== undefined) {
@@ -1858,10 +1940,16 @@ export class V2CatalogService {
     }
 
     if (input.title !== undefined) {
-      updateData.title = this.normalizeRequiredText(input.title, '상품명은 필수입니다');
+      updateData.title = this.normalizeRequiredText(
+        input.title,
+        '상품명은 필수입니다',
+      );
     }
     if (input.slug !== undefined) {
-      const slug = this.normalizeRequiredText(input.slug, '상품 slug는 필수입니다');
+      const slug = this.normalizeRequiredText(
+        input.slug,
+        '상품 slug는 필수입니다',
+      );
       await this.assertProductSlugAvailable(projectIdForSlug, slug, productId);
       updateData.slug = slug;
     }
@@ -1990,18 +2078,27 @@ export class V2CatalogService {
     return data || [];
   }
 
-  async createVariant(productId: string, input: CreateV2VariantInput): Promise<any> {
+  async createVariant(
+    productId: string,
+    input: CreateV2VariantInput,
+  ): Promise<any> {
     const product = await this.getProductById(productId);
 
     const sku = this.normalizeRequiredText(input.sku, 'sku는 필수입니다');
-    const title = this.normalizeRequiredText(input.title, 'variant title은 필수입니다');
+    const title = this.normalizeRequiredText(
+      input.title,
+      'variant title은 필수입니다',
+    );
     const inputFulfillmentType = input.fulfillment_type;
     let fulfillmentType = inputFulfillmentType;
     if (product.product_kind === 'STANDARD') {
       const lockedFulfillmentType =
         (product.fulfillment_type as V2FulfillmentType | null) ?? null;
       if (lockedFulfillmentType) {
-        if (inputFulfillmentType && inputFulfillmentType !== lockedFulfillmentType) {
+        if (
+          inputFulfillmentType &&
+          inputFulfillmentType !== lockedFulfillmentType
+        ) {
           throw new ApiException(
             'STANDARD 상품의 옵션 fulfillment_type은 상품 설정과 같아야 합니다',
             400,
@@ -2083,7 +2180,10 @@ export class V2CatalogService {
     return data;
   }
 
-  async updateVariant(variantId: string, input: UpdateV2VariantInput): Promise<any> {
+  async updateVariant(
+    variantId: string,
+    input: UpdateV2VariantInput,
+  ): Promise<any> {
     const current = await this.getVariantById(variantId);
     const product = await this.getProductById(current.product_id as string);
     const updateData: Record<string, unknown> = {};
@@ -2093,7 +2193,10 @@ export class V2CatalogService {
       const lockedFulfillmentType =
         (product.fulfillment_type as V2FulfillmentType | null) ??
         (current.fulfillment_type as V2FulfillmentType);
-      if (input.fulfillment_type !== undefined && input.fulfillment_type !== lockedFulfillmentType) {
+      if (
+        input.fulfillment_type !== undefined &&
+        input.fulfillment_type !== lockedFulfillmentType
+      ) {
         throw new ApiException(
           'STANDARD 상품의 옵션 fulfillment_type은 상품 설정과 같아야 합니다',
           400,
@@ -2251,9 +2354,10 @@ export class V2CatalogService {
       return [];
     }
 
-    const referenceSummaryByAssetId = await this.getMediaAssetReferenceSummaryMap(
-      assets.map((asset) => asset.id),
-    );
+    const referenceSummaryByAssetId =
+      await this.getMediaAssetReferenceSummaryMap(
+        assets.map((asset) => asset.id),
+      );
 
     return assets.map((asset) => ({
       ...asset,
@@ -2268,9 +2372,17 @@ export class V2CatalogService {
     }));
   }
 
-  async prepareMediaAssetUpload(input: PrepareMediaAssetUploadInput): Promise<any> {
-    const fileName = this.normalizeRequiredText(input.file_name, 'file_name은 필수입니다');
-    const mimeType = this.normalizeRequiredText(input.mime_type, 'mime_type은 필수입니다');
+  async prepareMediaAssetUpload(
+    input: PrepareMediaAssetUploadInput,
+  ): Promise<any> {
+    const fileName = this.normalizeRequiredText(
+      input.file_name,
+      'file_name은 필수입니다',
+    );
+    const mimeType = this.normalizeRequiredText(
+      input.mime_type,
+      'mime_type은 필수입니다',
+    );
     const fileSize = input.file_size;
     this.validateMediaAssetUploadFile({
       originalname: fileName,
@@ -2279,7 +2391,8 @@ export class V2CatalogService {
     });
 
     const inferredKind = this.inferMediaAssetKind(mimeType, fileName);
-    const assetKind = (input.asset_kind as V2MediaAssetKind | undefined) ?? inferredKind;
+    const assetKind =
+      (input.asset_kind as V2MediaAssetKind | undefined) ?? inferredKind;
     this.assertMediaAssetKind(assetKind);
     const status = (input.status as V2MediaAssetStatus | undefined) ?? 'ACTIVE';
     this.assertMediaAssetStatus(status);
@@ -2310,7 +2423,9 @@ export class V2CatalogService {
     };
   }
 
-  async completeMediaAssetUpload(input: CompleteMediaAssetUploadInput): Promise<any> {
+  async completeMediaAssetUpload(
+    input: CompleteMediaAssetUploadInput,
+  ): Promise<any> {
     const rawStoragePath = this.normalizeRequiredText(
       input.storage_path,
       'storage_path는 필수입니다',
@@ -2360,7 +2475,8 @@ export class V2CatalogService {
     }
 
     const inferredKind = this.inferMediaAssetKind(mimeType, storagePath);
-    const assetKind = (input.asset_kind as V2MediaAssetKind | undefined) ?? inferredKind;
+    const assetKind =
+      (input.asset_kind as V2MediaAssetKind | undefined) ?? inferredKind;
     this.assertMediaAssetKind(assetKind);
 
     const checksum =
@@ -2385,8 +2501,14 @@ export class V2CatalogService {
   async initiateMultipartMediaAssetUpload(
     input: InitiateMultipartMediaAssetUploadInput,
   ): Promise<any> {
-    const fileName = this.normalizeRequiredText(input.file_name, 'file_name은 필수입니다');
-    const mimeType = this.normalizeRequiredText(input.mime_type, 'mime_type은 필수입니다');
+    const fileName = this.normalizeRequiredText(
+      input.file_name,
+      'file_name은 필수입니다',
+    );
+    const mimeType = this.normalizeRequiredText(
+      input.mime_type,
+      'mime_type은 필수입니다',
+    );
     const fileSize = input.file_size;
     this.validateMediaAssetUploadFile({
       originalname: fileName,
@@ -2395,9 +2517,11 @@ export class V2CatalogService {
     });
 
     const inferredKind = this.inferMediaAssetKind(mimeType, fileName);
-    const assetKind = (input.asset_kind as V2MediaAssetKind | undefined) ?? inferredKind;
+    const assetKind =
+      (input.asset_kind as V2MediaAssetKind | undefined) ?? inferredKind;
     this.assertMediaAssetKind(assetKind);
-    const assetStatus = (input.status as V2MediaAssetStatus | undefined) ?? 'ACTIVE';
+    const assetStatus =
+      (input.status as V2MediaAssetStatus | undefined) ?? 'ACTIVE';
     this.assertMediaAssetStatus(assetStatus);
 
     const storagePath = this.generateMediaAssetR2Key(assetKind, fileName);
@@ -2576,12 +2700,15 @@ export class V2CatalogService {
     }
   }
 
-  async abortMultipartMediaAssetUpload(sessionId: string | undefined): Promise<any> {
+  async abortMultipartMediaAssetUpload(
+    sessionId: string | undefined,
+  ): Promise<any> {
     const normalizedSessionId = this.normalizeRequiredText(
       sessionId,
       'session_id는 필수입니다',
     );
-    const session = await this.getMediaAssetUploadSessionById(normalizedSessionId);
+    const session =
+      await this.getMediaAssetUploadSessionById(normalizedSessionId);
 
     if (session.status === 'ABORTED') {
       return session;
@@ -2736,7 +2863,10 @@ export class V2CatalogService {
     return data;
   }
 
-  async updateMediaAsset(mediaAssetId: string, input: UpdateMediaAssetInput): Promise<any> {
+  async updateMediaAsset(
+    mediaAssetId: string,
+    input: UpdateMediaAssetInput,
+  ): Promise<any> {
     const current = await this.getMediaAssetById(mediaAssetId);
     if (input.storage_path !== undefined || input.public_url !== undefined) {
       throw new ApiException(
@@ -2776,16 +2906,21 @@ export class V2CatalogService {
       updateData.checksum = this.normalizeOptionalText(input.checksum);
     }
     if (input.storage_bucket !== undefined) {
-      updateData.storage_bucket = this.normalizeOptionalText(input.storage_bucket);
+      updateData.storage_bucket = this.normalizeOptionalText(
+        input.storage_bucket,
+      );
     }
     if (input.metadata !== undefined) {
       updateData.metadata = input.metadata ?? {};
     }
 
-    const nextStoragePath = (updateData.storage_path as string | undefined) ?? current.storage_path;
-    const nextFileName = (updateData.file_name as string | undefined) ?? current.file_name;
+    const nextStoragePath =
+      (updateData.storage_path as string | undefined) ?? current.storage_path;
+    const nextFileName =
+      (updateData.file_name as string | undefined) ?? current.file_name;
     if (!nextFileName && nextStoragePath) {
-      updateData.file_name = this.extractFileNameFromStoragePath(nextStoragePath);
+      updateData.file_name =
+        this.extractFileNameFromStoragePath(nextStoragePath);
     }
 
     if (Object.keys(updateData).length === 0) {
@@ -2812,9 +2947,8 @@ export class V2CatalogService {
 
   async deleteMediaAsset(mediaAssetId: string): Promise<any> {
     const current = await this.getMediaAssetById(mediaAssetId);
-    const referenceSummaryByAssetId = await this.getMediaAssetReferenceSummaryMap([
-      mediaAssetId,
-    ]);
+    const referenceSummaryByAssetId =
+      await this.getMediaAssetReferenceSummaryMap([mediaAssetId]);
     const referenceSummary = referenceSummaryByAssetId.get(mediaAssetId) ?? {
       product_media_count: 0,
       digital_asset_count: 0,
@@ -2897,7 +3031,10 @@ export class V2CatalogService {
     return data || [];
   }
 
-  async createProductMedia(productId: string, input: CreateV2MediaInput): Promise<any> {
+  async createProductMedia(
+    productId: string,
+    input: CreateV2MediaInput,
+  ): Promise<any> {
     await this.ensureProductExists(productId);
     this.assertNoInlineStorageOverride(input as Record<string, unknown>);
     const mediaType = input.media_type ?? 'IMAGE';
@@ -2942,7 +3079,10 @@ export class V2CatalogService {
     return data;
   }
 
-  async updateProductMedia(mediaId: string, input: UpdateV2MediaInput): Promise<any> {
+  async updateProductMedia(
+    mediaId: string,
+    input: UpdateV2MediaInput,
+  ): Promise<any> {
     const current = await this.getMediaById(mediaId);
     this.assertNoInlineStorageOverride(input as Record<string, unknown>);
     const updateData: Record<string, unknown> = {};
@@ -2972,7 +3112,10 @@ export class V2CatalogService {
       updateData.metadata = input.metadata ?? {};
     }
     if (input.media_asset_id !== undefined) {
-      const mediaAsset = await this.resolveProductMediaAsset(nextMediaType, input);
+      const mediaAsset = await this.resolveProductMediaAsset(
+        nextMediaType,
+        input,
+      );
       updateData.media_asset_id = mediaAsset.id;
       updateData.storage_path = mediaAsset.storage_path;
       updateData.public_url = mediaAsset.public_url;
@@ -3069,7 +3212,8 @@ export class V2CatalogService {
     this.assertDigitalAssetStatus(status);
 
     const versionNo =
-      input.version_no ?? (await this.getNextDigitalAssetVersion(variantId, assetRole));
+      input.version_no ??
+      (await this.getNextDigitalAssetVersion(variantId, assetRole));
     this.assertPositiveInteger(versionNo, 'version_no');
     const mediaAsset = await this.resolveDigitalAssetMediaAsset(input);
 
@@ -3082,11 +3226,7 @@ export class V2CatalogService {
       this.normalizeOptionalText(input.mime_type) ||
       this.normalizeOptionalText(mediaAsset.mime_type);
     if (!mimeType) {
-      throw new ApiException(
-        'mime_type은 필수입니다',
-        400,
-        'VALIDATION_ERROR',
-      );
+      throw new ApiException('mime_type은 필수입니다', 400, 'VALIDATION_ERROR');
     }
     const fileSize = input.file_size ?? mediaAsset.file_size;
     this.assertPositiveInteger(fileSize ?? undefined, 'file_size');
@@ -3136,7 +3276,10 @@ export class V2CatalogService {
       input.file_size !== undefined ||
       input.checksum !== undefined
     ) {
-      const mediaAsset = await this.resolveDigitalAssetMediaAsset(input, current);
+      const mediaAsset = await this.resolveDigitalAssetMediaAsset(
+        input,
+        current,
+      );
       const fileName =
         this.normalizeOptionalText(input.file_name) ||
         this.normalizeOptionalText(mediaAsset.file_name) ||
@@ -3254,14 +3397,18 @@ export class V2CatalogService {
       );
     }
 
-    const activeVariants = variants.filter((variant) => variant.status === 'ACTIVE');
+    const activeVariants = variants.filter(
+      (variant) => variant.status === 'ACTIVE',
+    );
     const activeDigitalVariants = activeVariants.filter(
       (variant) => variant.fulfillment_type === 'DIGITAL',
     );
 
     let readyAssetVariantIds = new Set<string>();
     if (activeDigitalVariants.length > 0) {
-      const digitalVariantIds = activeDigitalVariants.map((variant) => variant.id);
+      const digitalVariantIds = activeDigitalVariants.map(
+        (variant) => variant.id,
+      );
       const { data: readyAssets, error: readyAssetsError } = await this.supabase
         .from('v2_digital_assets')
         .select('variant_id')
@@ -3278,7 +3425,9 @@ export class V2CatalogService {
       }
 
       readyAssetVariantIds = new Set(
-        (readyAssets || []).map((asset: { variant_id: string }) => asset.variant_id),
+        (readyAssets || []).map(
+          (asset: { variant_id: string }) => asset.variant_id,
+        ),
       );
     }
 
@@ -3386,7 +3535,11 @@ export class V2CatalogService {
       .maybeSingle();
 
     if (error) {
-      throw new ApiException('campaign 조회 실패', 500, 'V2_CAMPAIGN_FETCH_FAILED');
+      throw new ApiException(
+        'campaign 조회 실패',
+        500,
+        'V2_CAMPAIGN_FETCH_FAILED',
+      );
     }
     if (!data) {
       throw new ApiException(
@@ -3400,8 +3553,14 @@ export class V2CatalogService {
   }
 
   async createCampaign(input: CreateV2CampaignInput): Promise<any> {
-    const code = this.normalizeRequiredText(input.code, 'campaign code는 필수입니다');
-    const name = this.normalizeRequiredText(input.name, 'campaign name은 필수입니다');
+    const code = this.normalizeRequiredText(
+      input.code,
+      'campaign code는 필수입니다',
+    );
+    const name = this.normalizeRequiredText(
+      input.name,
+      'campaign name은 필수입니다',
+    );
     const campaignType = input.campaign_type ?? 'EVENT';
     const status = input.status ?? 'DRAFT';
     this.assertCampaignType(campaignType);
@@ -3414,7 +3573,10 @@ export class V2CatalogService {
       );
     }
 
-    const startsAt = this.normalizeOptionalTimestamp(input.starts_at, 'starts_at');
+    const startsAt = this.normalizeOptionalTimestamp(
+      input.starts_at,
+      'starts_at',
+    );
     const endsAt = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
     this.assertDateRange(startsAt, endsAt, 'campaign 기간');
     const shopBannerMediaAssetId = await this.resolveCampaignBannerMediaAssetId(
@@ -3437,7 +3599,9 @@ export class V2CatalogService {
         shop_banner_alt_text: shopBannerMediaAssetId
           ? this.normalizeOptionalText(input.shop_banner_alt_text)
           : null,
-        channel_scope_json: this.normalizeOptionalArrayJson(input.channel_scope_json),
+        channel_scope_json: this.normalizeOptionalArrayJson(
+          input.channel_scope_json,
+        ),
         purchase_limit_json: this.normalizeOptionalObjectJson(
           input.purchase_limit_json,
         ),
@@ -3463,12 +3627,18 @@ export class V2CatalogService {
     return data;
   }
 
-  async updateCampaign(campaignId: string, input: UpdateV2CampaignInput): Promise<any> {
+  async updateCampaign(
+    campaignId: string,
+    input: UpdateV2CampaignInput,
+  ): Promise<any> {
     const current = await this.getCampaignById(campaignId);
     const updateData: Record<string, unknown> = {};
 
     if (input.code !== undefined) {
-      const code = this.normalizeRequiredText(input.code, 'campaign code는 필수입니다');
+      const code = this.normalizeRequiredText(
+        input.code,
+        'campaign code는 필수입니다',
+      );
       await this.assertCampaignCodeAvailable(code, campaignId);
       updateData.code = code;
     }
@@ -3500,7 +3670,10 @@ export class V2CatalogService {
       );
     }
     if (input.ends_at !== undefined) {
-      updateData.ends_at = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
+      updateData.ends_at = this.normalizeOptionalTimestamp(
+        input.ends_at,
+        'ends_at',
+      );
     }
     if (input.shop_banner_media_asset_id !== undefined) {
       updateData.shop_banner_media_asset_id =
@@ -3560,8 +3733,12 @@ export class V2CatalogService {
       (updateData.status as V2CampaignStatus | undefined) ??
       (current.status as V2CampaignStatus);
     if (nextCampaignType === 'ALWAYS_ON') {
-      const projectIds = await this.resolveCampaignIncludedProjectIds(campaignId);
-      this.assertAlwaysOnCampaignProjectScope(projectIds, nextCampaignStatus === 'ACTIVE');
+      const projectIds =
+        await this.resolveCampaignIncludedProjectIds(campaignId);
+      this.assertAlwaysOnCampaignProjectScope(
+        projectIds,
+        nextCampaignStatus === 'ACTIVE',
+      );
       if (nextCampaignStatus === 'ACTIVE' && projectIds.length > 0) {
         await this.assertNoActiveAlwaysOnCampaignProjectConflicts({
           campaignId,
@@ -3616,12 +3793,16 @@ export class V2CatalogService {
 
   async activateCampaign(campaignId: string): Promise<any> {
     const current = await this.getCampaignById(campaignId);
-    this.assertCampaignStatusTransition(current.status as V2CampaignStatus, 'ACTIVE');
+    this.assertCampaignStatusTransition(
+      current.status as V2CampaignStatus,
+      'ACTIVE',
+    );
     const nowIso = new Date().toISOString();
     let alwaysOnProjectId: string | null = null;
 
     if ((current.campaign_type as V2CampaignType) === 'ALWAYS_ON') {
-      const projectIds = await this.resolveCampaignIncludedProjectIds(campaignId);
+      const projectIds =
+        await this.resolveCampaignIncludedProjectIds(campaignId);
       this.assertAlwaysOnCampaignProjectScope(projectIds, true);
       await this.assertNoActiveAlwaysOnCampaignProjectConflicts({
         campaignId,
@@ -3635,7 +3816,8 @@ export class V2CatalogService {
       'ends_at',
     );
     const shouldClearEndsAt =
-      endsAt !== null && new Date(endsAt).getTime() <= new Date(nowIso).getTime();
+      endsAt !== null &&
+      new Date(endsAt).getTime() <= new Date(nowIso).getTime();
 
     const { data, error } = await this.supabase
       .from('v2_campaigns')
@@ -3692,7 +3874,10 @@ export class V2CatalogService {
 
   async closeCampaign(campaignId: string): Promise<any> {
     const current = await this.getCampaignById(campaignId);
-    this.assertCampaignStatusTransition(current.status as V2CampaignStatus, 'CLOSED');
+    this.assertCampaignStatusTransition(
+      current.status as V2CampaignStatus,
+      'CLOSED',
+    );
 
     const now = new Date().toISOString();
     const { data, error } = await this.supabase
@@ -3706,7 +3891,11 @@ export class V2CatalogService {
       .single();
 
     if (error || !data) {
-      throw new ApiException('campaign close 실패', 500, 'V2_CAMPAIGN_CLOSE_FAILED');
+      throw new ApiException(
+        'campaign close 실패',
+        500,
+        'V2_CAMPAIGN_CLOSE_FAILED',
+      );
     }
 
     return data;
@@ -3754,7 +3943,9 @@ export class V2CatalogService {
           'V2_CAMPAIGN_TARGET_PROJECT_RESOLVE_FAILED',
         );
       }
-      const projectId = this.normalizeOptionalText(data?.project_id as string | null | undefined);
+      const projectId = this.normalizeOptionalText(
+        data?.project_id as string | null | undefined,
+      );
       return projectId ? [projectId] : [];
     }
 
@@ -3772,7 +3963,9 @@ export class V2CatalogService {
           'V2_CAMPAIGN_TARGET_PROJECT_RESOLVE_FAILED',
         );
       }
-      const productId = this.normalizeOptionalText(data?.product_id as string | null | undefined);
+      const productId = this.normalizeOptionalText(
+        data?.product_id as string | null | undefined,
+      );
       if (!productId) {
         return [];
       }
@@ -3821,7 +4014,9 @@ export class V2CatalogService {
       );
     }
     return (data || []).map((row: any) => ({
-      id: this.normalizeOptionalText(row.id as string | null | undefined) || undefined,
+      id:
+        this.normalizeOptionalText(row.id as string | null | undefined) ||
+        undefined,
       target_type: (row.target_type as V2CampaignTargetType | null) ?? null,
       target_id: this.normalizeOptionalText(
         row.target_id as string | null | undefined,
@@ -3941,8 +4136,9 @@ export class V2CatalogService {
       );
       if (hasConflict) {
         conflictedCampaignNames.push(
-          this.normalizeOptionalText(candidate.name as string | null | undefined) ||
-            (candidate.id as string),
+          this.normalizeOptionalText(
+            candidate.name as string | null | undefined,
+          ) || (candidate.id as string),
         );
       }
     }
@@ -3979,7 +4175,8 @@ export class V2CatalogService {
 
     let alwaysOnProjectIds: string[] = [];
     if (campaign.campaign_type === 'ALWAYS_ON') {
-      const currentTargetRows = await this.fetchCampaignTargetScopeRows(campaignId);
+      const currentTargetRows =
+        await this.fetchCampaignTargetScopeRows(campaignId);
       const nextTargetRows: CampaignTargetScopeRow[] = [
         ...currentTargetRows,
         {
@@ -4035,7 +4232,10 @@ export class V2CatalogService {
     }
 
     if (campaign.campaign_type === 'ALWAYS_ON') {
-      await this.updateCampaignProjectScope(campaignId, alwaysOnProjectIds[0] ?? null);
+      await this.updateCampaignProjectScope(
+        campaignId,
+        alwaysOnProjectIds[0] ?? null,
+      );
     }
 
     return data;
@@ -4061,7 +4261,10 @@ export class V2CatalogService {
         input.target_id,
         'target_id는 필수입니다',
       );
-      await this.ensureCampaignTargetEntityExists(nextTargetType, normalizedTargetId);
+      await this.ensureCampaignTargetEntityExists(
+        nextTargetType,
+        normalizedTargetId,
+      );
       updateData.target_id = normalizedTargetId;
       nextTargetId = normalizedTargetId;
     }
@@ -4157,7 +4360,9 @@ export class V2CatalogService {
       const currentTargetRows = await this.fetchCampaignTargetScopeRows(
         campaign.id as string,
       );
-      const nextTargetRows = currentTargetRows.filter((row) => row.id !== targetId);
+      const nextTargetRows = currentTargetRows.filter(
+        (row) => row.id !== targetId,
+      );
       alwaysOnProjectIds = await this.resolveCampaignIncludedProjectIds(
         campaign.id as string,
         nextTargetRows,
@@ -4263,17 +4468,25 @@ export class V2CatalogService {
   }
 
   async createPriceList(input: CreateV2PriceListInput): Promise<any> {
-    const name = this.normalizeRequiredText(input.name, 'price list name은 필수입니다');
+    const name = this.normalizeRequiredText(
+      input.name,
+      'price list name은 필수입니다',
+    );
     const requestedScopeType = input.scope_type;
     const status = input.status ?? 'DRAFT';
-    const currencyCode = this.normalizeCurrencyCode(input.currency_code ?? 'KRW');
+    const currencyCode = this.normalizeCurrencyCode(
+      input.currency_code ?? 'KRW',
+    );
     if (requestedScopeType !== undefined) {
       this.assertPriceListScope(requestedScopeType);
     }
     this.assertPriceListStatus(status);
     this.assertSortOrder(input.priority);
 
-    const startsAt = this.normalizeOptionalTimestamp(input.starts_at, 'starts_at');
+    const startsAt = this.normalizeOptionalTimestamp(
+      input.starts_at,
+      'starts_at',
+    );
     const endsAt = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
     this.assertDateRange(startsAt, endsAt, 'price list 기간');
 
@@ -4281,7 +4494,10 @@ export class V2CatalogService {
     let scopeType: V2PriceListScope = requestedScopeType ?? 'BASE';
     if (campaignId) {
       const campaign = await this.getCampaignById(campaignId);
-      scopeType = this.resolvePriceListScopeForCampaign(campaign, requestedScopeType);
+      scopeType = this.resolvePriceListScopeForCampaign(
+        campaign,
+        requestedScopeType,
+      );
     }
 
     const { data, error } = await this.supabase
@@ -4295,7 +4511,9 @@ export class V2CatalogService {
         priority: input.priority ?? 0,
         starts_at: startsAt,
         ends_at: endsAt,
-        channel_scope_json: this.normalizeOptionalArrayJson(input.channel_scope_json),
+        channel_scope_json: this.normalizeOptionalArrayJson(
+          input.channel_scope_json,
+        ),
         source_type: this.normalizeOptionalText(input.source_type),
         source_id: this.normalizeOptionalText(input.source_id),
         source_snapshot_json: this.normalizeOptionalObjectJson(
@@ -4317,12 +4535,17 @@ export class V2CatalogService {
     return data;
   }
 
-  async updatePriceList(priceListId: string, input: UpdateV2PriceListInput): Promise<any> {
+  async updatePriceList(
+    priceListId: string,
+    input: UpdateV2PriceListInput,
+  ): Promise<any> {
     const current = await this.getPriceListById(priceListId);
     const updateData: Record<string, unknown> = {};
     let nextCampaign: any | null = null;
     let nextCampaignId =
-      this.normalizeOptionalText(current.campaign_id as string | null | undefined) ?? null;
+      this.normalizeOptionalText(
+        current.campaign_id as string | null | undefined,
+      ) ?? null;
     let requestedScopeType: V2PriceListScope | undefined;
 
     if (input.campaign_id !== undefined) {
@@ -4334,7 +4557,9 @@ export class V2CatalogService {
       updateData.campaign_id = campaignId;
     }
     if (input.rollback_of_price_list_id !== undefined) {
-      const rollbackId = this.normalizeOptionalText(input.rollback_of_price_list_id);
+      const rollbackId = this.normalizeOptionalText(
+        input.rollback_of_price_list_id,
+      );
       if (rollbackId) {
         await this.getPriceListById(rollbackId);
       }
@@ -4359,7 +4584,9 @@ export class V2CatalogService {
       updateData.status = input.status;
     }
     if (input.currency_code !== undefined) {
-      updateData.currency_code = this.normalizeCurrencyCode(input.currency_code);
+      updateData.currency_code = this.normalizeCurrencyCode(
+        input.currency_code,
+      );
     }
     if (input.priority !== undefined) {
       this.assertSortOrder(input.priority);
@@ -4378,7 +4605,10 @@ export class V2CatalogService {
       );
     }
     if (input.ends_at !== undefined) {
-      updateData.ends_at = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
+      updateData.ends_at = this.normalizeOptionalTimestamp(
+        input.ends_at,
+        'ends_at',
+      );
     }
     if (input.channel_scope_json !== undefined) {
       updateData.channel_scope_json = this.normalizeOptionalArrayJson(
@@ -4401,8 +4631,7 @@ export class V2CatalogService {
     }
 
     let nextScopeType =
-      requestedScopeType ??
-      (current.scope_type as V2PriceListScope);
+      requestedScopeType ?? (current.scope_type as V2PriceListScope);
     if (nextCampaignId) {
       if (!nextCampaign) {
         nextCampaign = await this.getCampaignById(nextCampaignId);
@@ -4527,7 +4756,8 @@ export class V2CatalogService {
       ? candidateQuery.eq('campaign_id', current.campaign_id)
       : candidateQuery.is('campaign_id', null);
 
-    const { data: candidate, error: candidateError } = await candidateQuery.maybeSingle();
+    const { data: candidate, error: candidateError } =
+      await candidateQuery.maybeSingle();
     if (candidateError) {
       throw new ApiException(
         'rollback 대상 조회 실패',
@@ -4646,7 +4876,10 @@ export class V2CatalogService {
       );
     }
 
-    if (input.compare_at_amount !== undefined && input.compare_at_amount !== null) {
+    if (
+      input.compare_at_amount !== undefined &&
+      input.compare_at_amount !== null
+    ) {
       if (
         !Number.isInteger(input.compare_at_amount) ||
         input.compare_at_amount < (unitAmount as number)
@@ -4663,7 +4896,10 @@ export class V2CatalogService {
     const maxPurchaseQuantity = input.max_purchase_quantity ?? null;
     this.assertPurchaseQuantityRange(minPurchaseQuantity, maxPurchaseQuantity);
 
-    const startsAt = this.normalizeOptionalTimestamp(input.starts_at, 'starts_at');
+    const startsAt = this.normalizeOptionalTimestamp(
+      input.starts_at,
+      'starts_at',
+    );
     const endsAt = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
     this.assertDateRange(startsAt, endsAt, 'price list item 기간');
 
@@ -4680,7 +4916,9 @@ export class V2CatalogService {
         max_purchase_quantity: maxPurchaseQuantity,
         starts_at: startsAt,
         ends_at: endsAt,
-        channel_scope_json: this.normalizeOptionalArrayJson(input.channel_scope_json),
+        channel_scope_json: this.normalizeOptionalArrayJson(
+          input.channel_scope_json,
+        ),
         source_type: this.normalizeOptionalText(input.source_type),
         source_id: this.normalizeOptionalText(input.source_id),
         source_snapshot_json: this.normalizeOptionalObjectJson(
@@ -4711,7 +4949,10 @@ export class V2CatalogService {
 
     const nextProductId =
       input.product_id !== undefined
-        ? this.normalizeRequiredText(input.product_id, 'product_id는 필수입니다')
+        ? this.normalizeRequiredText(
+            input.product_id,
+            'product_id는 필수입니다',
+          )
         : (current.product_id as string);
     if (input.product_id !== undefined) {
       await this.ensureProductExists(nextProductId);
@@ -4780,7 +5021,10 @@ export class V2CatalogService {
       const maxPurchaseQuantity =
         (updateData.max_purchase_quantity as number | null | undefined) ??
         (current.max_purchase_quantity as number | null);
-      this.assertPurchaseQuantityRange(minPurchaseQuantity, maxPurchaseQuantity);
+      this.assertPurchaseQuantityRange(
+        minPurchaseQuantity,
+        maxPurchaseQuantity,
+      );
     }
     if (input.starts_at !== undefined) {
       updateData.starts_at = this.normalizeOptionalTimestamp(
@@ -4789,7 +5033,10 @@ export class V2CatalogService {
       );
     }
     if (input.ends_at !== undefined) {
-      updateData.ends_at = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
+      updateData.ends_at = this.normalizeOptionalTimestamp(
+        input.ends_at,
+        'ends_at',
+      );
     }
     if (input.channel_scope_json !== undefined) {
       updateData.channel_scope_json = this.normalizeOptionalArrayJson(
@@ -4929,7 +5176,10 @@ export class V2CatalogService {
   }
 
   async createPromotion(input: CreateV2PromotionInput): Promise<any> {
-    const name = this.normalizeRequiredText(input.name, 'promotion name은 필수입니다');
+    const name = this.normalizeRequiredText(
+      input.name,
+      'promotion name은 필수입니다',
+    );
     const promotionType = input.promotion_type ?? 'ORDER_PERCENT';
     const status = input.status ?? 'DRAFT';
     const combinabilityMode = input.combinability_mode ?? 'STACKABLE';
@@ -4947,9 +5197,18 @@ export class V2CatalogService {
         'VALIDATION_ERROR',
       );
     }
-    this.assertNonNegativeNumber(input.discount_value, 'discount_value는 0 이상이어야 합니다');
-    if (input.max_discount_amount !== undefined && input.max_discount_amount !== null) {
-      if (!Number.isInteger(input.max_discount_amount) || input.max_discount_amount < 0) {
+    this.assertNonNegativeNumber(
+      input.discount_value,
+      'discount_value는 0 이상이어야 합니다',
+    );
+    if (
+      input.max_discount_amount !== undefined &&
+      input.max_discount_amount !== null
+    ) {
+      if (
+        !Number.isInteger(input.max_discount_amount) ||
+        input.max_discount_amount < 0
+      ) {
         throw new ApiException(
           'max_discount_amount는 0 이상의 정수여야 합니다',
           400,
@@ -4958,7 +5217,10 @@ export class V2CatalogService {
       }
     }
 
-    const startsAt = this.normalizeOptionalTimestamp(input.starts_at, 'starts_at');
+    const startsAt = this.normalizeOptionalTimestamp(
+      input.starts_at,
+      'starts_at',
+    );
     const endsAt = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
     this.assertDateRange(startsAt, endsAt, 'promotion 기간');
 
@@ -4982,7 +5244,9 @@ export class V2CatalogService {
         max_discount_amount: input.max_discount_amount ?? null,
         starts_at: startsAt,
         ends_at: endsAt,
-        channel_scope_json: this.normalizeOptionalArrayJson(input.channel_scope_json),
+        channel_scope_json: this.normalizeOptionalArrayJson(
+          input.channel_scope_json,
+        ),
         purchase_limit_json: this.normalizeOptionalObjectJson(
           input.purchase_limit_json,
         ),
@@ -5062,7 +5326,10 @@ export class V2CatalogService {
     }
     if (input.max_discount_amount !== undefined) {
       if (input.max_discount_amount !== null) {
-        if (!Number.isInteger(input.max_discount_amount) || input.max_discount_amount < 0) {
+        if (
+          !Number.isInteger(input.max_discount_amount) ||
+          input.max_discount_amount < 0
+        ) {
           throw new ApiException(
             'max_discount_amount는 0 이상의 정수여야 합니다',
             400,
@@ -5079,7 +5346,10 @@ export class V2CatalogService {
       );
     }
     if (input.ends_at !== undefined) {
-      updateData.ends_at = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
+      updateData.ends_at = this.normalizeOptionalTimestamp(
+        input.ends_at,
+        'ends_at',
+      );
     }
     if (input.channel_scope_json !== undefined) {
       updateData.channel_scope_json = this.normalizeOptionalArrayJson(
@@ -5163,11 +5433,7 @@ export class V2CatalogService {
     await this.getPromotionById(promotionId);
     const ruleType = input.rule_type;
     if (!ruleType) {
-      throw new ApiException(
-        'rule_type은 필수입니다',
-        400,
-        'VALIDATION_ERROR',
-      );
+      throw new ApiException('rule_type은 필수입니다', 400, 'VALIDATION_ERROR');
     }
     this.assertPromotionRuleType(ruleType);
     if (input.sort_order !== undefined) {
@@ -5226,7 +5492,9 @@ export class V2CatalogService {
       updateData.sort_order = input.sort_order;
     }
     if (input.rule_payload !== undefined) {
-      updateData.rule_payload = this.normalizeOptionalObjectJson(input.rule_payload);
+      updateData.rule_payload = this.normalizeOptionalObjectJson(
+        input.rule_payload,
+      );
     }
     if (input.source_type !== undefined) {
       updateData.source_type = this.normalizeOptionalText(input.source_type);
@@ -5311,7 +5579,11 @@ export class V2CatalogService {
       throw new ApiException('coupon 조회 실패', 500, 'V2_COUPON_FETCH_FAILED');
     }
     if (!data) {
-      throw new ApiException('coupon을 찾을 수 없습니다', 404, 'V2_COUPON_NOT_FOUND');
+      throw new ApiException(
+        'coupon을 찾을 수 없습니다',
+        404,
+        'V2_COUPON_NOT_FOUND',
+      );
     }
 
     return data;
@@ -5356,7 +5628,10 @@ export class V2CatalogService {
   }
 
   async createCoupon(input: CreateV2CouponInput): Promise<any> {
-    const code = this.normalizeRequiredText(input.code, 'coupon code는 필수입니다');
+    const code = this.normalizeRequiredText(
+      input.code,
+      'coupon code는 필수입니다',
+    );
     const status = input.status ?? 'DRAFT';
     this.assertCouponStatus(status);
     await this.assertCouponCodeAvailable(code);
@@ -5377,7 +5652,10 @@ export class V2CatalogService {
       );
     }
 
-    const startsAt = this.normalizeOptionalTimestamp(input.starts_at, 'starts_at');
+    const startsAt = this.normalizeOptionalTimestamp(
+      input.starts_at,
+      'starts_at',
+    );
     const endsAt = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
     this.assertDateRange(startsAt, endsAt, 'coupon 기간');
 
@@ -5396,7 +5674,9 @@ export class V2CatalogService {
         ends_at: endsAt,
         max_issuance: input.max_issuance ?? null,
         max_redemptions_per_user: input.max_redemptions_per_user ?? 1,
-        channel_scope_json: this.normalizeOptionalArrayJson(input.channel_scope_json),
+        channel_scope_json: this.normalizeOptionalArrayJson(
+          input.channel_scope_json,
+        ),
         purchase_limit_json: this.normalizeOptionalObjectJson(
           input.purchase_limit_json,
         ),
@@ -5411,13 +5691,20 @@ export class V2CatalogService {
       .single();
 
     if (error || !data) {
-      throw new ApiException('coupon 생성 실패', 500, 'V2_COUPON_CREATE_FAILED');
+      throw new ApiException(
+        'coupon 생성 실패',
+        500,
+        'V2_COUPON_CREATE_FAILED',
+      );
     }
 
     return data;
   }
 
-  async updateCoupon(couponId: string, input: UpdateV2CouponInput): Promise<any> {
+  async updateCoupon(
+    couponId: string,
+    input: UpdateV2CouponInput,
+  ): Promise<any> {
     const current = await this.getCouponById(couponId);
     const updateData: Record<string, unknown> = {};
 
@@ -5429,13 +5716,19 @@ export class V2CatalogService {
       updateData.promotion_id = promotionId;
     }
     if (input.code !== undefined) {
-      const code = this.normalizeRequiredText(input.code, 'coupon code는 필수입니다');
+      const code = this.normalizeRequiredText(
+        input.code,
+        'coupon code는 필수입니다',
+      );
       await this.assertCouponCodeAvailable(code, couponId);
       updateData.code = code;
     }
     if (input.status !== undefined) {
       this.assertCouponStatus(input.status);
-      this.assertCouponStatusTransition(current.status as V2CouponStatus, input.status);
+      this.assertCouponStatusTransition(
+        current.status as V2CouponStatus,
+        input.status,
+      );
       updateData.status = input.status;
     }
     if (input.starts_at !== undefined) {
@@ -5445,7 +5738,10 @@ export class V2CatalogService {
       );
     }
     if (input.ends_at !== undefined) {
-      updateData.ends_at = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
+      updateData.ends_at = this.normalizeOptionalTimestamp(
+        input.ends_at,
+        'ends_at',
+      );
     }
     if (input.max_issuance !== undefined) {
       if (input.max_issuance !== null) {
@@ -5511,14 +5807,21 @@ export class V2CatalogService {
       .single();
 
     if (error || !data) {
-      throw new ApiException('coupon 수정 실패', 500, 'V2_COUPON_UPDATE_FAILED');
+      throw new ApiException(
+        'coupon 수정 실패',
+        500,
+        'V2_COUPON_UPDATE_FAILED',
+      );
     }
 
     return data;
   }
 
   async validateCoupon(input: ValidateV2CouponInput): Promise<any> {
-    const code = this.normalizeRequiredText(input.code, 'coupon code는 필수입니다');
+    const code = this.normalizeRequiredText(
+      input.code,
+      'coupon code는 필수입니다',
+    );
     const evaluatedAt = this.normalizeOptionalTimestamp(
       input.evaluated_at,
       'evaluated_at',
@@ -5568,7 +5871,10 @@ export class V2CatalogService {
     });
     checks.push({
       key: 'channel_scope_match',
-      passed: this.matchesChannelScope(coupon.channel_scope_json, input.channel || null),
+      passed: this.matchesChannelScope(
+        coupon.channel_scope_json,
+        input.channel || null,
+      ),
       detail: `channel=${input.channel || '-'}, scope=${JSON.stringify(
         coupon.channel_scope_json || [],
       )}`,
@@ -5588,13 +5894,14 @@ export class V2CatalogService {
 
     let userUsageCount = 0;
     if (input.user_id) {
-      const { data: userRedemptions, error: redemptionError } = await this.supabase
-        .from('v2_coupon_redemptions')
-        .select('id,status')
-        .eq('coupon_id', coupon.id)
-        .eq('user_id', input.user_id)
-        .in('status', ['RESERVED', 'APPLIED'])
-        .is('deleted_at', null);
+      const { data: userRedemptions, error: redemptionError } =
+        await this.supabase
+          .from('v2_coupon_redemptions')
+          .select('id,status')
+          .eq('coupon_id', coupon.id)
+          .eq('user_id', input.user_id)
+          .in('status', ['RESERVED', 'APPLIED'])
+          .is('deleted_at', null);
 
       if (redemptionError) {
         throw new ApiException(
@@ -5616,10 +5923,13 @@ export class V2CatalogService {
     });
 
     if (input.campaign_id) {
-      const promotionCampaignId = coupon.promotion?.campaign_id as string | null;
+      const promotionCampaignId = coupon.promotion?.campaign_id as
+        | string
+        | null;
       checks.push({
         key: 'campaign_match',
-        passed: !promotionCampaignId || promotionCampaignId === input.campaign_id,
+        passed:
+          !promotionCampaignId || promotionCampaignId === input.campaign_id,
         detail: `promotion_campaign_id=${promotionCampaignId || '-'}, request_campaign_id=${
           input.campaign_id
         }`,
@@ -5639,9 +5949,15 @@ export class V2CatalogService {
     };
   }
 
-  async reserveCoupon(couponId: string, input: ReserveV2CouponInput): Promise<any> {
+  async reserveCoupon(
+    couponId: string,
+    input: ReserveV2CouponInput,
+  ): Promise<any> {
     const coupon = await this.getCouponById(couponId);
-    const userId = this.normalizeRequiredText(input.user_id, 'user_id는 필수입니다');
+    const userId = this.normalizeRequiredText(
+      input.user_id,
+      'user_id는 필수입니다',
+    );
     const now = new Date().toISOString();
     const validation = await this.validateCoupon({
       code: coupon.code as string,
@@ -5665,7 +5981,10 @@ export class V2CatalogService {
         status: 'RESERVED',
         quote_reference: this.normalizeOptionalText(input.quote_reference),
         reserved_at: now,
-        expires_at: this.normalizeOptionalTimestamp(input.expires_at, 'expires_at'),
+        expires_at: this.normalizeOptionalTimestamp(
+          input.expires_at,
+          'expires_at',
+        ),
         source_type: this.normalizeOptionalText(input.source_type),
         source_id: this.normalizeOptionalText(input.source_id),
         source_snapshot_json: this.normalizeOptionalObjectJson(
@@ -5725,16 +6044,17 @@ export class V2CatalogService {
       ...(redemption.metadata || {}),
       ...(input.reason ? { release_reason: input.reason } : {}),
     };
-    const { data: releasedRedemption, error: redemptionError } = await this.supabase
-      .from('v2_coupon_redemptions')
-      .update({
-        status: 'RELEASED',
-        released_at: now,
-        metadata: mergedMetadata,
-      })
-      .eq('id', redemptionId)
-      .select('*')
-      .single();
+    const { data: releasedRedemption, error: redemptionError } =
+      await this.supabase
+        .from('v2_coupon_redemptions')
+        .update({
+          status: 'RELEASED',
+          released_at: now,
+          metadata: mergedMetadata,
+        })
+        .eq('id', redemptionId)
+        .select('*')
+        .single();
 
     if (redemptionError || !releasedRedemption) {
       throw new ApiException(
@@ -5745,7 +6065,10 @@ export class V2CatalogService {
     }
 
     const coupon = await this.getCouponById(redemption.coupon_id as string);
-    const nextReservedCount = Math.max((coupon.reserved_count as number) - 1, 0);
+    const nextReservedCount = Math.max(
+      (coupon.reserved_count as number) - 1,
+      0,
+    );
     const { data: updatedCoupon, error: couponError } = await this.supabase
       .from('v2_coupons')
       .update({
@@ -5790,20 +6113,21 @@ export class V2CatalogService {
     }
 
     const now = new Date().toISOString();
-    const { data: appliedRedemption, error: redemptionError } = await this.supabase
-      .from('v2_coupon_redemptions')
-      .update({
-        status: 'APPLIED',
-        applied_at: now,
-        order_id: this.normalizeOptionalText(input.order_id),
-        metadata: {
-          ...(redemption.metadata || {}),
-          ...(input.metadata || {}),
-        },
-      })
-      .eq('id', redemptionId)
-      .select('*')
-      .single();
+    const { data: appliedRedemption, error: redemptionError } =
+      await this.supabase
+        .from('v2_coupon_redemptions')
+        .update({
+          status: 'APPLIED',
+          applied_at: now,
+          order_id: this.normalizeOptionalText(input.order_id),
+          metadata: {
+            ...(redemption.metadata || {}),
+            ...(input.metadata || {}),
+          },
+        })
+        .eq('id', redemptionId)
+        .select('*')
+        .single();
 
     if (redemptionError || !appliedRedemption) {
       throw new ApiException(
@@ -5814,7 +6138,10 @@ export class V2CatalogService {
     }
 
     const coupon = await this.getCouponById(redemption.coupon_id as string);
-    const nextReservedCount = Math.max((coupon.reserved_count as number) - 1, 0);
+    const nextReservedCount = Math.max(
+      (coupon.reserved_count as number) - 1,
+      0,
+    );
     const nextRedeemedCount = (coupon.redeemed_count as number) + 1;
     const shouldExhaust =
       coupon.max_issuance !== null &&
@@ -5905,7 +6232,13 @@ export class V2CatalogService {
           'calculation_snapshot',
         ],
         enums: {
-          source_type: ['PRICE_LIST', 'PROMOTION', 'COUPON', 'BUNDLE_ALLOC', 'MANUAL'],
+          source_type: [
+            'PRICE_LIST',
+            'PROMOTION',
+            'COUPON',
+            'BUNDLE_ALLOC',
+            'MANUAL',
+          ],
         },
       },
       mapping_examples: [
@@ -5934,7 +6267,9 @@ export class V2CatalogService {
     };
   }
 
-  private async computePricingPipeline(input: BuildV2PriceQuoteInput): Promise<any> {
+  private async computePricingPipeline(
+    input: BuildV2PriceQuoteInput,
+  ): Promise<any> {
     const evaluatedAt =
       this.normalizeOptionalTimestamp(input.evaluated_at, 'evaluated_at') ??
       new Date().toISOString();
@@ -5956,7 +6291,11 @@ export class V2CatalogService {
 
     const linesInput = Array.isArray(input.lines) ? input.lines : [];
     if (linesInput.length === 0) {
-      throw new ApiException('lines는 최소 1개 이상 필요합니다', 400, 'VALIDATION_ERROR');
+      throw new ApiException(
+        'lines는 최소 1개 이상 필요합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
     }
 
     const normalizedLines = linesInput.map((line, index) => {
@@ -5974,7 +6313,9 @@ export class V2CatalogService {
     );
     const { data: variants, error: variantsError } = await this.supabase
       .from('v2_product_variants')
-      .select('id,product_id,sku,title,fulfillment_type,requires_shipping,status')
+      .select(
+        'id,product_id,sku,title,fulfillment_type,requires_shipping,status',
+      )
       .in('id', variantIds)
       .is('deleted_at', null);
 
@@ -5985,7 +6326,9 @@ export class V2CatalogService {
         'V2_VARIANTS_FETCH_FAILED',
       );
     }
-    const variantById = new Map(((variants || []) as any[]).map((row) => [row.id, row]));
+    const variantById = new Map(
+      ((variants || []) as any[]).map((row) => [row.id, row]),
+    );
     for (const line of normalizedLines) {
       const variant = variantById.get(line.variant_id);
       if (!variant) {
@@ -6005,7 +6348,9 @@ export class V2CatalogService {
     }
 
     const productIds = Array.from(
-      new Set((variants || []).map((variant: any) => variant.product_id as string)),
+      new Set(
+        (variants || []).map((variant: any) => variant.product_id as string),
+      ),
     );
     const { data: products, error: productsError } = await this.supabase
       .from('v2_products')
@@ -6020,7 +6365,9 @@ export class V2CatalogService {
         'V2_PRODUCTS_FETCH_FAILED',
       );
     }
-    const productById = new Map(((products || []) as any[]).map((row) => [row.id, row]));
+    const productById = new Map(
+      ((products || []) as any[]).map((row) => [row.id, row]),
+    );
 
     const { data: priceItems, error: priceItemsError } = await this.supabase
       .from('v2_price_list_items')
@@ -6115,8 +6462,10 @@ export class V2CatalogService {
         product_kind: product.product_kind,
         sku: variant.sku,
         title: variant.title,
-        product_name_snapshot: this.normalizeOptionalText(product.title) || null,
-        variant_name_snapshot: this.normalizeOptionalText(variant.title) || null,
+        product_name_snapshot:
+          this.normalizeOptionalText(product.title) || null,
+        variant_name_snapshot:
+          this.normalizeOptionalText(variant.title) || null,
         quantity: line.quantity,
         fulfillment_type: variant.fulfillment_type,
         requires_shipping: variant.requires_shipping,
@@ -6183,7 +6532,9 @@ export class V2CatalogService {
       );
     }
 
-    const promotionIds = ((promotions || []) as any[]).map((promotion) => promotion.id);
+    const promotionIds = ((promotions || []) as any[]).map(
+      (promotion) => promotion.id,
+    );
     let promotionRules: any[] = [];
     if (promotionIds.length > 0) {
       const { data: rules, error: rulesError } = await this.supabase
@@ -6209,7 +6560,9 @@ export class V2CatalogService {
       rulesByPromotionId.set(rule.promotion_id, list);
     }
 
-    const lineRemaining = lineResults.map((line) => line.pricing.line_subtotal as number);
+    const lineRemaining = lineResults.map(
+      (line) => line.pricing.line_subtotal as number,
+    );
     let orderLevelDiscountTotal = 0;
     let shippingDiscountTotal = 0;
     let runningShippingAmount = shippingAmount ?? 0;
@@ -6221,16 +6574,21 @@ export class V2CatalogService {
     for (const phase of phases) {
       let exclusiveApplied = false;
       const phasePromotions = ((promotions || []) as any[])
+        .filter((promotion) => this.resolvePromotionPhase(promotion) === phase)
         .filter((promotion) =>
-          this.resolvePromotionPhase(promotion) === phase,
-        )
-        .filter((promotion) =>
-          this.isTimestampInRange(promotion.starts_at, promotion.ends_at, nowIso),
+          this.isTimestampInRange(
+            promotion.starts_at,
+            promotion.ends_at,
+            nowIso,
+          ),
         )
         .filter((promotion) =>
           this.matchesChannelScope(promotion.channel_scope_json, channel),
         )
-        .filter((promotion) => !promotion.campaign_id || promotion.campaign_id === campaignId)
+        .filter(
+          (promotion) =>
+            !promotion.campaign_id || promotion.campaign_id === campaignId,
+        )
         .sort((a, b) => (a.priority as number) - (b.priority as number));
 
       for (const promotion of phasePromotions) {
@@ -6285,7 +6643,9 @@ export class V2CatalogService {
         let appliedAmount = 0;
 
         if (type === 'ITEM_PERCENT' || type === 'ITEM_FIXED') {
-          const remainingByIndex = eligibleIndexes.map((index) => lineRemaining[index]);
+          const remainingByIndex = eligibleIndexes.map(
+            (index) => lineRemaining[index],
+          );
           const rawDiscounts = this.calculateItemPromotionDiscounts(
             type,
             Number(promotion.discount_value),
@@ -6299,7 +6659,10 @@ export class V2CatalogService {
           );
           for (let i = 0; i < eligibleIndexes.length; i += 1) {
             const lineIndex = eligibleIndexes[i];
-            const discount = Math.min(cappedDiscounts[i], lineRemaining[lineIndex]);
+            const discount = Math.min(
+              cappedDiscounts[i],
+              lineRemaining[lineIndex],
+            );
             if (discount <= 0) {
               continue;
             }
@@ -6317,7 +6680,10 @@ export class V2CatalogService {
             appliedAmount += discount;
           }
         } else if (type === 'ORDER_PERCENT' || type === 'ORDER_FIXED') {
-          const currentSubtotal = lineRemaining.reduce((sum, value) => sum + value, 0);
+          const currentSubtotal = lineRemaining.reduce(
+            (sum, value) => sum + value,
+            0,
+          );
           const calculated = this.calculateOrderPromotionDiscount(
             type,
             Number(promotion.discount_value),
@@ -6368,7 +6734,8 @@ export class V2CatalogService {
       (sum, value) => sum + value,
       0,
     );
-    const totalDiscount = itemDiscountTotal + orderLevelDiscountTotal + shippingDiscountTotal;
+    const totalDiscount =
+      itemDiscountTotal + orderLevelDiscountTotal + shippingDiscountTotal;
     const payable =
       lineSubtotalAfterItemDiscounts -
       orderLevelDiscountTotal +
@@ -6506,8 +6873,12 @@ export class V2CatalogService {
       legacyProducts.map((product) => [product.id, product]),
     );
 
-    const v2ProjectsById = new Map(v2Projects.map((project) => [project.id, project]));
-    const v2ArtistsById = new Map(v2Artists.map((artist) => [artist.id, artist]));
+    const v2ProjectsById = new Map(
+      v2Projects.map((project) => [project.id, project]),
+    );
+    const v2ArtistsById = new Map(
+      v2Artists.map((artist) => [artist.id, artist]),
+    );
     const v2ProjectsByLegacyId = new Map(
       backfilledProjects.map((project) => [project.legacy_project_id, project]),
     );
@@ -6540,7 +6911,9 @@ export class V2CatalogService {
 
     const projectSlugMismatch = backfilledProjects
       .map((v2Project) => {
-        const legacyProject = legacyProjectsById.get(v2Project.legacy_project_id);
+        const legacyProject = legacyProjectsById.get(
+          v2Project.legacy_project_id,
+        );
         if (!legacyProject || legacyProject.slug === v2Project.slug) {
           return null;
         }
@@ -6570,7 +6943,9 @@ export class V2CatalogService {
 
     const productSlugMismatch = backfilledProducts
       .map((v2Product) => {
-        const legacyProduct = legacyProductsById.get(v2Product.legacy_product_id);
+        const legacyProduct = legacyProductsById.get(
+          v2Product.legacy_product_id,
+        );
         if (!legacyProduct) {
           return null;
         }
@@ -6591,9 +6966,15 @@ export class V2CatalogService {
 
     const productProjectMappingMismatch = backfilledProducts
       .map((v2Product) => {
-        const legacyProduct = legacyProductsById.get(v2Product.legacy_product_id);
+        const legacyProduct = legacyProductsById.get(
+          v2Product.legacy_product_id,
+        );
         const mappedV2Project = v2ProjectsById.get(v2Product.project_id);
-        if (!legacyProduct || !mappedV2Project || !mappedV2Project.legacy_project_id) {
+        if (
+          !legacyProduct ||
+          !mappedV2Project ||
+          !mappedV2Project.legacy_project_id
+        ) {
           return null;
         }
         if (legacyProduct.project_id === mappedV2Project.legacy_project_id) {
@@ -6628,7 +7009,8 @@ export class V2CatalogService {
     );
 
     const missingProjectArtistLinks = legacyArtists.filter(
-      (artist) => !projectArtistLegacyPairs.has(`${artist.project_id}:${artist.id}`),
+      (artist) =>
+        !projectArtistLegacyPairs.has(`${artist.project_id}:${artist.id}`),
     );
 
     const variantsByProductId = new Map<string, any[]>();
@@ -6648,7 +7030,9 @@ export class V2CatalogService {
     const activeDigitalVariants = digitalVariants.filter(
       (variant) => variant.status === 'ACTIVE',
     );
-    const activeProducts = v2Products.filter((product) => product.status === 'ACTIVE');
+    const activeProducts = v2Products.filter(
+      (product) => product.status === 'ACTIVE',
+    );
 
     const primaryMediaProductIds = new Set(
       v2ProductMedia
@@ -6679,7 +7063,9 @@ export class V2CatalogService {
       {
         key: 'projects_backfill_complete',
         passed: missingProjectMappings.length === 0,
-        severity: this.resolveMigrationCheckSeverity('projects_backfill_complete'),
+        severity: this.resolveMigrationCheckSeverity(
+          'projects_backfill_complete',
+        ),
         expected: 'missing_project_mappings=0',
         actual: `missing_project_mappings=${missingProjectMappings.length}`,
         detail: 'legacy projects가 모두 v2_projects로 매핑되어야 함',
@@ -6687,7 +7073,9 @@ export class V2CatalogService {
       {
         key: 'artists_backfill_complete',
         passed: missingArtistMappings.length === 0,
-        severity: this.resolveMigrationCheckSeverity('artists_backfill_complete'),
+        severity: this.resolveMigrationCheckSeverity(
+          'artists_backfill_complete',
+        ),
         expected: 'missing_artist_mappings=0',
         actual: `missing_artist_mappings=${missingArtistMappings.length}`,
         detail: 'legacy artists가 모두 v2_artists로 매핑되어야 함',
@@ -6695,7 +7083,9 @@ export class V2CatalogService {
       {
         key: 'products_backfill_complete',
         passed: missingProductMappings.length === 0,
-        severity: this.resolveMigrationCheckSeverity('products_backfill_complete'),
+        severity: this.resolveMigrationCheckSeverity(
+          'products_backfill_complete',
+        ),
         expected: 'missing_product_mappings=0',
         actual: `missing_product_mappings=${missingProductMappings.length}`,
         detail: 'legacy products가 모두 v2_products로 매핑되어야 함',
@@ -6703,10 +7093,13 @@ export class V2CatalogService {
       {
         key: 'project_artist_links_complete',
         passed: missingProjectArtistLinks.length === 0,
-        severity: this.resolveMigrationCheckSeverity('project_artist_links_complete'),
+        severity: this.resolveMigrationCheckSeverity(
+          'project_artist_links_complete',
+        ),
         expected: 'missing_project_artist_links=0',
         actual: `missing_project_artist_links=${missingProjectArtistLinks.length}`,
-        detail: 'legacy artist.project_id 기준 링크가 v2_project_artists에 존재해야 함',
+        detail:
+          'legacy artist.project_id 기준 링크가 v2_project_artists에 존재해야 함',
       },
       {
         key: 'product_project_mapping_consistent',
@@ -6716,12 +7109,15 @@ export class V2CatalogService {
         ),
         expected: 'product_project_mapping_mismatch=0',
         actual: `product_project_mapping_mismatch=${productProjectMappingMismatch.length}`,
-        detail: 'v2_products.project_id가 legacy product.project_id 매핑과 일치해야 함',
+        detail:
+          'v2_products.project_id가 legacy product.project_id 매핑과 일치해야 함',
       },
       {
         key: 'v2_products_have_variants',
         passed: productsWithoutVariants.length === 0,
-        severity: this.resolveMigrationCheckSeverity('v2_products_have_variants'),
+        severity: this.resolveMigrationCheckSeverity(
+          'v2_products_have_variants',
+        ),
         expected: 'products_without_variants=0',
         actual: `products_without_variants=${productsWithoutVariants.length}`,
         detail: '모든 v2 product는 최소 1개의 variant를 가져야 함',
@@ -6739,7 +7135,9 @@ export class V2CatalogService {
       {
         key: 'digital_variants_have_assets',
         passed: digitalVariantsWithoutAssets.length === 0,
-        severity: this.resolveMigrationCheckSeverity('digital_variants_have_assets'),
+        severity: this.resolveMigrationCheckSeverity(
+          'digital_variants_have_assets',
+        ),
         expected: 'digital_variants_without_assets=0',
         actual: `digital_variants_without_assets=${digitalVariantsWithoutAssets.length}`,
         detail: 'DIGITAL variant는 최소 1개의 digital asset을 가져야 함',
@@ -6905,15 +7303,16 @@ export class V2CatalogService {
               status: variant.status,
             }),
           ),
-          active_digital_variants_without_ready_asset: this.buildMigrationSample(
-            activeDigitalVariantsWithoutReadyAsset,
-            safeSampleLimit,
-            (variant) => ({
-              v2_variant_id: variant.id,
-              v2_product_id: variant.product_id,
-              status: variant.status,
-            }),
-          ),
+          active_digital_variants_without_ready_asset:
+            this.buildMigrationSample(
+              activeDigitalVariantsWithoutReadyAsset,
+              safeSampleLimit,
+              (variant) => ({
+                v2_variant_id: variant.id,
+                v2_product_id: variant.product_id,
+                status: variant.status,
+              }),
+            ),
         },
       },
       read_switch: {
@@ -6962,13 +7361,18 @@ export class V2CatalogService {
 
   async getReadSwitchRemediationTasks(sampleLimit = 20): Promise<any> {
     const compareReport = await this.getMigrationCompareReport(sampleLimit);
-    const differences = (compareReport.differences || {}) as Record<string, unknown>;
-    const failedChecks = (compareReport.checks as MigrationCheckResult[]).filter(
-      (check) => !check.passed,
-    );
+    const differences = (compareReport.differences || {}) as Record<
+      string,
+      unknown
+    >;
+    const failedChecks = (
+      compareReport.checks as MigrationCheckResult[]
+    ).filter((check) => !check.passed);
 
     const tasks: ReadSwitchRemediationTask[] = failedChecks.map((check) => {
-      const differenceSource = this.resolveDifferenceSourceByCheckKey(check.key);
+      const differenceSource = this.resolveDifferenceSourceByCheckKey(
+        check.key,
+      );
       const samples = this.resolveDifferenceSamples(
         differences,
         differenceSource?.group,
@@ -7077,7 +7481,9 @@ export class V2CatalogService {
     return data;
   }
 
-  async createBundleDefinition(input: CreateV2BundleDefinitionInput): Promise<any> {
+  async createBundleDefinition(
+    input: CreateV2BundleDefinitionInput,
+  ): Promise<any> {
     const bundleProductId = this.normalizeRequiredText(
       input.bundle_product_id,
       'bundle_product_id는 필수입니다',
@@ -7322,26 +7728,27 @@ export class V2CatalogService {
 
     const sourceComponents = await this.fetchBundleComponents(definitionId);
     if (sourceComponents.length > 0) {
-      const { data: insertedComponents, error: componentInsertError } = await this.supabase
-        .from('v2_bundle_components')
-        .insert(
-          sourceComponents.map((component) => ({
-            bundle_definition_id: newDefinition.id,
-            component_variant_id: component.component_variant_id,
-            is_required: component.is_required,
-            min_quantity: component.min_quantity,
-            max_quantity: component.max_quantity,
-            default_quantity: component.default_quantity,
-            sort_order: component.sort_order,
-            price_allocation_weight: component.price_allocation_weight,
-            metadata: {
-              ...(component.metadata ?? {}),
-              cloned_from_component_id: component.id,
-              cloned_at: clonedAt,
-            },
-          })),
-        )
-        .select('id, component_variant_id');
+      const { data: insertedComponents, error: componentInsertError } =
+        await this.supabase
+          .from('v2_bundle_components')
+          .insert(
+            sourceComponents.map((component) => ({
+              bundle_definition_id: newDefinition.id,
+              component_variant_id: component.component_variant_id,
+              is_required: component.is_required,
+              min_quantity: component.min_quantity,
+              max_quantity: component.max_quantity,
+              default_quantity: component.default_quantity,
+              sort_order: component.sort_order,
+              price_allocation_weight: component.price_allocation_weight,
+              metadata: {
+                ...(component.metadata ?? {}),
+                cloned_from_component_id: component.id,
+                cloned_at: clonedAt,
+              },
+            })),
+          )
+          .select('id, component_variant_id');
 
       if (componentInsertError) {
         throw new ApiException(
@@ -7351,7 +7758,9 @@ export class V2CatalogService {
         );
       }
 
-      const sourceComponentIds = sourceComponents.map((component) => component.id);
+      const sourceComponentIds = sourceComponents.map(
+        (component) => component.id,
+      );
       const { data: optionRows, error: optionFetchError } = await this.supabase
         .from('v2_bundle_component_options')
         .select('*')
@@ -7454,7 +7863,9 @@ export class V2CatalogService {
     }
     const { data: variantRows, error: variantError } = await this.supabase
       .from('v2_product_variants')
-      .select('id,sku,title,fulfillment_type,requires_shipping,track_inventory,status')
+      .select(
+        'id,sku,title,fulfillment_type,requires_shipping,track_inventory,status',
+      )
       .in('id', componentVariantIds)
       .is('deleted_at', null);
 
@@ -7468,18 +7879,23 @@ export class V2CatalogService {
 
     const optionsByComponentId = new Map<string, any[]>();
     for (const option of optionRows || []) {
-      const current = optionsByComponentId.get(option.bundle_component_id) || [];
+      const current =
+        optionsByComponentId.get(option.bundle_component_id) || [];
       current.push(option);
       optionsByComponentId.set(option.bundle_component_id, current);
     }
     const variantById = new Map<string, any>(
-      ((variantRows || []) as any[]).map((variant) => [variant.id as string, variant]),
+      ((variantRows || []) as any[]).map((variant) => [
+        variant.id as string,
+        variant,
+      ]),
     );
 
     return components.map((component) => ({
       ...component,
       options: optionsByComponentId.get(component.id) || [],
-      variant: variantById.get(component.component_variant_id as string) ?? null,
+      variant:
+        variantById.get(component.component_variant_id as string) ?? null,
     }));
   }
 
@@ -7500,7 +7916,11 @@ export class V2CatalogService {
     const minQuantity = input.min_quantity ?? 1;
     const maxQuantity = input.max_quantity ?? minQuantity;
     const defaultQuantity = input.default_quantity ?? minQuantity;
-    this.assertBundleComponentQuantityRange(minQuantity, maxQuantity, defaultQuantity);
+    this.assertBundleComponentQuantityRange(
+      minQuantity,
+      maxQuantity,
+      defaultQuantity,
+    );
     this.assertSortOrder(input.sort_order);
 
     const priceAllocationWeight = input.price_allocation_weight ?? 1;
@@ -7541,7 +7961,9 @@ export class V2CatalogService {
     input: UpdateV2BundleComponentInput,
   ): Promise<any> {
     const current = await this.getBundleComponentById(componentId);
-    const definition = await this.getBundleDefinitionById(current.bundle_definition_id);
+    const definition = await this.getBundleDefinitionById(
+      current.bundle_definition_id,
+    );
     this.assertBundleDefinitionEditable(definition.status);
 
     const updateData: Record<string, unknown> = {};
@@ -7615,7 +8037,9 @@ export class V2CatalogService {
     input: CreateV2BundleComponentOptionInput,
   ): Promise<any> {
     const component = await this.getBundleComponentById(componentId);
-    const definition = await this.getBundleDefinitionById(component.bundle_definition_id);
+    const definition = await this.getBundleDefinitionById(
+      component.bundle_definition_id,
+    );
     this.assertBundleDefinitionEditable(definition.status);
 
     const optionKey = this.normalizeRequiredText(
@@ -7663,8 +8087,12 @@ export class V2CatalogService {
     input: UpdateV2BundleComponentOptionInput,
   ): Promise<any> {
     const current = await this.getBundleComponentOptionById(optionId);
-    const component = await this.getBundleComponentById(current.bundle_component_id);
-    const definition = await this.getBundleDefinitionById(component.bundle_definition_id);
+    const component = await this.getBundleComponentById(
+      current.bundle_component_id,
+    );
+    const definition = await this.getBundleDefinitionById(
+      component.bundle_definition_id,
+    );
     this.assertBundleDefinitionEditable(definition.status);
 
     const updateData: Record<string, unknown> = {};
@@ -7720,8 +8148,12 @@ export class V2CatalogService {
 
   async deleteBundleComponentOption(optionId: string): Promise<void> {
     const current = await this.getBundleComponentOptionById(optionId);
-    const component = await this.getBundleComponentById(current.bundle_component_id);
-    const definition = await this.getBundleDefinitionById(component.bundle_definition_id);
+    const component = await this.getBundleComponentById(
+      current.bundle_component_id,
+    );
+    const definition = await this.getBundleDefinitionById(
+      component.bundle_definition_id,
+    );
     this.assertBundleDefinitionEditable(definition.status);
 
     const { error } = await this.supabase
@@ -7740,7 +8172,9 @@ export class V2CatalogService {
 
   async deleteBundleComponent(componentId: string): Promise<void> {
     const component = await this.getBundleComponentById(componentId);
-    const definition = await this.getBundleDefinitionById(component.bundle_definition_id);
+    const definition = await this.getBundleDefinitionById(
+      component.bundle_definition_id,
+    );
     this.assertBundleDefinitionEditable(definition.status);
     const { error } = await this.supabase
       .from('v2_bundle_components')
@@ -7763,15 +8197,20 @@ export class V2CatalogService {
     input: ValidateV2BundleDefinitionInput,
   ): Promise<any> {
     const definition = await this.getBundleDefinitionById(bundleDefinitionId);
-    const bundleProduct = await this.getProductById(definition.bundle_product_id);
+    const bundleProduct = await this.getProductById(
+      definition.bundle_product_id,
+    );
     const components = await this.fetchBundleComponents(bundleDefinitionId);
-    const selectedMap = this.normalizeBundleSelectionMap(input.selected_components);
+    const selectedMap = this.normalizeBundleSelectionMap(
+      input.selected_components,
+    );
     const componentVariantIds = components.map(
       (component) => component.component_variant_id as string,
     );
 
     let componentVariantsResolvable = true;
-    let componentVariantsDetail = 'all component variants are active and resolvable';
+    let componentVariantsDetail =
+      'all component variants are active and resolvable';
     if (componentVariantIds.length > 0) {
       const { data: variants, error: variantsError } = await this.supabase
         .from('v2_product_variants')
@@ -7788,7 +8227,10 @@ export class V2CatalogService {
       }
 
       const variantById = new Map<string, any>(
-        ((variants || []) as any[]).map((variant) => [variant.id as string, variant]),
+        ((variants || []) as any[]).map((variant) => [
+          variant.id as string,
+          variant,
+        ]),
       );
 
       const missingVariantIds = componentVariantIds.filter(
@@ -7805,7 +8247,10 @@ export class V2CatalogService {
     }
 
     const componentByVariantId = new Map(
-      components.map((component) => [component.component_variant_id as string, component]),
+      components.map((component) => [
+        component.component_variant_id as string,
+        component,
+      ]),
     );
     const selectedKnown = Array.from(selectedMap.keys()).every((variantId) =>
       componentByVariantId.has(variantId),
@@ -7826,7 +8271,9 @@ export class V2CatalogService {
     });
 
     const selectedWithinRange = resolvedSelections.every((selection) => {
-      const component = componentByVariantId.get(selection.component_variant_id);
+      const component = componentByVariantId.get(
+        selection.component_variant_id,
+      );
       if (!component) {
         return false;
       }
@@ -7841,7 +8288,8 @@ export class V2CatalogService {
         return true;
       }
       const matched = resolvedSelections.find(
-        (selection) => selection.component_variant_id === component.component_variant_id,
+        (selection) =>
+          selection.component_variant_id === component.component_variant_id,
       );
       return (matched?.quantity_per_parent ?? 0) >= component.min_quantity;
     });
@@ -7953,7 +8401,10 @@ export class V2CatalogService {
     this.assertPositiveInteger(parentQuantity, 'parent_quantity');
 
     let parentUnitAmount: number | null = null;
-    if (input.parent_unit_amount !== undefined && input.parent_unit_amount !== null) {
+    if (
+      input.parent_unit_amount !== undefined &&
+      input.parent_unit_amount !== null
+    ) {
       if (
         !Number.isInteger(input.parent_unit_amount) ||
         input.parent_unit_amount < 0
@@ -7989,7 +8440,9 @@ export class V2CatalogService {
     );
     const { data: variants, error: variantsError } = await this.supabase
       .from('v2_product_variants')
-      .select('id,product_id,sku,title,fulfillment_type,requires_shipping,status')
+      .select(
+        'id,product_id,sku,title,fulfillment_type,requires_shipping,status',
+      )
       .in('id', componentVariantIds)
       .is('deleted_at', null);
 
@@ -8002,7 +8455,10 @@ export class V2CatalogService {
     }
 
     const variantById = new Map<string, any>(
-      ((variants || []) as any[]).map((variant) => [variant.id as string, variant]),
+      ((variants || []) as any[]).map((variant) => [
+        variant.id as string,
+        variant,
+      ]),
     );
     const missingVariantIds = componentVariantIds.filter(
       (variantId) => !variantById.has(variantId),
@@ -8025,11 +8481,12 @@ export class V2CatalogService {
       );
     }
 
-    const resolvedSelections = validation.selected_components_resolved as Array<{
-      bundle_component_id: string;
-      component_variant_id: string;
-      quantity_per_parent: number;
-    }>;
+    const resolvedSelections =
+      validation.selected_components_resolved as Array<{
+        bundle_component_id: string;
+        component_variant_id: string;
+        quantity_per_parent: number;
+      }>;
 
     const componentById = new Map(
       components.map((component) => [component.id as string, component]),
@@ -8074,7 +8531,9 @@ export class V2CatalogService {
       componentLines.forEach((line, index) => {
         const perParentAllocated = allocations[index] ?? 0;
         line.allocated_total_amount_per_parent = perParentAllocated;
-        const unitAmount = Math.floor(perParentAllocated / line.quantity_per_parent);
+        const unitAmount = Math.floor(
+          perParentAllocated / line.quantity_per_parent,
+        );
         line.allocated_unit_amount = unitAmount;
         line.allocated_discount_amount =
           perParentAllocated - unitAmount * line.quantity_per_parent;
@@ -8128,7 +8587,8 @@ export class V2CatalogService {
           parent_unit_amount: parentUnitAmount,
           component_total_per_parent: allocatedComponentTotalPerParent,
           difference_per_parent:
-            parentUnitAmount === null || allocatedComponentTotalPerParent === null
+            parentUnitAmount === null ||
+            allocatedComponentTotalPerParent === null
               ? null
               : parentUnitAmount - allocatedComponentTotalPerParent,
         },
@@ -8136,7 +8596,9 @@ export class V2CatalogService {
     };
   }
 
-  async buildBundleOpsContract(input: BuildV2BundleOpsContractInput): Promise<any> {
+  async buildBundleOpsContract(
+    input: BuildV2BundleOpsContractInput,
+  ): Promise<any> {
     const resolved = await this.resolveBundle({
       bundle_definition_id: input.bundle_definition_id,
       parent_variant_id: input.parent_variant_id,
@@ -8145,36 +8607,40 @@ export class V2CatalogService {
       selected_components: input.selected_components,
     });
 
-    const componentContracts = (resolved.component_lines as any[]).map((line) => ({
-      bundle_component_id_snapshot: line.bundle_component_id_snapshot as string,
-      component_variant_id: line.component_variant_id as string,
-      component_variant_sku: line.component_variant_sku as string,
-      fulfillment_type: line.fulfillment_type as V2FulfillmentType,
-      requires_shipping: Boolean(line.requires_shipping),
-      quantity: Number(line.quantity ?? 0),
-      refund_contract: {
-        supported: true,
-        basis: 'COMPONENT_LINE',
-        quantity_field: 'order_items.quantity',
-        amount_fields: [
-          'order_items.allocated_unit_amount',
-          'order_items.allocated_discount_amount',
-        ],
-        snapshot_field: 'order_items.bundle_component_id_snapshot',
-      },
-      reship_contract: {
-        supported:
-          line.fulfillment_type === 'PHYSICAL' && Boolean(line.requires_shipping),
-        basis: 'COMPONENT_LINE',
-        quantity_field: 'order_items.quantity',
-        snapshot_field: 'order_items.bundle_component_id_snapshot',
-      },
-      digital_regrant_contract: {
-        supported: line.fulfillment_type === 'DIGITAL',
-        basis: 'COMPONENT_LINE',
-        snapshot_field: 'order_items.bundle_component_id_snapshot',
-      },
-    }));
+    const componentContracts = (resolved.component_lines as any[]).map(
+      (line) => ({
+        bundle_component_id_snapshot:
+          line.bundle_component_id_snapshot as string,
+        component_variant_id: line.component_variant_id as string,
+        component_variant_sku: line.component_variant_sku as string,
+        fulfillment_type: line.fulfillment_type as V2FulfillmentType,
+        requires_shipping: Boolean(line.requires_shipping),
+        quantity: Number(line.quantity ?? 0),
+        refund_contract: {
+          supported: true,
+          basis: 'COMPONENT_LINE',
+          quantity_field: 'order_items.quantity',
+          amount_fields: [
+            'order_items.allocated_unit_amount',
+            'order_items.allocated_discount_amount',
+          ],
+          snapshot_field: 'order_items.bundle_component_id_snapshot',
+        },
+        reship_contract: {
+          supported:
+            line.fulfillment_type === 'PHYSICAL' &&
+            Boolean(line.requires_shipping),
+          basis: 'COMPONENT_LINE',
+          quantity_field: 'order_items.quantity',
+          snapshot_field: 'order_items.bundle_component_id_snapshot',
+        },
+        digital_regrant_contract: {
+          supported: line.fulfillment_type === 'DIGITAL',
+          basis: 'COMPONENT_LINE',
+          snapshot_field: 'order_items.bundle_component_id_snapshot',
+        },
+      }),
+    );
 
     return {
       bundle_definition_id: resolved.bundle_definition_id,
@@ -8313,9 +8779,8 @@ export class V2CatalogService {
         shadowResolveError = 'validation_not_ready';
       }
 
-      const liveSnapshot = await this.buildBundleCanaryLiveSnapshotSummary(
-        definitionId,
-      );
+      const liveSnapshot =
+        await this.buildBundleCanaryLiveSnapshotSummary(definitionId);
 
       let canaryStatus: 'READY' | 'MONITORING' | 'BLOCKED' = 'BLOCKED';
       if (validation.ready && shadowResolvePass) {
@@ -8355,8 +8820,9 @@ export class V2CatalogService {
       sample_parent_unit_amount: sampleParentUnitAmount,
       target_count: targets.length,
       summary: {
-        ready_count: targets.filter((target) => target.canary_status === 'READY')
-          .length,
+        ready_count: targets.filter(
+          (target) => target.canary_status === 'READY',
+        ).length,
         monitoring_count: targets.filter(
           (target) => target.canary_status === 'MONITORING',
         ).length,
@@ -8400,13 +8866,14 @@ export class V2CatalogService {
 
     let componentRows: any[] = [];
     if (componentIds.length > 0) {
-      const { data: fetchedComponentRows, error: componentError } = await this.supabase
-        .from('order_items')
-        .select(
-          'id,order_id,line_type,parent_order_item_id,bundle_definition_id_snapshot,bundle_component_id_snapshot,allocated_unit_amount,allocated_discount_amount',
-        )
-        .eq('line_type', 'BUNDLE_COMPONENT')
-        .in('bundle_component_id_snapshot', componentIds);
+      const { data: fetchedComponentRows, error: componentError } =
+        await this.supabase
+          .from('order_items')
+          .select(
+            'id,order_id,line_type,parent_order_item_id,bundle_definition_id_snapshot,bundle_component_id_snapshot,allocated_unit_amount,allocated_discount_amount',
+          )
+          .eq('line_type', 'BUNDLE_COMPONENT')
+          .in('bundle_component_id_snapshot', componentIds);
 
       if (componentError) {
         throw new ApiException(
@@ -8427,7 +8894,8 @@ export class V2CatalogService {
     ).length;
     const orphanComponentLines = componentRows.filter(
       (row) =>
-        !!row.parent_order_item_id && !parentIdSet.has(row.parent_order_item_id),
+        !!row.parent_order_item_id &&
+        !parentIdSet.has(row.parent_order_item_id),
     ).length;
     const componentMissingSnapshot = componentRows.filter(
       (row) => !row.bundle_component_id_snapshot,
@@ -8559,7 +9027,9 @@ export class V2CatalogService {
         'ACTIVE DIGITAL variant에 READY 상태 asset 준비',
     };
 
-    return actions[checkKey] || '차이 리포트 샘플을 확인하고 데이터 정합성 보정';
+    return (
+      actions[checkKey] || '차이 리포트 샘플을 확인하고 데이터 정합성 보정'
+    );
   }
 
   private resolveMigrationCheckSeverity(
@@ -8594,9 +9064,15 @@ export class V2CatalogService {
     checkKey: string,
   ): { group: string; key: string } | null {
     const mapping: Record<string, { group: string; key: string }> = {
-      projects_backfill_complete: { group: 'missing_mappings', key: 'projects' },
+      projects_backfill_complete: {
+        group: 'missing_mappings',
+        key: 'projects',
+      },
       artists_backfill_complete: { group: 'missing_mappings', key: 'artists' },
-      products_backfill_complete: { group: 'missing_mappings', key: 'products' },
+      products_backfill_complete: {
+        group: 'missing_mappings',
+        key: 'products',
+      },
       project_artist_links_complete: {
         group: 'integrity',
         key: 'missing_project_artist_links',
@@ -8644,7 +9120,9 @@ export class V2CatalogService {
     return Array.isArray(sampleValue) ? sampleValue : [];
   }
 
-  private async fetchBundleComponents(bundleDefinitionId: string): Promise<any[]> {
+  private async fetchBundleComponents(
+    bundleDefinitionId: string,
+  ): Promise<any[]> {
     const { data, error } = await this.supabase
       .from('v2_bundle_components')
       .select('*')
@@ -8765,7 +9243,9 @@ export class V2CatalogService {
     }
   }
 
-  private async assertBundleComponentVariantAllowed(variant: any): Promise<void> {
+  private async assertBundleComponentVariantAllowed(
+    variant: any,
+  ): Promise<void> {
     const product = await this.getProductById(variant.product_id as string);
     if (product.product_kind === 'BUNDLE') {
       throw new ApiException(
@@ -8907,12 +9387,20 @@ export class V2CatalogService {
     }
   }
 
-  private allocateAmountByWeights(totalAmount: number, weights: number[]): number[] {
+  private allocateAmountByWeights(
+    totalAmount: number,
+    weights: number[],
+  ): number[] {
     if (weights.length === 0) {
       return [];
     }
-    const normalizedWeights = weights.map((weight) => (weight > 0 ? weight : 0));
-    const totalWeight = normalizedWeights.reduce((sum, weight) => sum + weight, 0);
+    const normalizedWeights = weights.map((weight) =>
+      weight > 0 ? weight : 0,
+    );
+    const totalWeight = normalizedWeights.reduce(
+      (sum, weight) => sum + weight,
+      0,
+    );
 
     if (totalWeight <= 0) {
       const base = Math.floor(totalAmount / weights.length);
@@ -9028,7 +9516,11 @@ export class V2CatalogService {
       await this.getBundleDefinitionById(targetId);
       return;
     }
-    throw new ApiException('지원하지 않는 target_type입니다', 400, 'VALIDATION_ERROR');
+    throw new ApiException(
+      '지원하지 않는 target_type입니다',
+      400,
+      'VALIDATION_ERROR',
+    );
   }
 
   private async getPriceListItemById(itemId: string): Promise<any> {
@@ -9140,7 +9632,13 @@ export class V2CatalogService {
   }
 
   private assertCampaignType(value: string): void {
-    const allowed: V2CampaignType[] = ['POPUP', 'EVENT', 'SALE', 'DROP', 'ALWAYS_ON'];
+    const allowed: V2CampaignType[] = [
+      'POPUP',
+      'EVENT',
+      'SALE',
+      'DROP',
+      'ALWAYS_ON',
+    ];
     if (!allowed.includes(value as V2CampaignType)) {
       throw new ApiException(
         'campaign_type 값이 유효하지 않습니다',
@@ -9295,7 +9793,12 @@ export class V2CatalogService {
   }
 
   private assertPromotionStatus(value: string): void {
-    const allowed: V2PromotionStatus[] = ['DRAFT', 'ACTIVE', 'SUSPENDED', 'ARCHIVED'];
+    const allowed: V2PromotionStatus[] = [
+      'DRAFT',
+      'ACTIVE',
+      'SUSPENDED',
+      'ARCHIVED',
+    ];
     if (!allowed.includes(value as V2PromotionStatus)) {
       throw new ApiException(
         'promotion status 값이 유효하지 않습니다',
@@ -9576,7 +10079,8 @@ export class V2CatalogService {
       return null;
     }
     const sorted = [...items].sort((a, b) => {
-      const priorityDiff = (b.price_list?.priority ?? 0) - (a.price_list?.priority ?? 0);
+      const priorityDiff =
+        (b.price_list?.priority ?? 0) - (a.price_list?.priority ?? 0);
       if (priorityDiff !== 0) {
         return priorityDiff;
       }
@@ -9610,7 +10114,13 @@ export class V2CatalogService {
     if (campaign.status !== 'ACTIVE') {
       return false;
     }
-    if (!this.isTimestampInRange(campaign.starts_at, campaign.ends_at, evaluatedAt)) {
+    if (
+      !this.isTimestampInRange(
+        campaign.starts_at,
+        campaign.ends_at,
+        evaluatedAt,
+      )
+    ) {
       return false;
     }
     return this.matchesChannelScope(campaign.channel_scope_json, channel);
@@ -9632,13 +10142,17 @@ export class V2CatalogService {
     };
   }
 
-  private extractCampaignTargetProductIdFromSnapshot(snapshot: unknown): string | null {
+  private extractCampaignTargetProductIdFromSnapshot(
+    snapshot: unknown,
+  ): string | null {
     if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
       return null;
     }
 
     const payload = snapshot as Record<string, unknown>;
-    const productId = this.normalizeOptionalText(payload.product_id as string | null | undefined);
+    const productId = this.normalizeOptionalText(
+      payload.product_id as string | null | undefined,
+    );
     if (productId) {
       return productId;
     }
@@ -9697,7 +10211,10 @@ export class V2CatalogService {
       ),
     );
 
-    const eligibilityByCampaignId = new Map<string, CampaignTargetEligibilityScope>();
+    const eligibilityByCampaignId = new Map<
+      string,
+      CampaignTargetEligibilityScope
+    >();
     if (normalizedCampaignIds.length === 0) {
       return eligibilityByCampaignId;
     }
@@ -9711,7 +10228,9 @@ export class V2CatalogService {
 
     const { data, error } = await this.supabase
       .from('v2_campaign_targets')
-      .select('campaign_id,target_type,target_id,is_excluded,source_snapshot_json')
+      .select(
+        'campaign_id,target_type,target_id,is_excluded,source_snapshot_json',
+      )
       .in('campaign_id', normalizedCampaignIds)
       .is('deleted_at', null);
 
@@ -9738,7 +10257,8 @@ export class V2CatalogService {
       const scope =
         eligibilityByCampaignId.get(campaignId) ??
         this.createEmptyCampaignTargetEligibilityScope();
-      const isExcluded = (row.is_excluded as boolean | null | undefined) ?? false;
+      const isExcluded =
+        (row.is_excluded as boolean | null | undefined) ?? false;
       const bucket = isExcluded ? scope.exclude : scope.include;
       this.applyCampaignTargetToEligibilityBucket({
         bucket,
@@ -9770,25 +10290,35 @@ export class V2CatalogService {
       return false;
     }
 
-    const eligibility = params.campaignTargetEligibilityByCampaignId.get(campaignId);
+    const eligibility =
+      params.campaignTargetEligibilityByCampaignId.get(campaignId);
     if (!eligibility || !eligibility.hasIncludeTargets) {
       return false;
     }
 
     const projectId = this.normalizeOptionalText(params.projectId);
-    const includedByProject = !!projectId && eligibility.include.projectIds.has(projectId);
-    const includedByProduct = eligibility.include.productIds.has(params.productId);
+    const includedByProject =
+      !!projectId && eligibility.include.projectIds.has(projectId);
+    const includedByProduct = eligibility.include.productIds.has(
+      params.productId,
+    );
     const includedByVariant =
-      !!params.variantId && eligibility.include.variantIds.has(params.variantId);
-    const included = includedByProject || includedByProduct || includedByVariant;
+      !!params.variantId &&
+      eligibility.include.variantIds.has(params.variantId);
+    const included =
+      includedByProject || includedByProduct || includedByVariant;
     if (!included) {
       return false;
     }
 
-    const excludedByProject = !!projectId && eligibility.exclude.projectIds.has(projectId);
-    const excludedByProduct = eligibility.exclude.productIds.has(params.productId);
+    const excludedByProject =
+      !!projectId && eligibility.exclude.projectIds.has(projectId);
+    const excludedByProduct = eligibility.exclude.productIds.has(
+      params.productId,
+    );
     const excludedByVariant =
-      !!params.variantId && eligibility.exclude.variantIds.has(params.variantId);
+      !!params.variantId &&
+      eligibility.exclude.variantIds.has(params.variantId);
     if (excludedByProject || excludedByProduct || excludedByVariant) {
       return false;
     }
@@ -9811,10 +10341,15 @@ export class V2CatalogService {
     return (params.priceItems || [])
       .filter((item) => item.product_id === params.productId)
       .filter(
-        (item) => item.variant_id === params.variantId || item.variant_id === null,
+        (item) =>
+          item.variant_id === params.variantId || item.variant_id === null,
       )
       .filter((item) =>
-        this.isTimestampInRange(item.starts_at, item.ends_at, params.evaluatedAt),
+        this.isTimestampInRange(
+          item.starts_at,
+          item.ends_at,
+          params.evaluatedAt,
+        ),
       )
       .filter((item) => {
         const priceList = item.price_list;
@@ -9837,10 +10372,17 @@ export class V2CatalogService {
         ) {
           return false;
         }
-        if (!this.matchesChannelScope(priceList.channel_scope_json, params.channel)) {
+        if (
+          !this.matchesChannelScope(
+            priceList.channel_scope_json,
+            params.channel,
+          )
+        ) {
           return false;
         }
-        if (!this.matchesChannelScope(item.channel_scope_json, params.channel)) {
+        if (
+          !this.matchesChannelScope(item.channel_scope_json, params.channel)
+        ) {
           return false;
         }
 
@@ -9910,7 +10452,10 @@ export class V2CatalogService {
     const linkedCampaign = priceList.campaign;
 
     if (params.campaignId) {
-      if (!priceList.campaign_id || priceList.campaign_id !== params.campaignId) {
+      if (
+        !priceList.campaign_id ||
+        priceList.campaign_id !== params.campaignId
+      ) {
         return false;
       }
       if (!linkedCampaign || typeof linkedCampaign !== 'object') {
@@ -9960,11 +10505,13 @@ export class V2CatalogService {
     }
 
     const sorted = [...items].sort((a, b) => {
-      const startDiff = this.getOverrideCampaignStartMs(b) - this.getOverrideCampaignStartMs(a);
+      const startDiff =
+        this.getOverrideCampaignStartMs(b) - this.getOverrideCampaignStartMs(a);
       if (startDiff !== 0) {
         return startDiff;
       }
-      const priorityDiff = (b.price_list?.priority ?? 0) - (a.price_list?.priority ?? 0);
+      const priorityDiff =
+        (b.price_list?.priority ?? 0) - (a.price_list?.priority ?? 0);
       if (priorityDiff !== 0) {
         return priorityDiff;
       }
@@ -10094,7 +10641,8 @@ export class V2CatalogService {
           ? {
               amount: priceSelection.selected.unit_amount,
               compare_at_amount: priceSelection.selected.compare_at_amount,
-              currency_code: priceSelection.selected.price_list?.currency_code ?? 'KRW',
+              currency_code:
+                priceSelection.selected.price_list?.currency_code ?? 'KRW',
               source:
                 priceSelection.selected.price_list?.scope_type === 'OVERRIDE'
                   ? 'OVERRIDE'
@@ -10163,7 +10711,10 @@ export class V2CatalogService {
 
       for (const row of projectRows || []) {
         if (row.id && row.status) {
-          projectStatusById.set(row.id as string, row.status as V2ProjectStatus);
+          projectStatusById.set(
+            row.id as string,
+            row.status as V2ProjectStatus,
+          );
         }
       }
     }
@@ -10234,7 +10785,10 @@ export class V2CatalogService {
 
       for (const row of inventoryRows || []) {
         const variantId = row.variant_id as string;
-        const availableQuantity = Math.max(0, Number(row.available_quantity ?? 0));
+        const availableQuantity = Math.max(
+          0,
+          Number(row.available_quantity ?? 0),
+        );
         const safetyStockQuantity = Math.max(
           0,
           Number(row.safety_stock_quantity ?? 0),
@@ -10340,7 +10894,9 @@ export class V2CatalogService {
     if (primaryByFlag) {
       return primaryByFlag;
     }
-    const primaryByRole = mediaItems.find((item) => item.media_role === 'PRIMARY');
+    const primaryByRole = mediaItems.find(
+      (item) => item.media_role === 'PRIMARY',
+    );
     if (primaryByRole) {
       return primaryByRole;
     }
@@ -10516,7 +11072,10 @@ export class V2CatalogService {
       subtotal: number;
       currentSubtotal: number;
     },
-  ): { passed: boolean; results: Array<{ rule_id: string; passed: boolean; detail: string }> } {
+  ): {
+    passed: boolean;
+    results: Array<{ rule_id: string; passed: boolean; detail: string }>;
+  } {
     if (!rules || rules.length === 0) {
       return { passed: true, results: [] };
     }
@@ -10580,7 +11139,8 @@ export class V2CatalogService {
             : type === 'TARGET_VARIANT'
               ? this.normalizeStringArray(payload.variant_ids)
               : this.normalizeStringArray(payload.product_kinds, true);
-      const passed = this.getPromotionEligibleLineIndexes(context.lines, [rule]).length > 0;
+      const passed =
+        this.getPromotionEligibleLineIndexes(context.lines, [rule]).length > 0;
       return {
         rule_id: rule.id as string,
         passed,
@@ -10594,7 +11154,10 @@ export class V2CatalogService {
     };
   }
 
-  private getPromotionEligibleLineIndexes(lines: any[], rules: any[]): number[] {
+  private getPromotionEligibleLineIndexes(
+    lines: any[],
+    rules: any[],
+  ): number[] {
     if (!rules || rules.length === 0) {
       return lines.map((_, index) => index);
     }
@@ -10606,32 +11169,45 @@ export class V2CatalogService {
       if (type === 'TARGET_PROJECT') {
         const allowed = this.normalizeStringArray(payload.project_ids);
         if (allowed.length > 0) {
-          indexes = indexes.filter((index) => allowed.includes(lines[index].project_id));
+          indexes = indexes.filter((index) =>
+            allowed.includes(lines[index].project_id),
+          );
         }
         continue;
       }
       if (type === 'TARGET_PRODUCT') {
         const allowed = this.normalizeStringArray(payload.product_ids);
         if (allowed.length > 0) {
-          indexes = indexes.filter((index) => allowed.includes(lines[index].product_id));
+          indexes = indexes.filter((index) =>
+            allowed.includes(lines[index].product_id),
+          );
         }
         continue;
       }
       if (type === 'TARGET_VARIANT') {
         const allowed = this.normalizeStringArray(payload.variant_ids);
         if (allowed.length > 0) {
-          indexes = indexes.filter((index) => allowed.includes(lines[index].variant_id));
+          indexes = indexes.filter((index) =>
+            allowed.includes(lines[index].variant_id),
+          );
         }
         continue;
       }
       if (type === 'TARGET_BUNDLE') {
-        const allowedKinds = this.normalizeStringArray(payload.product_kinds, true);
+        const allowedKinds = this.normalizeStringArray(
+          payload.product_kinds,
+          true,
+        );
         if (allowedKinds.length > 0) {
           indexes = indexes.filter((index) =>
-            allowedKinds.includes((lines[index].product_kind as string).toUpperCase()),
+            allowedKinds.includes(
+              (lines[index].product_kind as string).toUpperCase(),
+            ),
           );
         } else {
-          indexes = indexes.filter((index) => lines[index].product_kind === 'BUNDLE');
+          indexes = indexes.filter(
+            (index) => lines[index].product_kind === 'BUNDLE',
+          );
         }
       }
     }
@@ -10695,7 +11271,10 @@ export class V2CatalogService {
       return 0;
     }
     let raw = 0;
-    if (promotionType === 'ORDER_PERCENT' || promotionType === 'SHIPPING_PERCENT') {
+    if (
+      promotionType === 'ORDER_PERCENT' ||
+      promotionType === 'SHIPPING_PERCENT'
+    ) {
       raw = Math.floor((baseAmount * discountValue) / 100);
     } else if (
       promotionType === 'ORDER_FIXED' ||
@@ -10917,7 +11496,12 @@ export class V2CatalogService {
         .is('deleted_at', null),
     ]);
 
-    if (productMediaError || digitalAssetError || campaignError || projectError) {
+    if (
+      productMediaError ||
+      digitalAssetError ||
+      campaignError ||
+      projectError
+    ) {
       throw new ApiException(
         'media asset 참조 현황 조회 실패',
         500,
@@ -10992,13 +11576,8 @@ export class V2CatalogService {
     );
   }
 
-  private assertNoInlineStorageOverride(
-    input: Record<string, unknown>,
-  ): void {
-    if (
-      input.storage_path !== undefined ||
-      input.public_url !== undefined
-    ) {
+  private assertNoInlineStorageOverride(input: Record<string, unknown>): void {
+    if (input.storage_path !== undefined || input.public_url !== undefined) {
       throw new ApiException(
         'storage_path/public_url 직접 입력은 지원하지 않습니다. media_asset_id를 사용하세요.',
         400,
@@ -11315,7 +11894,12 @@ export class V2CatalogService {
   }
 
   private assertProductStatus(value: string): void {
-    const allowed: V2ProductStatus[] = ['DRAFT', 'ACTIVE', 'INACTIVE', 'ARCHIVED'];
+    const allowed: V2ProductStatus[] = [
+      'DRAFT',
+      'ACTIVE',
+      'INACTIVE',
+      'ARCHIVED',
+    ];
     if (!allowed.includes(value as V2ProductStatus)) {
       throw new ApiException(
         'product status 값이 유효하지 않습니다',
@@ -11370,7 +11954,12 @@ export class V2CatalogService {
   }
 
   private assertMediaStatus(value: string): void {
-    const allowed: V2MediaStatus[] = ['DRAFT', 'ACTIVE', 'INACTIVE', 'ARCHIVED'];
+    const allowed: V2MediaStatus[] = [
+      'DRAFT',
+      'ACTIVE',
+      'INACTIVE',
+      'ARCHIVED',
+    ];
     if (!allowed.includes(value as V2MediaStatus)) {
       throw new ApiException(
         'media status 값이 유효하지 않습니다',
@@ -11431,7 +12020,10 @@ export class V2CatalogService {
     }
   }
 
-  private assertProjectStatusTransition(current: V2ProjectStatus, next: V2ProjectStatus): void {
+  private assertProjectStatusTransition(
+    current: V2ProjectStatus,
+    next: V2ProjectStatus,
+  ): void {
     const allowed: Record<V2ProjectStatus, V2ProjectStatus[]> = {
       DRAFT: ['DRAFT', 'ACTIVE', 'ARCHIVED'],
       ACTIVE: ['ACTIVE', 'DRAFT', 'ARCHIVED'],
@@ -11446,7 +12038,10 @@ export class V2CatalogService {
     }
   }
 
-  private assertProductStatusTransition(current: V2ProductStatus, next: V2ProductStatus): void {
+  private assertProductStatusTransition(
+    current: V2ProductStatus,
+    next: V2ProductStatus,
+  ): void {
     const allowed: Record<V2ProductStatus, V2ProductStatus[]> = {
       DRAFT: ['DRAFT', 'ACTIVE', 'INACTIVE', 'ARCHIVED'],
       ACTIVE: ['ACTIVE', 'INACTIVE', 'ARCHIVED'],
@@ -11462,7 +12057,10 @@ export class V2CatalogService {
     }
   }
 
-  private assertVariantStatusTransition(current: V2VariantStatus, next: V2VariantStatus): void {
+  private assertVariantStatusTransition(
+    current: V2VariantStatus,
+    next: V2VariantStatus,
+  ): void {
     const allowed: Record<V2VariantStatus, V2VariantStatus[]> = {
       DRAFT: ['DRAFT', 'ACTIVE', 'INACTIVE'],
       ACTIVE: ['ACTIVE', 'INACTIVE'],
@@ -11622,7 +12220,9 @@ export class V2CatalogService {
     return new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   }
 
-  private async getMediaAssetUploadSessionById(sessionId: string): Promise<any> {
+  private async getMediaAssetUploadSessionById(
+    sessionId: string,
+  ): Promise<any> {
     const { data, error } = await this.supabase
       .from('media_asset_upload_sessions')
       .select('*')
@@ -11683,7 +12283,10 @@ export class V2CatalogService {
       );
     }
 
-    if (session.expires_at && new Date(session.expires_at).getTime() < Date.now()) {
+    if (
+      session.expires_at &&
+      new Date(session.expires_at).getTime() < Date.now()
+    ) {
       throw new ApiException(
         '만료된 multipart 업로드 세션입니다. 새 업로드를 시작해 주세요.',
         400,
@@ -11860,7 +12463,10 @@ export class V2CatalogService {
     }
   }
 
-  private assertPositiveInteger(value: number | undefined, fieldName: string): void {
+  private assertPositiveInteger(
+    value: number | undefined,
+    fieldName: string,
+  ): void {
     if (value === undefined || !Number.isInteger(value) || value <= 0) {
       throw new ApiException(
         `${fieldName}은 1 이상의 정수여야 합니다`,
@@ -11870,7 +12476,10 @@ export class V2CatalogService {
     }
   }
 
-  private normalizeRequiredText(value: string | undefined, errorMessage: string): string {
+  private normalizeRequiredText(
+    value: string | undefined,
+    errorMessage: string,
+  ): string {
     const normalized = value?.trim();
     if (!normalized) {
       throw new ApiException(errorMessage, 400, 'VALIDATION_ERROR');
@@ -11878,7 +12487,9 @@ export class V2CatalogService {
     return normalized;
   }
 
-  private normalizeOptionalText(value: string | null | undefined): string | null {
+  private normalizeOptionalText(
+    value: string | null | undefined,
+  ): string | null {
     if (value === undefined || value === null) {
       return null;
     }

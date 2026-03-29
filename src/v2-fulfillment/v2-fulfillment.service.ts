@@ -285,7 +285,9 @@ export class V2FulfillmentService {
       if (
         idempotencyKey &&
         insertError.code === '23505' &&
-        insertError.message?.includes('uq_v2_inventory_reservations_idempotency_key')
+        insertError.message?.includes(
+          'uq_v2_inventory_reservations_idempotency_key',
+        )
       ) {
         const existing =
           await this.findReservationByIdempotencyKey(idempotencyKey);
@@ -339,12 +341,14 @@ export class V2FulfillmentService {
     };
   }
 
-  async releaseExpiredReservations(input: {
-    variant_id?: string;
-    location_id?: string;
-    limit?: number;
-    reason?: string | null;
-  } = {}): Promise<{
+  async releaseExpiredReservations(
+    input: {
+      variant_id?: string;
+      location_id?: string;
+      limit?: number;
+      reason?: string | null;
+    } = {},
+  ): Promise<{
     scanned_count: number;
     released_count: number;
     released_reservation_ids: string[];
@@ -352,7 +356,8 @@ export class V2FulfillmentService {
     const variantId = this.normalizeOptionalUuid(input.variant_id);
     const locationId = this.normalizeOptionalUuid(input.location_id);
     const limit = this.normalizeOpsLimit(input.limit);
-    const reason = this.normalizeOptionalText(input.reason) || 'TTL_EXPIRED_AUTO';
+    const reason =
+      this.normalizeOptionalText(input.reason) || 'TTL_EXPIRED_AUTO';
     const nowIso = new Date().toISOString();
 
     let query = this.supabase
@@ -387,14 +392,18 @@ export class V2FulfillmentService {
         continue;
       }
       try {
-        const result = await this.transitionReservation(reservationId, 'RELEASED', {
-          reason,
-          idempotency_key: `AUTO-EXPIRE:${reservationId}`,
-          metadata: {
-            source: 'TTL_EXPIRE',
-            expired_at: nowIso,
+        const result = await this.transitionReservation(
+          reservationId,
+          'RELEASED',
+          {
+            reason,
+            idempotency_key: `AUTO-EXPIRE:${reservationId}`,
+            metadata: {
+              source: 'TTL_EXPIRE',
+              expired_at: nowIso,
+            },
           },
-        });
+        );
         const releasedId = this.normalizeOptionalUuid(result?.reservation?.id);
         if (releasedId) {
           releasedReservationIds.push(releasedId);
@@ -450,7 +459,9 @@ export class V2FulfillmentService {
   async listStockLocations(): Promise<any[]> {
     const { data, error } = await this.supabase
       .from('v2_stock_locations')
-      .select('id, code, name, location_type, priority, is_active, country_code, region_code')
+      .select(
+        'id, code, name, location_type, priority, is_active, country_code, region_code',
+      )
       .eq('is_active', true)
       .order('priority', { ascending: true })
       .order('created_at', { ascending: true });
@@ -467,7 +478,10 @@ export class V2FulfillmentService {
   }
 
   async listInventoryLevels(input: ListInventoryLevelsInput): Promise<any[]> {
-    const variantId = this.requireUuid(input.variant_id, 'variant_id는 필수입니다');
+    const variantId = this.requireUuid(
+      input.variant_id,
+      'variant_id는 필수입니다',
+    );
     const locationId = this.normalizeOptionalUuid(input.location_id);
 
     let query = this.supabase
@@ -528,7 +542,9 @@ export class V2FulfillmentService {
       updated_reason: this.normalizeOptionalText(row.updated_reason),
       updated_at: row.updated_at,
       metadata:
-        row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
+        row.metadata &&
+        typeof row.metadata === 'object' &&
+        !Array.isArray(row.metadata)
           ? row.metadata
           : {},
       location: locationById.get(row.location_id) || null,
@@ -536,7 +552,10 @@ export class V2FulfillmentService {
   }
 
   async upsertInventoryLevel(input: UpsertInventoryLevelInput): Promise<any> {
-    const variantId = this.requireUuid(input.variant_id, 'variant_id는 필수입니다');
+    const variantId = this.requireUuid(
+      input.variant_id,
+      'variant_id는 필수입니다',
+    );
     const requestedLocationId = this.normalizeOptionalUuid(input.location_id);
     const locationId =
       requestedLocationId || (await this.getDefaultStockLocationId());
@@ -557,14 +576,15 @@ export class V2FulfillmentService {
       );
     }
 
-    const { data: existingLevel, error: existingLevelError } = await this.supabase
-      .from('v2_inventory_levels')
-      .select(
-        'id, variant_id, location_id, on_hand_quantity, reserved_quantity, available_quantity, safety_stock_quantity, metadata',
-      )
-      .eq('variant_id', variantId)
-      .eq('location_id', locationId)
-      .maybeSingle();
+    const { data: existingLevel, error: existingLevelError } =
+      await this.supabase
+        .from('v2_inventory_levels')
+        .select(
+          'id, variant_id, location_id, on_hand_quantity, reserved_quantity, available_quantity, safety_stock_quantity, metadata',
+        )
+        .eq('variant_id', variantId)
+        .eq('location_id', locationId)
+        .maybeSingle();
 
     if (existingLevelError) {
       throw new ApiException(
@@ -575,10 +595,16 @@ export class V2FulfillmentService {
     }
 
     const existingOnHand = existingLevel
-      ? this.normalizeNonNegativeInteger(existingLevel.on_hand_quantity, 'on_hand_quantity')
+      ? this.normalizeNonNegativeInteger(
+          existingLevel.on_hand_quantity,
+          'on_hand_quantity',
+        )
       : 0;
     const existingReserved = existingLevel
-      ? this.normalizeNonNegativeInteger(existingLevel.reserved_quantity, 'reserved_quantity')
+      ? this.normalizeNonNegativeInteger(
+          existingLevel.reserved_quantity,
+          'reserved_quantity',
+        )
       : 0;
     const existingSafety = existingLevel
       ? this.normalizeNonNegativeInteger(
@@ -609,8 +635,12 @@ export class V2FulfillmentService {
       );
     }
 
-    const metadataPatch = this.normalizeOptionalJsonObject(input.metadata) || {};
-    const mergedMetadata = this.mergeMetadata(existingLevel?.metadata, metadataPatch);
+    const metadataPatch =
+      this.normalizeOptionalJsonObject(input.metadata) || {};
+    const mergedMetadata = this.mergeMetadata(
+      existingLevel?.metadata,
+      metadataPatch,
+    );
 
     const payload = {
       variant_id: variantId,
@@ -671,7 +701,9 @@ export class V2FulfillmentService {
       updated_reason: this.normalizeOptionalText(data.updated_reason),
       updated_at: data.updated_at,
       metadata:
-        data.metadata && typeof data.metadata === 'object' && !Array.isArray(data.metadata)
+        data.metadata &&
+        typeof data.metadata === 'object' &&
+        !Array.isArray(data.metadata)
           ? data.metadata
           : {},
       location,
@@ -684,8 +716,12 @@ export class V2FulfillmentService {
     const orderId = this.requireUuid(input.order_id, 'order_id는 필수입니다');
     const order = await this.fetchOrderForCutover(orderId);
     const stockLocationId = this.normalizeOptionalUuid(input.stock_location_id);
-    const shippingProfileId = this.normalizeOptionalUuid(input.shipping_profile_id);
-    const shippingMethodId = this.normalizeOptionalUuid(input.shipping_method_id);
+    const shippingProfileId = this.normalizeOptionalUuid(
+      input.shipping_profile_id,
+    );
+    const shippingMethodId = this.normalizeOptionalUuid(
+      input.shipping_method_id,
+    );
     const shippingZoneId = this.normalizeOptionalUuid(input.shipping_zone_id);
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
 
@@ -723,10 +759,11 @@ export class V2FulfillmentService {
       );
     }
 
-    const { data: existingGroups, error: existingGroupsError } = await this.supabase
-      .from('v2_fulfillment_groups')
-      .select('*')
-      .eq('order_id', orderId);
+    const { data: existingGroups, error: existingGroupsError } =
+      await this.supabase
+        .from('v2_fulfillment_groups')
+        .select('*')
+        .eq('order_id', orderId);
 
     if (existingGroupsError) {
       throw new ApiException(
@@ -842,7 +879,10 @@ export class V2FulfillmentService {
       rowsToInsert.push({
         fulfillment_group_id: group.id,
         order_item_id: item.id,
-        quantity_planned: this.normalizePositiveInteger(item.quantity, 'quantity'),
+        quantity_planned: this.normalizePositiveInteger(
+          item.quantity,
+          'quantity',
+        ),
         quantity_fulfilled: 0,
         status: 'PLANNED',
         metadata: {},
@@ -885,7 +925,9 @@ export class V2FulfillmentService {
       input.shipping_zone_id,
       'shipping_zone_id는 필수입니다',
     );
-    const shippingProfileId = this.normalizeOptionalUuid(input.shipping_profile_id);
+    const shippingProfileId = this.normalizeOptionalUuid(
+      input.shipping_profile_id,
+    );
 
     const orderAmount = this.normalizeOptionalNonNegativeInteger(
       input.order_amount,
@@ -899,8 +941,11 @@ export class V2FulfillmentService {
       input.item_count,
       'item_count',
     );
-    const currencyCode = this.normalizeCurrencyCode(input.currency_code || 'KRW');
-    const at = this.normalizeOptionalIsoDateTime(input.at) || new Date().toISOString();
+    const currencyCode = this.normalizeCurrencyCode(
+      input.currency_code || 'KRW',
+    );
+    const at =
+      this.normalizeOptionalIsoDateTime(input.at) || new Date().toISOString();
 
     const { data: rules, error: rulesError } = await this.supabase
       .from('v2_shipping_rate_rules')
@@ -931,7 +976,9 @@ export class V2FulfillmentService {
         return false;
       }
 
-      const startsAt = rule.starts_at ? new Date(rule.starts_at).getTime() : null;
+      const startsAt = rule.starts_at
+        ? new Date(rule.starts_at).getTime()
+        : null;
       const endsAt = rule.ends_at ? new Date(rule.ends_at).getTime() : null;
       if (startsAt !== null && startsAt > baseTime) {
         return false;
@@ -949,9 +996,13 @@ export class V2FulfillmentService {
 
     const sorted = filtered.sort((a: any, b: any) => {
       const profilePriorityA =
-        shippingProfileId && a.shipping_profile_id === shippingProfileId ? 0 : 1;
+        shippingProfileId && a.shipping_profile_id === shippingProfileId
+          ? 0
+          : 1;
       const profilePriorityB =
-        shippingProfileId && b.shipping_profile_id === shippingProfileId ? 0 : 1;
+        shippingProfileId && b.shipping_profile_id === shippingProfileId
+          ? 0
+          : 1;
       if (profilePriorityA !== profilePriorityB) {
         return profilePriorityA - profilePriorityB;
       }
@@ -998,7 +1049,9 @@ export class V2FulfillmentService {
 
     const { data: groups, error: groupsError } = await this.supabase
       .from('v2_fulfillment_groups')
-      .select('id, order_id, kind, status, planned_at, fulfilled_at, created_at')
+      .select(
+        'id, order_id, kind, status, planned_at, fulfilled_at, created_at',
+      )
       .order('created_at', { ascending: false });
 
     if (groupsError) {
@@ -1011,7 +1064,9 @@ export class V2FulfillmentService {
 
     const { data: fulfillments, error: fulfillmentsError } = await this.supabase
       .from('v2_fulfillments')
-      .select('id, fulfillment_group_id, kind, status, requested_at, completed_at')
+      .select(
+        'id, fulfillment_group_id, kind, status, requested_at, completed_at',
+      )
       .order('requested_at', { ascending: false });
 
     if (fulfillmentsError) {
@@ -1137,7 +1192,8 @@ export class V2FulfillmentService {
       const current = activeReservationMap.get(key) || 0;
       activeReservationMap.set(
         key,
-        current + this.normalizePositiveInteger(reservation.quantity, 'quantity'),
+        current +
+          this.normalizePositiveInteger(reservation.quantity, 'quantity'),
       );
     }
 
@@ -1242,7 +1298,8 @@ export class V2FulfillmentService {
     const orderId = this.requireUuid(input.order_id, 'order_id는 필수입니다');
     const reserveInventory = input.reserve_inventory !== false;
     const grantEntitlement = input.grant_entitlement !== false;
-    const providerType = this.normalizeOptionalText(input.provider_type) || 'MANUAL';
+    const providerType =
+      this.normalizeOptionalText(input.provider_type) || 'MANUAL';
 
     const plan = await this.generateFulfillmentPlan(input);
     const groups = plan.groups as any[];
@@ -1271,7 +1328,8 @@ export class V2FulfillmentService {
         createdFulfillmentCount += 1;
       }
 
-      const groupItems = await this.fetchFulfillmentGroupItemsByGroupId(groupId);
+      const groupItems =
+        await this.fetchFulfillmentGroupItemsByGroupId(groupId);
       const groupResult = {
         group_id: groupId,
         kind: group.kind as string,
@@ -1306,7 +1364,10 @@ export class V2FulfillmentService {
 
           for (const groupItem of groupItems) {
             const orderItemId = groupItem.order_item_id as string;
-            const orderItem = await this.getOrderItemOrThrow(orderItemId, orderId);
+            const orderItem = await this.getOrderItemOrThrow(
+              orderItemId,
+              orderId,
+            );
             if (!orderItem.variant_id) {
               throw new ApiException(
                 `order_item(${orderItemId})에 variant_id가 없습니다`,
@@ -1401,7 +1462,8 @@ export class V2FulfillmentService {
     shipment_ids: string[];
   }> {
     const orderId = this.requireUuid(input.order_id, 'order_id는 필수입니다');
-    const providerType = this.normalizeOptionalText(input.provider_type) || 'MANUAL';
+    const providerType =
+      this.normalizeOptionalText(input.provider_type) || 'MANUAL';
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
     const source =
       typeof metadata.source === 'string' && metadata.source.trim().length > 0
@@ -1425,7 +1487,10 @@ export class V2FulfillmentService {
     const shipmentIds = new Set<string>();
 
     for (const group of shipmentGroups) {
-      const groupId = this.requireUuid(group.id, 'fulfillment_group_id가 올바르지 않습니다');
+      const groupId = this.requireUuid(
+        group.id,
+        'fulfillment_group_id가 올바르지 않습니다',
+      );
       const fulfillment = await this.findOrCreateFulfillmentForGroup(
         groupId,
         'SHIPMENT',
@@ -1448,7 +1513,9 @@ export class V2FulfillmentService {
         createdShipmentCount += 1;
       }
 
-      const shipmentId = this.normalizeOptionalUuid(shipmentResult?.shipment?.id);
+      const shipmentId = this.normalizeOptionalUuid(
+        shipmentResult?.shipment?.id,
+      );
       if (shipmentId) {
         shipmentIds.add(shipmentId);
       }
@@ -1479,7 +1546,9 @@ export class V2FulfillmentService {
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
     const order = await this.fetchOrderForCutover(orderId);
     const orderItems = await this.fetchOrderItemsForCutover(orderId);
-    const digitalOrderItems = orderItems.filter((item) => this.isOrderItemDigital(item));
+    const digitalOrderItems = orderItems.filter((item) =>
+      this.isOrderItemDigital(item),
+    );
 
     if (digitalOrderItems.length === 0) {
       return {
@@ -1514,7 +1583,9 @@ export class V2FulfillmentService {
       if (!activeEntitlement) {
         const latestEntitlement =
           await this.findLatestEntitlementByOrderItem(orderItemId);
-        const latestStatus = this.normalizeOptionalText(latestEntitlement?.status);
+        const latestStatus = this.normalizeOptionalText(
+          latestEntitlement?.status,
+        );
         if (latestStatus === 'FAILED' || latestStatus === 'REVOKED') {
           throw new ApiException(
             `order_item(${orderItemId}) entitlement 상태가 ${latestStatus}라 자동 지급할 수 없습니다`,
@@ -1533,7 +1604,9 @@ export class V2FulfillmentService {
             order_item_id: orderItemId,
           }),
         });
-        const grantedId = this.normalizeOptionalUuid(grantResult?.entitlement?.id);
+        const grantedId = this.normalizeOptionalUuid(
+          grantResult?.entitlement?.id,
+        );
         if (grantedId) {
           entitlementIds.add(grantedId);
         }
@@ -1651,10 +1724,18 @@ export class V2FulfillmentService {
           };
         }
       }
-      throw new ApiException('shipment 생성 실패', 500, 'SHIPMENT_CREATE_FAILED');
+      throw new ApiException(
+        'shipment 생성 실패',
+        500,
+        'SHIPMENT_CREATE_FAILED',
+      );
     }
     if (!created) {
-      throw new ApiException('shipment 생성 결과가 비어 있습니다', 500, 'SHIPMENT_CREATE_FAILED');
+      throw new ApiException(
+        'shipment 생성 결과가 비어 있습니다',
+        500,
+        'SHIPMENT_CREATE_FAILED',
+      );
     }
 
     await this.markFulfillmentInProgress(fulfillmentId);
@@ -1703,7 +1784,11 @@ export class V2FulfillmentService {
       .maybeSingle();
 
     if (updateError) {
-      throw new ApiException('shipment 포장 전환 실패', 500, 'SHIPMENT_PACK_FAILED');
+      throw new ApiException(
+        'shipment 포장 전환 실패',
+        500,
+        'SHIPMENT_PACK_FAILED',
+      );
     }
     if (!updated) {
       throw new ApiException(
@@ -1771,7 +1856,9 @@ export class V2FulfillmentService {
             ? ('PACKING' as ShipmentStatus)
             : shipment.status,
         packed_at:
-          shipment.status === 'READY_TO_PACK' ? now : shipment.packed_at || null,
+          shipment.status === 'READY_TO_PACK'
+            ? now
+            : shipment.packed_at || null,
         metadata: this.mergeMetadata(shipment.metadata, metadataPatch),
       })
       .eq('id', normalizedShipmentId)
@@ -2047,7 +2134,9 @@ export class V2FulfillmentService {
       entitlementId,
       'entitlement_id가 올바르지 않습니다',
     );
-    const entitlement = await this.fetchEntitlementById(normalizedEntitlementId);
+    const entitlement = await this.fetchEntitlementById(
+      normalizedEntitlementId,
+    );
 
     if (entitlement.status === 'REVOKED') {
       throw new ApiException(
@@ -2147,7 +2236,9 @@ export class V2FulfillmentService {
     const reason = this.normalizeOptionalText(input.reason);
     const metadataPatch = this.normalizeOptionalJsonObject(input.metadata);
 
-    const entitlement = await this.fetchEntitlementById(normalizedEntitlementId);
+    const entitlement = await this.fetchEntitlementById(
+      normalizedEntitlementId,
+    );
     if (entitlement.status === 'REVOKED') {
       return {
         idempotent_replayed: true,
@@ -2212,7 +2303,9 @@ export class V2FulfillmentService {
       'entitlement_id가 올바르지 않습니다',
     );
     const metadataPatch = this.normalizeOptionalJsonObject(input.metadata);
-    const entitlement = await this.fetchEntitlementById(normalizedEntitlementId);
+    const entitlement = await this.fetchEntitlementById(
+      normalizedEntitlementId,
+    );
 
     if (entitlement.status === 'REVOKED') {
       throw new ApiException(
@@ -2370,7 +2463,9 @@ export class V2FulfillmentService {
       }
     }
 
-    const reservation = await this.fetchReservationById(normalizedReservationId);
+    const reservation = await this.fetchReservationById(
+      normalizedReservationId,
+    );
 
     if (reservation.status === targetStatus) {
       return {
@@ -2386,7 +2481,10 @@ export class V2FulfillmentService {
       );
     }
 
-    const quantity = this.normalizePositiveInteger(reservation.quantity, 'quantity');
+    const quantity = this.normalizePositiveInteger(
+      reservation.quantity,
+      'quantity',
+    );
     const inventoryLevel = await this.getInventoryLevelOrThrow(
       reservation.variant_id,
       reservation.location_id,
@@ -2467,7 +2565,11 @@ export class V2FulfillmentService {
       .maybeSingle();
 
     if (error) {
-      throw new ApiException('shipment 조회 실패', 500, 'SHIPMENT_FETCH_FAILED');
+      throw new ApiException(
+        'shipment 조회 실패',
+        500,
+        'SHIPMENT_FETCH_FAILED',
+      );
     }
     if (!data) {
       throw new ApiException(
@@ -2489,7 +2591,11 @@ export class V2FulfillmentService {
       .maybeSingle();
 
     if (error) {
-      throw new ApiException('shipment 조회 실패', 500, 'SHIPMENT_FETCH_FAILED');
+      throw new ApiException(
+        'shipment 조회 실패',
+        500,
+        'SHIPMENT_FETCH_FAILED',
+      );
     }
     return data || null;
   }
@@ -2518,7 +2624,9 @@ export class V2FulfillmentService {
     return data;
   }
 
-  private async markFulfillmentInProgress(fulfillmentId: string): Promise<void> {
+  private async markFulfillmentInProgress(
+    fulfillmentId: string,
+  ): Promise<void> {
     const fulfillment = await this.getFulfillmentByIdOrThrow(fulfillmentId);
     if (
       fulfillment.status !== 'REQUESTED' &&
@@ -2632,12 +2740,12 @@ export class V2FulfillmentService {
     }
   }
 
-  private async fetchFulfillmentGroupsByOrderId(orderId: string): Promise<any[]> {
+  private async fetchFulfillmentGroupsByOrderId(
+    orderId: string,
+  ): Promise<any[]> {
     const { data, error } = await this.supabase
       .from('v2_fulfillment_groups')
-      .select(
-        '*, v2_fulfillment_group_items(*)',
-      )
+      .select('*, v2_fulfillment_group_items(*)')
       .eq('order_id', orderId)
       .order('created_at', { ascending: true });
 
@@ -2651,7 +2759,9 @@ export class V2FulfillmentService {
     return data || [];
   }
 
-  private async fetchFulfillmentGroupItemsByGroupId(groupId: string): Promise<any[]> {
+  private async fetchFulfillmentGroupItemsByGroupId(
+    groupId: string,
+  ): Promise<any[]> {
     const { data, error } = await this.supabase
       .from('v2_fulfillment_group_items')
       .select('*')
@@ -2840,7 +2950,9 @@ export class V2FulfillmentService {
   private async fetchOrderForCutover(orderId: string): Promise<any> {
     const { data, error } = await this.supabase
       .from('v2_orders')
-      .select('id, order_no, sales_channel_id, order_status, payment_status, fulfillment_status')
+      .select(
+        'id, order_no, sales_channel_id, order_status, payment_status, fulfillment_status',
+      )
       .eq('id', orderId)
       .maybeSingle();
 
@@ -2891,9 +3003,9 @@ export class V2FulfillmentService {
   } {
     const defaultWriteEnabled =
       (process.env.NODE_ENV || '').toLowerCase() !== 'production';
-    const allowedChannels = this.readCsvEnv('V2_FULFILLMENT_ALLOWED_CHANNELS').map(
-      (channel) => channel.toUpperCase(),
-    );
+    const allowedChannels = this.readCsvEnv(
+      'V2_FULFILLMENT_ALLOWED_CHANNELS',
+    ).map((channel) => channel.toUpperCase());
     const allowedVariantIds = this.readCsvEnv(
       'V2_FULFILLMENT_ALLOWED_VARIANT_IDS',
     ).filter((value) => this.isUuid(value));
@@ -2938,7 +3050,9 @@ export class V2FulfillmentService {
     }
 
     if (policy.allowed_channels.length > 0) {
-      const orderChannel = this.normalizeOptionalText(input.order.sales_channel_id);
+      const orderChannel = this.normalizeOptionalText(
+        input.order.sales_channel_id,
+      );
       const normalizedOrderChannel = (orderChannel || '').toUpperCase();
       if (!policy.allowed_channels.includes(normalizedOrderChannel)) {
         reasons.push(
@@ -3174,7 +3288,9 @@ export class V2FulfillmentService {
 
     const { data, error } = await this.supabase
       .from('v2_stock_locations')
-      .select('id, code, name, location_type, priority, is_active, country_code, region_code')
+      .select(
+        'id, code, name, location_type, priority, is_active, country_code, region_code',
+      )
       .in('id', locationIds);
 
     if (error) {
@@ -3191,7 +3307,9 @@ export class V2FulfillmentService {
   private async getStockLocationOrThrow(locationId: string): Promise<any> {
     const { data, error } = await this.supabase
       .from('v2_stock_locations')
-      .select('id, code, name, location_type, priority, is_active, country_code, region_code')
+      .select(
+        'id, code, name, location_type, priority, is_active, country_code, region_code',
+      )
       .eq('id', locationId)
       .maybeSingle();
 
@@ -3249,7 +3367,10 @@ export class V2FulfillmentService {
     }
 
     if (fallbackRow?.id && this.isUuid(fallbackRow.id)) {
-      if (fallbackRow.is_active !== true || Number(fallbackRow.priority || 0) > 0) {
+      if (
+        fallbackRow.is_active !== true ||
+        Number(fallbackRow.priority || 0) > 0
+      ) {
         const { error: activateError } = await this.supabase
           .from('v2_stock_locations')
           .update({
@@ -3288,13 +3409,18 @@ export class V2FulfillmentService {
 
     if (createError) {
       if (createError.code === '23505') {
-        const { data: concurrentRow, error: concurrentError } = await this.supabase
-          .from('v2_stock_locations')
-          .select('id')
-          .eq('code', this.fallbackStockLocationCode)
-          .maybeSingle();
+        const { data: concurrentRow, error: concurrentError } =
+          await this.supabase
+            .from('v2_stock_locations')
+            .select('id')
+            .eq('code', this.fallbackStockLocationCode)
+            .maybeSingle();
 
-        if (concurrentError || !concurrentRow?.id || !this.isUuid(concurrentRow.id)) {
+        if (
+          concurrentError ||
+          !concurrentRow?.id ||
+          !this.isUuid(concurrentRow.id)
+        ) {
           throw new ApiException(
             '기본 stock location 조회 실패',
             500,
@@ -3493,7 +3619,11 @@ export class V2FulfillmentService {
       return null;
     }
     if (!this.isUuid(text)) {
-      throw new ApiException('UUID 형식이 올바르지 않습니다', 400, 'VALIDATION_ERROR');
+      throw new ApiException(
+        'UUID 형식이 올바르지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
     }
     return text;
   }
@@ -3577,7 +3707,10 @@ export class V2FulfillmentService {
   }
 
   private normalizeAccessType(value?: DigitalAccessType): DigitalAccessType {
-    if (!value || (value !== 'DOWNLOAD' && value !== 'STREAM' && value !== 'LICENSE')) {
+    if (
+      !value ||
+      (value !== 'DOWNLOAD' && value !== 'STREAM' && value !== 'LICENSE')
+    ) {
       throw new ApiException(
         'access_type은 DOWNLOAD/STREAM/LICENSE 중 하나여야 합니다',
         400,

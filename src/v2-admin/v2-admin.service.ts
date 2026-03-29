@@ -1444,7 +1444,9 @@ export class V2AdminService {
       );
     }
 
-    const activeRoles = (userRoles || []).filter((row) => row.role?.is_active);
+    const activeRoles = (userRoles || []).filter((row) =>
+      this.isRbacAssignmentActive(row),
+    );
     const roleIds = Array.from(
       new Set(activeRoles.map((row) => row.role_id as string).filter(Boolean)),
     );
@@ -1489,6 +1491,442 @@ export class V2AdminService {
         expires_at: row.expires_at,
       })),
       permissions,
+    };
+  }
+
+  async listRbacUsers(params: {
+    limit?: string;
+    search?: string;
+  }): Promise<any> {
+    const limit = this.normalizeLimit(params.limit);
+    const normalizedSearch = this.normalizeOptionalText(params.search);
+    let profiles: any[] = [];
+    let userIds: string[] = [];
+
+    if (normalizedSearch) {
+      const escaped = this.escapePostgrestLike(normalizedSearch);
+      const { data, error } = await this.supabase
+        .from('profiles')
+        .select('id, email, name')
+        .or(`email.ilike.%${escaped}%,name.ilike.%${escaped}%`)
+        .order('email', { ascending: true })
+        .limit(limit);
+
+      if (error) {
+        throw new ApiException(
+          'RBAC 사용자 검색 실패',
+          500,
+          'V2_ADMIN_RBAC_USERS_SEARCH_FAILED',
+        );
+      }
+
+      profiles = data || [];
+      userIds = Array.from(
+        new Set(
+          profiles
+            .map((row) => this.normalizeOptionalUuid(row?.id as string))
+            .filter(Boolean),
+        ),
+      ) as string[];
+    } else {
+      const { data: activeAssignments, error: assignmentsError } =
+        await this.supabase
+          .from('v2_admin_user_roles')
+          .select('user_id')
+          .eq('status', 'ACTIVE')
+          .order('assigned_at', { ascending: false })
+          .limit(Math.max(limit * 10, 100));
+
+      if (assignmentsError) {
+        throw new ApiException(
+          'RBAC 사용자 목록 조회 실패',
+          500,
+          'V2_ADMIN_RBAC_USERS_FETCH_FAILED',
+        );
+      }
+
+      userIds = Array.from(
+        new Set(
+          (activeAssignments || [])
+            .map((row) => this.normalizeOptionalUuid(row.user_id as string))
+            .filter(Boolean),
+        ),
+      ) as string[];
+
+      if (userIds.length > 0) {
+        const { data, error } = await this.supabase
+          .from('profiles')
+          .select('id, email, name')
+          .in('id', userIds)
+          .limit(Math.max(limit * 10, 100));
+
+        if (error) {
+          throw new ApiException(
+            'RBAC 사용자 프로필 조회 실패',
+            500,
+            'V2_ADMIN_RBAC_USERS_PROFILE_FETCH_FAILED',
+          );
+        }
+
+        profiles = data || [];
+      }
+    }
+
+    if (userIds.length === 0) {
+      return {
+        items: [],
+        limit,
+        search: normalizedSearch,
+      };
+    }
+
+    const { data: assignments, error: assignmentsError } = await this.supabase
+      .from('v2_admin_user_roles')
+      .select('*, role:v2_admin_roles(id, code, name, is_active)')
+      .in('user_id', userIds)
+      .eq('status', 'ACTIVE')
+      .order('assigned_at', { ascending: false });
+
+    if (assignmentsError) {
+      throw new ApiException(
+        'RBAC 권한 목록 조회 실패',
+        500,
+        'V2_ADMIN_RBAC_ASSIGNMENTS_FETCH_FAILED',
+      );
+    }
+
+    const profileByUserId = new Map<string, any>();
+    for (const profile of profiles) {
+      const profileId = this.normalizeOptionalUuid(profile?.id as string);
+      if (!profileId) {
+        continue;
+      }
+      profileByUserId.set(profileId, profile);
+    }
+
+    const usersById = new Map<
+      string,
+      {
+        user_id: string;
+        email: string | null;
+        name: string | null;
+        active_roles: any[];
+        latest_assigned_at: string | null;
+      }
+    >();
+
+    const ensureUser = (userId: string) => {
+      const existing = usersById.get(userId);
+      if (existing) {
+        return existing;
+      }
+
+      const profile = profileByUserId.get(userId);
+      const created = {
+        user_id: userId,
+        email: this.normalizeOptionalText(profile?.email as string) || null,
+        name: this.normalizeOptionalText(profile?.name as string) || null,
+        active_roles: [] as any[],
+        latest_assigned_at: null as string | null,
+      };
+      usersById.set(userId, created);
+      return created;
+    };
+
+    for (const userId of userIds) {
+      ensureUser(userId);
+    }
+
+    for (const row of assignments || []) {
+      if (!this.isRbacAssignmentActive(row)) {
+        continue;
+      }
+
+      const userId = this.normalizeOptionalUuid(row.user_id as string);
+      if (!userId) {
+        continue;
+      }
+
+      const user = ensureUser(userId);
+      const mappedRole = this.mapRbacAssignmentRow(row);
+      user.active_roles.push(mappedRole);
+      if (
+        mappedRole.assigned_at &&
+        (!user.latest_assigned_at ||
+          Date.parse(mappedRole.assigned_at) >
+            Date.parse(user.latest_assigned_at))
+      ) {
+        user.latest_assigned_at = mappedRole.assigned_at;
+      }
+    }
+
+    let items = Array.from(usersById.values());
+    if (!normalizedSearch) {
+      items = items.filter((item) => item.active_roles.length > 0);
+    }
+
+    items.sort((a, b) => {
+      const aTime = a.latest_assigned_at ? Date.parse(a.latest_assigned_at) : 0;
+      const bTime = b.latest_assigned_at ? Date.parse(b.latest_assigned_at) : 0;
+      if (aTime !== bTime) {
+        return bTime - aTime;
+      }
+      return (a.email || '').localeCompare(b.email || '');
+    });
+
+    return {
+      items: items.slice(0, limit),
+      limit,
+      search: normalizedSearch,
+    };
+  }
+
+  async assignRbacRole(input: {
+    actorId?: string | null;
+    userId?: string;
+    userEmail?: string;
+    roleCode?: string;
+    scopeType?: string;
+    scopeId?: string | null;
+    expiresAt?: string | null;
+    assignedReason?: string | null;
+    metadata?: Record<string, unknown> | null;
+  }): Promise<any> {
+    const normalizedRoleCode = this.normalizeRequiredText(
+      input.roleCode,
+      'role_code가 필요합니다',
+    ).toUpperCase();
+    const normalizedScopeType =
+      this.normalizeOptionalText(input.scopeType)?.toUpperCase() || 'GLOBAL';
+    const normalizedScopeId = this.normalizeOptionalUuid(input.scopeId);
+    const normalizedExpiresAt = this.normalizeOptionalIsoDateTime(
+      input.expiresAt,
+    );
+    const normalizedReason = this.normalizeOptionalText(input.assignedReason);
+    const actorId = this.normalizeOptionalUuid(input.actorId || null);
+    const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
+
+    if (normalizedScopeType === 'GLOBAL' && normalizedScopeId) {
+      throw new ApiException(
+        'GLOBAL scope에는 scope_id를 지정할 수 없습니다',
+        400,
+        'V2_ADMIN_RBAC_SCOPE_INVALID',
+      );
+    }
+
+    if (normalizedScopeType !== 'GLOBAL' && !normalizedScopeId) {
+      throw new ApiException(
+        'GLOBAL이 아닌 scope에는 scope_id가 필요합니다',
+        400,
+        'V2_ADMIN_RBAC_SCOPE_ID_REQUIRED',
+      );
+    }
+
+    let targetUserId = this.normalizeOptionalUuid(input.userId);
+    if (!targetUserId) {
+      const normalizedEmail = this.normalizeRequiredText(
+        input.userEmail,
+        'user_id 또는 user_email이 필요합니다',
+      ).toLowerCase();
+      const { data: profile, error: profileError } = await this.supabase
+        .from('profiles')
+        .select('id')
+        .ilike('email', normalizedEmail)
+        .maybeSingle();
+
+      if (profileError) {
+        throw new ApiException(
+          '대상 사용자 조회 실패',
+          500,
+          'V2_ADMIN_RBAC_TARGET_USER_FETCH_FAILED',
+        );
+      }
+      if (!profile?.id) {
+        throw new ApiException(
+          '대상 사용자를 찾을 수 없습니다',
+          404,
+          'V2_ADMIN_RBAC_TARGET_USER_NOT_FOUND',
+        );
+      }
+      targetUserId = this.normalizeOptionalUuid(profile.id as string);
+    }
+
+    if (!targetUserId) {
+      throw new ApiException(
+        '대상 사용자 ID가 유효하지 않습니다',
+        400,
+        'V2_ADMIN_RBAC_TARGET_USER_INVALID',
+      );
+    }
+
+    const { data: role, error: roleError } = await this.supabase
+      .from('v2_admin_roles')
+      .select('id, code, name, is_active')
+      .eq('code', normalizedRoleCode)
+      .maybeSingle();
+
+    if (roleError) {
+      throw new ApiException(
+        'role 조회 실패',
+        500,
+        'V2_ADMIN_RBAC_ROLE_FETCH_FAILED',
+      );
+    }
+
+    if (!role?.id || !role?.is_active) {
+      throw new ApiException(
+        '활성화된 role을 찾을 수 없습니다',
+        404,
+        'V2_ADMIN_RBAC_ROLE_NOT_FOUND',
+      );
+    }
+
+    let existingQuery = this.supabase
+      .from('v2_admin_user_roles')
+      .select('*, role:v2_admin_roles(id, code, name, is_active)')
+      .eq('user_id', targetUserId)
+      .eq('role_id', role.id)
+      .eq('scope_type', normalizedScopeType)
+      .eq('status', 'ACTIVE');
+
+    if (normalizedScopeId) {
+      existingQuery = existingQuery.eq('scope_id', normalizedScopeId);
+    } else {
+      existingQuery = existingQuery.is('scope_id', null);
+    }
+
+    const { data: existing, error: existingError } =
+      await existingQuery.maybeSingle();
+    if (existingError) {
+      throw new ApiException(
+        '기존 RBAC 권한 조회 실패',
+        500,
+        'V2_ADMIN_RBAC_ASSIGNMENT_EXISTS_FETCH_FAILED',
+      );
+    }
+    if (existing && this.isRbacAssignmentActive(existing)) {
+      return {
+        user_id: targetUserId,
+        assignment: this.mapRbacAssignmentRow(existing),
+        created: false,
+      };
+    }
+
+    const { data: inserted, error: insertError } = await this.supabase
+      .from('v2_admin_user_roles')
+      .insert({
+        user_id: targetUserId,
+        role_id: role.id,
+        scope_type: normalizedScopeType,
+        scope_id: normalizedScopeId,
+        status: 'ACTIVE',
+        expires_at: normalizedExpiresAt,
+        assigned_by: actorId,
+        assigned_reason: normalizedReason,
+        metadata,
+      })
+      .select('*, role:v2_admin_roles(id, code, name, is_active)')
+      .maybeSingle();
+
+    if (insertError || !inserted) {
+      throw new ApiException(
+        'RBAC 권한 부여 실패',
+        500,
+        'V2_ADMIN_RBAC_ASSIGN_FAILED',
+      );
+    }
+
+    return {
+      user_id: targetUserId,
+      assignment: this.mapRbacAssignmentRow(inserted),
+      created: true,
+    };
+  }
+
+  async revokeRbacRoleAssignment(input: {
+    assignmentId?: string;
+    actorId?: string | null;
+    reason?: string | null;
+    metadata?: Record<string, unknown> | null;
+  }): Promise<any> {
+    const assignmentId = this.normalizeRequiredText(
+      input.assignmentId,
+      'assignment_id가 필요합니다',
+    );
+    const normalizedAssignmentId = this.normalizeOptionalUuid(assignmentId);
+    if (!normalizedAssignmentId) {
+      throw new ApiException(
+        'assignment_id가 유효하지 않습니다',
+        400,
+        'V2_ADMIN_RBAC_ASSIGNMENT_INVALID',
+      );
+    }
+
+    const { data: existing, error: fetchError } = await this.supabase
+      .from('v2_admin_user_roles')
+      .select('*, role:v2_admin_roles(id, code, name, is_active)')
+      .eq('id', normalizedAssignmentId)
+      .maybeSingle();
+
+    if (fetchError) {
+      throw new ApiException(
+        'RBAC 권한 조회 실패',
+        500,
+        'V2_ADMIN_RBAC_ASSIGNMENT_FETCH_FAILED',
+      );
+    }
+
+    if (!existing) {
+      throw new ApiException(
+        '해당 권한 부여 이력을 찾을 수 없습니다',
+        404,
+        'V2_ADMIN_RBAC_ASSIGNMENT_NOT_FOUND',
+      );
+    }
+
+    if (existing.status !== 'ACTIVE') {
+      return {
+        user_id: existing.user_id,
+        assignment: this.mapRbacAssignmentRow(existing),
+        revoked: false,
+      };
+    }
+
+    const reason = this.normalizeOptionalText(input.reason);
+    const actorId = this.normalizeOptionalUuid(input.actorId || null);
+    const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
+    const mergedMetadata = {
+      ...(typeof existing.metadata === 'object' && existing.metadata
+        ? existing.metadata
+        : {}),
+      ...metadata,
+      revoked_reason: reason,
+      revoked_by: actorId,
+      revoked_at: new Date().toISOString(),
+    };
+
+    const { data: updated, error: updateError } = await this.supabase
+      .from('v2_admin_user_roles')
+      .update({
+        status: 'REVOKED',
+        metadata: mergedMetadata,
+      })
+      .eq('id', normalizedAssignmentId)
+      .select('*, role:v2_admin_roles(id, code, name, is_active)')
+      .maybeSingle();
+
+    if (updateError || !updated) {
+      throw new ApiException(
+        'RBAC 권한 회수 실패',
+        500,
+        'V2_ADMIN_RBAC_REVOKE_FAILED',
+      );
+    }
+
+    return {
+      user_id: updated.user_id,
+      assignment: this.mapRbacAssignmentRow(updated),
+      revoked: true,
     };
   }
 
@@ -4270,6 +4708,40 @@ export class V2AdminService {
     }
     const normalized = value.trim();
     return normalized.length > 0 ? normalized : null;
+  }
+
+  private isRbacAssignmentActive(row: any): boolean {
+    if (!row?.role?.is_active) {
+      return false;
+    }
+    if (row.status && row.status !== 'ACTIVE') {
+      return false;
+    }
+    if (!row.expires_at) {
+      return true;
+    }
+    const expiresAt = Date.parse(row.expires_at as string);
+    return Number.isNaN(expiresAt) || expiresAt > Date.now();
+  }
+
+  private mapRbacAssignmentRow(row: any): any {
+    return {
+      id: row.id,
+      role_id: row.role_id,
+      role_code: row.role?.code || null,
+      role_name: row.role?.name || null,
+      scope_type: row.scope_type,
+      scope_id: row.scope_id,
+      status: row.status,
+      assigned_at: row.assigned_at,
+      expires_at: row.expires_at,
+      assigned_reason: row.assigned_reason || null,
+      assigned_by: row.assigned_by || null,
+    };
+  }
+
+  private escapePostgrestLike(value: string): string {
+    return value.replace(/[%_]/g, '\\$&');
   }
 
   private isUuid(value: string): boolean {
