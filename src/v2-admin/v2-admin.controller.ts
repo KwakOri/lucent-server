@@ -62,6 +62,7 @@ interface BulkOrderActionBody {
 interface OrderLinearTransitionBody {
   order_ids?: string[];
   target_stage?: string;
+  scope?: string;
   reason?: string | null;
   request_id?: string | null;
   metadata?: Record<string, unknown> | null;
@@ -1117,6 +1118,7 @@ export class V2AdminController {
     const result = await this.v2AdminOrderTransitionService.preview({
       orderIds: body.order_ids,
       targetStage: body.target_stage,
+      scope: body.scope,
       reason: body.reason,
       requestId: body.request_id,
       metadata: body.metadata,
@@ -1140,6 +1142,7 @@ export class V2AdminController {
     const result = await this.v2AdminOrderTransitionService.execute({
       orderIds: body.order_ids,
       targetStage: body.target_stage,
+      scope: body.scope,
       reason: body.reason,
       requestId: body.request_id,
       metadata: body.metadata,

@@ -17,6 +17,8 @@ type V2OrderLinearStage =
   | 'IN_TRANSIT'
   | 'DELIVERED';
 
+type V2OrderTransitionScope = 'FULL' | 'ORDER_QUEUE';
+
 type V2OrderTransitionActionKey =
   | 'ORDER_PAYMENT_MARK_AUTHORIZED'
   | 'ORDER_PAYMENT_MARK_CAPTURED'
@@ -97,6 +99,10 @@ const PAYMENT_CAPTURED_STATUSES = new Set([
   'REFUNDED',
 ]);
 const MAX_ACTION_REQUEST_ID_LENGTH = 120;
+const ORDER_QUEUE_ALLOWED_STAGES = new Set<V2OrderLinearStage>([
+  'PAYMENT_PENDING',
+  'PAYMENT_CONFIRMED',
+]);
 
 @Injectable()
 export class V2AdminOrderTransitionService {
@@ -115,6 +121,7 @@ export class V2AdminOrderTransitionService {
   async preview(input: {
     orderIds?: string[];
     targetStage?: string;
+    scope?: string;
     reason?: string | null;
     requestId?: string | null;
     metadata?: Record<string, unknown> | null;
@@ -129,6 +136,7 @@ export class V2AdminOrderTransitionService {
   async execute(input: {
     orderIds?: string[];
     targetStage?: string;
+    scope?: string;
     reason?: string | null;
     requestId?: string | null;
     metadata?: Record<string, unknown> | null;
@@ -144,12 +152,14 @@ export class V2AdminOrderTransitionService {
     mode: 'PREVIEW' | 'EXECUTE';
     orderIds?: string[];
     targetStage?: string;
+    scope?: string;
     reason?: string | null;
     requestId?: string | null;
     metadata?: Record<string, unknown> | null;
     actor?: V2AdminActionActor;
   }): Promise<any> {
     const targetStage = this.normalizeTargetStage(input.targetStage);
+    const scope = this.normalizeTransitionScope(input.scope);
     const orderIds = this.normalizeOrderIds(input.orderIds);
     const reason = this.normalizeOptionalText(input.reason);
     const requestId = this.normalizeOptionalText(input.requestId);
@@ -191,6 +201,7 @@ export class V2AdminOrderTransitionService {
         shipments,
         entitlements,
         targetStage,
+        scope,
         bootstrapError: shipmentBootstrapErrors.get(orderId) || null,
       });
     });
@@ -299,6 +310,7 @@ export class V2AdminOrderTransitionService {
     shipments: ShipmentRow[];
     entitlements: EntitlementRow[];
     targetStage: V2OrderLinearStage;
+    scope: V2OrderTransitionScope;
     bootstrapError?: string | null;
   }): OrderLinearTransitionRow {
     if (!input.order) {
@@ -350,12 +362,43 @@ export class V2AdminOrderTransitionService {
     if (input.bootstrapError) {
       blockedReasons.push(input.bootstrapError);
     }
-    const actions: OrderLinearTransitionAction[] = [];
-    let sequence = 1;
-
     const currentStageIndex = LINEAR_STAGE_ORDER.indexOf(currentStage);
     const targetStageIndex = LINEAR_STAGE_ORDER.indexOf(input.targetStage);
     const isBackwardTransition = targetStageIndex < currentStageIndex;
+
+    if (
+      input.scope === 'ORDER_QUEUE' &&
+      !ORDER_QUEUE_ALLOWED_STAGES.has(currentStage)
+    ) {
+      blockedReasons.push(
+        '주문 관리 탭에서는 입금 대기/입금 확인 단계 주문만 전환할 수 있습니다.',
+      );
+    }
+
+    if (
+      input.scope === 'ORDER_QUEUE' &&
+      !ORDER_QUEUE_ALLOWED_STAGES.has(input.targetStage)
+    ) {
+      blockedReasons.push(
+        '주문 관리 탭에서는 입금 대기/입금 확인 단계로만 전환할 수 있습니다.',
+      );
+    }
+
+    if (
+      input.scope === 'ORDER_QUEUE' &&
+      currentStageIndex >= 0 &&
+      targetStageIndex >= 0 &&
+      Math.abs(targetStageIndex - currentStageIndex) !== 1
+    ) {
+      blockedReasons.push(
+        `주문 관리 탭에서는 한 단계씩만 전환할 수 있습니다. (현재: ${this.linearStageLabel(
+          currentStage,
+        )} → 목표: ${this.linearStageLabel(input.targetStage)})`,
+      );
+    }
+
+    const actions: OrderLinearTransitionAction[] = [];
+    let sequence = 1;
 
     const paymentStatus = String(statuses.payment_status || '').toUpperCase();
     const paymentNeedsAuthorize =
@@ -1731,6 +1774,21 @@ export class V2AdminOrderTransitionService {
       );
     }
     return normalized;
+  }
+
+  private normalizeTransitionScope(raw?: string): V2OrderTransitionScope {
+    const normalized = this.normalizeOptionalText(raw)?.toUpperCase();
+    if (!normalized || normalized === 'FULL') {
+      return 'FULL';
+    }
+    if (normalized === 'ORDER_QUEUE') {
+      return 'ORDER_QUEUE';
+    }
+    throw new ApiException(
+      `지원하지 않는 scope 입니다: ${normalized}`,
+      400,
+      'V2_ADMIN_ORDER_LINEAR_SCOPE_INVALID',
+    );
   }
 
   private normalizeOrderIds(raw?: string[]): string[] {
