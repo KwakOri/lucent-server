@@ -12,14 +12,6 @@ type QueueLinearStage =
   | 'IN_TRANSIT'
   | 'DELIVERED';
 
-type ProductionBatchStatus = 'DRAFT' | 'ACTIVE' | 'COMPLETED' | 'CANCELED';
-type ShippingBatchStatus =
-  | 'DRAFT'
-  | 'ACTIVE'
-  | 'DISPATCHED'
-  | 'COMPLETED'
-  | 'CANCELED';
-
 interface QueueRow {
   order_id: string;
   order_no: string;
@@ -57,6 +49,9 @@ interface BatchTransitionOrderStatus {
   status: 'SUCCEEDED' | 'FAILED' | 'SKIPPED';
   errorMessage: string | null;
 }
+
+const BATCH_EXCLUDED_ORDER_MESSAGE = '배치 제외 주문입니다.';
+const PAYMENT_EXCLUDED_STATUSES = new Set(['CANCELED', 'REFUNDED']);
 
 @Injectable()
 export class V2AdminBatchService {
@@ -1663,13 +1658,154 @@ export class V2AdminBatchService {
     return data;
   }
 
+  private async syncProductionBatchOrderExclusions(
+    batchId: string,
+  ): Promise<void> {
+    await this.syncBatchOrderExclusions({
+      tableName: 'v2_admin_production_batch_orders',
+      batchId,
+    });
+  }
+
+  private async syncShippingBatchOrderExclusions(
+    batchId: string,
+  ): Promise<void> {
+    await this.syncBatchOrderExclusions({
+      tableName: 'v2_admin_shipping_batch_orders',
+      batchId,
+    });
+  }
+
+  private async syncBatchOrderExclusions(input: {
+    tableName:
+      | 'v2_admin_production_batch_orders'
+      | 'v2_admin_shipping_batch_orders';
+    batchId: string;
+  }): Promise<void> {
+    const { data: batchOrderRows, error: batchOrderError } = await this.supabase
+      .from(input.tableName)
+      .select('id, order_id, is_excluded')
+      .eq('batch_id', input.batchId);
+
+    if (batchOrderError) {
+      throw new ApiException(
+        '배치 제외 주문 동기화 조회 실패',
+        500,
+        'V2_ADMIN_BATCH_EXCLUDED_SYNC_FETCH_FAILED',
+      );
+    }
+
+    const activeRows = (batchOrderRows || [])
+      .map((row: any) => ({
+        id: this.normalizeOptionalUuid(row?.id),
+        orderId: this.normalizeOptionalUuid(row?.order_id),
+        isExcluded: row?.is_excluded === true,
+      }))
+      .filter(
+        (row): row is { id: string; orderId: string; isExcluded: boolean } =>
+          Boolean(row.id) && Boolean(row.orderId),
+      )
+      .filter((row) => row.isExcluded === false);
+
+    if (activeRows.length === 0) {
+      return;
+    }
+
+    const orderIds = Array.from(new Set(activeRows.map((row) => row.orderId)));
+    const { data: orderRows, error: orderFetchError } = await this.supabase
+      .from('v2_orders')
+      .select('id, order_status, payment_status, fulfillment_status')
+      .in('id', orderIds);
+
+    if (orderFetchError) {
+      throw new ApiException(
+        '배치 제외 주문 상태 조회 실패',
+        500,
+        'V2_ADMIN_BATCH_EXCLUDED_ORDER_FETCH_FAILED',
+      );
+    }
+
+    const orderById = new Map<string, any>();
+    for (const order of orderRows || []) {
+      const orderId = this.normalizeOptionalUuid(order?.id);
+      if (orderId) {
+        orderById.set(orderId, order);
+      }
+    }
+
+    const now = new Date().toISOString();
+    for (const row of activeRows) {
+      const order = orderById.get(row.orderId);
+      if (!order || !this.shouldExcludeOrderFromBatch(order)) {
+        continue;
+      }
+
+      const orderStatus =
+        this.normalizeOptionalText(order?.order_status)?.toUpperCase() || '-';
+      const paymentStatus =
+        this.normalizeOptionalText(order?.payment_status)?.toUpperCase() || '-';
+      const fulfillmentStatus =
+        this.normalizeOptionalText(order?.fulfillment_status)?.toUpperCase() ||
+        '-';
+
+      const { error: updateError } = await this.supabase
+        .from(input.tableName)
+        .update({
+          is_excluded: true,
+          excluded_reason: `배치 실행 제외: order=${orderStatus}, payment=${paymentStatus}, fulfillment=${fulfillmentStatus}`,
+          excluded_at: now,
+          excluded_by: {
+            source: 'ORDER_STATUS_SYNC',
+            order_status: orderStatus,
+            payment_status: paymentStatus,
+            fulfillment_status: fulfillmentStatus,
+            synced_at: now,
+          },
+        })
+        .eq('id', row.id)
+        .eq('is_excluded', false);
+
+      if (updateError) {
+        throw new ApiException(
+          '배치 제외 주문 동기화 업데이트 실패',
+          500,
+          'V2_ADMIN_BATCH_EXCLUDED_SYNC_UPDATE_FAILED',
+        );
+      }
+    }
+  }
+
+  private shouldExcludeOrderFromBatch(order: any): boolean {
+    const orderStatus =
+      this.normalizeOptionalText(order?.order_status)?.toUpperCase() || '';
+    const paymentStatus =
+      this.normalizeOptionalText(order?.payment_status)?.toUpperCase() || '';
+    const fulfillmentStatus =
+      this.normalizeOptionalText(order?.fulfillment_status)?.toUpperCase() ||
+      '';
+
+    if (orderStatus === 'CANCELED') {
+      return true;
+    }
+    if (PAYMENT_EXCLUDED_STATUSES.has(paymentStatus)) {
+      return true;
+    }
+    if (fulfillmentStatus === 'CANCELED') {
+      return true;
+    }
+    return false;
+  }
+
   private async fetchProductionBatchOrderIds(
     batchId: string,
   ): Promise<string[]> {
+    await this.syncProductionBatchOrderExclusions(batchId);
+
     const { data, error } = await this.supabase
       .from('v2_admin_production_batch_orders')
       .select('order_id')
       .eq('batch_id', batchId)
+      .eq('is_excluded', false)
       .order('created_at', { ascending: true });
 
     if (error) {
@@ -1686,10 +1822,13 @@ export class V2AdminBatchService {
   }
 
   private async fetchShippingBatchOrderIds(batchId: string): Promise<string[]> {
+    await this.syncShippingBatchOrderExclusions(batchId);
+
     const { data, error } = await this.supabase
       .from('v2_admin_shipping_batch_orders')
       .select('order_id')
       .eq('batch_id', batchId)
+      .eq('is_excluded', false)
       .order('created_at', { ascending: true });
 
     if (error) {
@@ -1717,7 +1856,7 @@ export class V2AdminBatchService {
 
     const { data, error } = await this.supabase
       .from('v2_admin_production_batch_orders')
-      .select('id, order_id')
+      .select('id, order_id, is_excluded, excluded_reason, error_message')
       .eq('batch_id', batchId);
 
     if (error) {
@@ -1731,9 +1870,13 @@ export class V2AdminBatchService {
     for (const row of data || []) {
       const orderId = this.normalizeOptionalUuid(row.order_id);
       const status = orderId ? statusMap.get(orderId) : null;
+      const isExcluded = row?.is_excluded === true;
+      const excludedReason = this.normalizeOptionalText(row?.excluded_reason);
       const updatePayload: Record<string, unknown> = {
-        [fieldName]: status?.status || 'SKIPPED',
-        error_message: status?.errorMessage || null,
+        [fieldName]: isExcluded ? 'SKIPPED' : status?.status || 'SKIPPED',
+        error_message: isExcluded
+          ? excludedReason || BATCH_EXCLUDED_ORDER_MESSAGE
+          : status?.errorMessage || null,
       };
 
       const { error: updateError } = await this.supabase
@@ -1763,7 +1906,7 @@ export class V2AdminBatchService {
 
     const { data, error } = await this.supabase
       .from('v2_admin_shipping_batch_orders')
-      .select('id, order_id')
+      .select('id, order_id, is_excluded, excluded_reason, error_message')
       .eq('batch_id', batchId);
 
     if (error) {
@@ -1777,9 +1920,13 @@ export class V2AdminBatchService {
     for (const row of data || []) {
       const orderId = this.normalizeOptionalUuid(row.order_id);
       const status = orderId ? statusMap.get(orderId) : null;
+      const isExcluded = row?.is_excluded === true;
+      const excludedReason = this.normalizeOptionalText(row?.excluded_reason);
       const updatePayload: Record<string, unknown> = {
-        [fieldName]: status?.status || 'SKIPPED',
-        error_message: status?.errorMessage || null,
+        [fieldName]: isExcluded ? 'SKIPPED' : status?.status || 'SKIPPED',
+        error_message: isExcluded
+          ? excludedReason || BATCH_EXCLUDED_ORDER_MESSAGE
+          : status?.errorMessage || null,
       };
 
       const { error: updateError } = await this.supabase
