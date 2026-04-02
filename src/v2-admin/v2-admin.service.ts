@@ -99,7 +99,7 @@ export class V2AdminService {
               required_permission_code: 'ORDER_REFUND_APPROVE',
               requires_approval: true,
               approval_role_code: 'FINANCE_MANAGER',
-              endpoint: 'POST /api/v2/checkout/orders/:orderId/refund',
+              endpoint: 'POST /api/v2/admin/ops/orders/:orderId/refund',
               transition_key: 'ORDER_REFUND',
             },
             {
