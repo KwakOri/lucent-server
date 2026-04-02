@@ -632,16 +632,20 @@ export class V2AdminBatchService {
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
 
     const orderIds = await this.fetchProductionBatchOrderIds(batch.id);
-    const transitionResult = await this.v2AdminOrderTransitionService.execute({
-      orderIds,
-      targetStage: 'PRODUCTION',
-      reason,
-      requestId,
-      metadata,
-      actor,
-    });
-
-    const orderStatusMap = this.buildOrderTransitionStatusMap(transitionResult);
+    let orderStatusMap = new Map<string, BatchTransitionOrderStatus>();
+    if (orderIds.length > 0) {
+      const transitionResult = await this.v2AdminOrderTransitionService.execute(
+        {
+          orderIds,
+          targetStage: 'PRODUCTION',
+          reason,
+          requestId,
+          metadata,
+          actor,
+        },
+      );
+      orderStatusMap = this.buildOrderTransitionStatusMap(transitionResult);
+    }
     await this.updateProductionBatchOrderTransitionStatus(
       batch.id,
       'activate',
@@ -696,16 +700,20 @@ export class V2AdminBatchService {
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
 
     const orderIds = await this.fetchProductionBatchOrderIds(batch.id);
-    const transitionResult = await this.v2AdminOrderTransitionService.execute({
-      orderIds,
-      targetStage: 'READY_TO_SHIP',
-      reason,
-      requestId,
-      metadata,
-      actor,
-    });
-
-    const orderStatusMap = this.buildOrderTransitionStatusMap(transitionResult);
+    let orderStatusMap = new Map<string, BatchTransitionOrderStatus>();
+    if (orderIds.length > 0) {
+      const transitionResult = await this.v2AdminOrderTransitionService.execute(
+        {
+          orderIds,
+          targetStage: 'READY_TO_SHIP',
+          reason,
+          requestId,
+          metadata,
+          actor,
+        },
+      );
+      orderStatusMap = this.buildOrderTransitionStatusMap(transitionResult);
+    }
     await this.updateProductionBatchOrderTransitionStatus(
       batch.id,
       'complete',
@@ -1381,16 +1389,20 @@ export class V2AdminBatchService {
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
 
     const orderIds = await this.fetchShippingBatchOrderIds(batch.id);
-    const transitionResult = await this.v2AdminOrderTransitionService.execute({
-      orderIds,
-      targetStage: 'IN_TRANSIT',
-      reason,
-      requestId,
-      metadata,
-      actor,
-    });
-
-    const orderStatusMap = this.buildOrderTransitionStatusMap(transitionResult);
+    let orderStatusMap = new Map<string, BatchTransitionOrderStatus>();
+    if (orderIds.length > 0) {
+      const transitionResult = await this.v2AdminOrderTransitionService.execute(
+        {
+          orderIds,
+          targetStage: 'IN_TRANSIT',
+          reason,
+          requestId,
+          metadata,
+          actor,
+        },
+      );
+      orderStatusMap = this.buildOrderTransitionStatusMap(transitionResult);
+    }
     await this.updateShippingBatchOrderTransitionStatus(
       batch.id,
       'dispatch',
@@ -1464,16 +1476,20 @@ export class V2AdminBatchService {
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
 
     const orderIds = await this.fetchShippingBatchOrderIds(batch.id);
-    const transitionResult = await this.v2AdminOrderTransitionService.execute({
-      orderIds,
-      targetStage: 'DELIVERED',
-      reason,
-      requestId,
-      metadata,
-      actor,
-    });
-
-    const orderStatusMap = this.buildOrderTransitionStatusMap(transitionResult);
+    let orderStatusMap = new Map<string, BatchTransitionOrderStatus>();
+    if (orderIds.length > 0) {
+      const transitionResult = await this.v2AdminOrderTransitionService.execute(
+        {
+          orderIds,
+          targetStage: 'DELIVERED',
+          reason,
+          requestId,
+          metadata,
+          actor,
+        },
+      );
+      orderStatusMap = this.buildOrderTransitionStatusMap(transitionResult);
+    }
     await this.updateShippingBatchOrderTransitionStatus(
       batch.id,
       'complete',
