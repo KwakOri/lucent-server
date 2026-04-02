@@ -33,6 +33,13 @@ type V2AdjustmentSource =
   | 'MANUAL'
   | 'ETC';
 
+const CANCEL_BLOCKED_PAYMENT_STATUSES = new Set<V2PaymentStatus>([
+  'AUTHORIZED',
+  'CAPTURED',
+  'PARTIALLY_REFUNDED',
+  'REFUNDED',
+]);
+
 interface AddV2CartItemInput {
   variant_id?: string;
   quantity?: number;
@@ -1128,10 +1135,27 @@ export class V2CheckoutService {
       return this.fetchOrderAggregate(orderId);
     }
 
+    const currentOrderStatus = this.normalizeOptionalText(
+      order.order_status as string | null | undefined,
+    );
+    const currentPaymentStatus = this.normalizeOptionalText(
+      order.payment_status as string | null | undefined,
+    ) as V2PaymentStatus | null;
+    if (
+      currentOrderStatus !== 'PENDING' ||
+      (currentPaymentStatus &&
+        CANCEL_BLOCKED_PAYMENT_STATUSES.has(currentPaymentStatus))
+    ) {
+      throw new ApiException(
+        '입금 확인 이후 주문은 취소할 수 없습니다. 환불을 진행해 주세요.',
+        409,
+        'V2_ORDER_CANCEL_NOT_ALLOWED_AFTER_PAYMENT_CONFIRMED',
+      );
+    }
+
     const now = new Date().toISOString();
     const cancelReason =
       this.normalizeOptionalText(input.reason) || 'USER_REQUESTED';
-    const currentPaymentStatus = order.payment_status as V2PaymentStatus;
     const nextPaymentStatus: V2PaymentStatus =
       currentPaymentStatus === 'REFUNDED' ? 'REFUNDED' : 'CANCELED';
 
