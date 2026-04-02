@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ApiException } from '../common/errors/api.exception';
 import { createPresignedDownloadUrlFromR2 } from '../images/r2.util';
 import { CommerceNotificationsService } from '../notifications/commerce-notifications.service';
@@ -161,6 +161,8 @@ const ISLAND_POSTCODE_RANGES: ReadonlyArray<readonly [number, number]> = [
 
 @Injectable()
 export class V2CheckoutService {
+  private readonly logger = new Logger(V2CheckoutService.name);
+
   private get supabase(): any {
     return getSupabaseClient() as any;
   }
@@ -1550,6 +1552,17 @@ export class V2CheckoutService {
 
     const updatedOrder = await this.fetchOrderAggregate(orderId);
 
+    if (callbackStatus === 'AUTHORIZED' || callbackStatus === 'CAPTURED') {
+      await this.ensureDigitalEntitlementsOnPaymentConfirmation({
+        orderId,
+        orderNo:
+          this.normalizeOptionalText(updatedOrder?.order_no) ||
+          this.normalizeOptionalText(order.order_no),
+        callbackStatus,
+        externalReference,
+      });
+    }
+
     if (callbackStatus === 'CANCELED' || callbackStatus === 'REFUNDED') {
       await this.releaseActiveReservationsByOrderId(
         orderId,
@@ -1567,6 +1580,32 @@ export class V2CheckoutService {
     }
 
     return updatedOrder;
+  }
+
+  private async ensureDigitalEntitlementsOnPaymentConfirmation(input: {
+    orderId: string;
+    orderNo: string | null;
+    callbackStatus: 'AUTHORIZED' | 'CAPTURED';
+    externalReference: string;
+  }): Promise<void> {
+    try {
+      await this.v2FulfillmentService.ensureDigitalEntitlementsForOrder({
+        order_id: input.orderId,
+        metadata: {
+          source: 'V2_CHECKOUT_PAYMENT_CALLBACK',
+          order_id: input.orderId,
+          order_no: input.orderNo,
+          payment_status: input.callbackStatus,
+          external_reference: input.externalReference,
+        },
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : '알 수 없는 오류';
+      this.logger.warn(
+        `payment callback entitlement ensure skipped: order_id=${input.orderId}, order_no=${input.orderNo || '-'}, payment_status=${input.callbackStatus}, external_reference=${input.externalReference}, reason=${message}`,
+      );
+    }
   }
 
   private async reserveTrackedInventoryForOrderItems(
