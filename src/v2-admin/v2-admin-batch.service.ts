@@ -92,6 +92,7 @@ export class V2AdminBatchService {
       .filter(
         (row) => this.resolveStageFromQueueRow(row) === 'PAYMENT_CONFIRMED',
       )
+      .filter((row) => Boolean(row.has_physical))
       .filter((row) =>
         this.matchesDateRange(
           row.placed_at || row.created_at,
@@ -372,6 +373,14 @@ export class V2AdminBatchService {
       }
 
       const stage = this.resolveStageFromQueueRow(row);
+      if (!Boolean(row.has_physical)) {
+        blockedRows.push({
+          order_id: orderId,
+          order_no: row.order_no,
+          reason: '실물 상품이 없는 주문은 제작 배치를 생성할 수 없습니다.',
+        });
+        continue;
+      }
       if (stage !== 'PAYMENT_CONFIRMED') {
         blockedRows.push({
           order_id: orderId,
@@ -2041,7 +2050,7 @@ export class V2AdminBatchService {
     const { data, error } = await this.supabase
       .from('v2_order_items')
       .select(
-        'order_id, product_id, variant_id, product_name_snapshot, variant_name_snapshot, quantity, line_type, line_status',
+        'order_id, product_id, variant_id, product_name_snapshot, variant_name_snapshot, quantity, line_type, line_status, fulfillment_type_snapshot, requires_shipping_snapshot',
       )
       .in('order_id', orderIds);
 
@@ -2071,6 +2080,9 @@ export class V2AdminBatchService {
         continue;
       }
       if (String(row.line_type || '').toUpperCase() === 'BUNDLE_PARENT') {
+        continue;
+      }
+      if (!this.isPhysicalProductionLine(row)) {
         continue;
       }
 
@@ -2111,6 +2123,28 @@ export class V2AdminBatchService {
         order_count: row.order_id_set.size,
       }))
       .sort((a, b) => b.quantity_total - a.quantity_total);
+  }
+
+  private isPhysicalProductionLine(row: {
+    fulfillment_type_snapshot?: string | null;
+    requires_shipping_snapshot?: boolean | string | null;
+  }): boolean {
+    const fulfillmentType =
+      this.normalizeOptionalText(
+        row.fulfillment_type_snapshot,
+      )?.toUpperCase() || null;
+    if (fulfillmentType === 'DIGITAL') {
+      return false;
+    }
+    if (fulfillmentType === 'PHYSICAL') {
+      return true;
+    }
+
+    const requiresShipping =
+      row.requires_shipping_snapshot === true ||
+      String(row.requires_shipping_snapshot || '').toLowerCase() === 'true';
+
+    return requiresShipping;
   }
 
   private async generateProductionSnapshotTitle(): Promise<string> {
