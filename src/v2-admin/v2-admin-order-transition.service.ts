@@ -415,7 +415,7 @@ export class V2AdminOrderTransitionService {
       sequence += 1;
     };
 
-    const addEntitlementEnsureFallbackAction = () => {
+    const addEntitlementEnsureAction = (note?: string) => {
       addAction({
         action_key: 'FULFILLMENT_ENTITLEMENT_ENSURE',
         resource_type: 'ORDER',
@@ -426,7 +426,7 @@ export class V2AdminOrderTransitionService {
             : 'MISSING_ENTITLEMENTS',
         to_state: 'GRANTED',
         requires_approval: false,
-        note: '입금 확인 이후 누락/미지급 디지털 entitlement 복구',
+        note: note || '디지털 entitlement 발급/지급 보장',
       });
     };
 
@@ -648,7 +648,9 @@ export class V2AdminOrderTransitionService {
             !paymentConfirmationActionPlanned &&
             input.entitlements.length === 0
           ) {
-            addEntitlementEnsureFallbackAction();
+            addEntitlementEnsureAction(
+              '입금 확인 단계 진입을 위한 디지털 entitlement 발급/지급 보장',
+            );
           }
         } else {
           let canProceedPaymentConfirmed = false;
@@ -673,7 +675,7 @@ export class V2AdminOrderTransitionService {
             );
           }
 
-          const needsEntitlementEnsureFallback =
+          const needsEntitlementEnsure =
             composition.has_digital &&
             input.entitlements.some((entitlement) => {
               const status = entitlementStatus(entitlement);
@@ -684,9 +686,11 @@ export class V2AdminOrderTransitionService {
             canProceedPaymentConfirmed &&
             composition.has_digital &&
             !paymentConfirmationActionPlanned &&
-            (input.entitlements.length === 0 || needsEntitlementEnsureFallback)
+            (input.entitlements.length === 0 || needsEntitlementEnsure)
           ) {
-            addEntitlementEnsureFallbackAction();
+            addEntitlementEnsureAction(
+              '입금 확인 단계 진입을 위한 디지털 entitlement 발급/지급 보장',
+            );
           }
         }
       }
@@ -816,7 +820,8 @@ export class V2AdminOrderTransitionService {
               return status === 'FAILED' || status === 'REVOKED';
             },
           );
-          const needsEntitlementEnsureFallback =
+          const needsEntitlementEnsure =
+            paymentCompletionActionPlanned ||
             input.entitlements.length === 0 ||
             input.entitlements.some((entitlement) => {
               const status = entitlementStatus(entitlement);
@@ -825,11 +830,10 @@ export class V2AdminOrderTransitionService {
 
           if (hasHardBlockedEntitlement) {
             addDigitalCompletionActions();
-          } else if (
-            needsEntitlementEnsureFallback &&
-            (paymentCompletionActionPlanned || input.entitlements.length === 0)
-          ) {
-            addEntitlementEnsureFallbackAction();
+          } else if (needsEntitlementEnsure) {
+            addEntitlementEnsureAction(
+              '배송 완료 단계 진입을 위한 디지털 entitlement 발급/지급 보장',
+            );
           } else {
             addDigitalCompletionActions();
           }
