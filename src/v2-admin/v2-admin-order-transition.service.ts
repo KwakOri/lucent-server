@@ -758,6 +758,7 @@ export class V2AdminOrderTransitionService {
       }
 
       if (input.targetStage === 'DELIVERED') {
+        const paymentCompletionActionPlanned = paymentNeedsCapture;
         if (paymentNeedsCapture) {
           addPaymentActionsUpToCaptured();
         }
@@ -809,7 +810,29 @@ export class V2AdminOrderTransitionService {
         }
 
         if (composition.has_digital) {
-          addDigitalCompletionActions();
+          const hasHardBlockedEntitlement = input.entitlements.some(
+            (entitlement) => {
+              const status = entitlementStatus(entitlement);
+              return status === 'FAILED' || status === 'REVOKED';
+            },
+          );
+          const needsEntitlementEnsureFallback =
+            input.entitlements.length === 0 ||
+            input.entitlements.some((entitlement) => {
+              const status = entitlementStatus(entitlement);
+              return status !== 'GRANTED';
+            });
+
+          if (hasHardBlockedEntitlement) {
+            addDigitalCompletionActions();
+          } else if (
+            needsEntitlementEnsureFallback &&
+            (paymentCompletionActionPlanned || input.entitlements.length === 0)
+          ) {
+            addEntitlementEnsureFallbackAction();
+          } else {
+            addDigitalCompletionActions();
+          }
         }
       }
     }
