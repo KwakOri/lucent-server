@@ -45,6 +45,31 @@ interface OrderScopeContext {
   campaign_ids: string[];
 }
 
+interface PhysicalProductionOrderItem {
+  id: string;
+  order_id: string;
+  product_id: string | null;
+  variant_id: string | null;
+  product_name: string;
+  variant_name: string | null;
+  quantity: number;
+  project_id: string | null;
+  project_name: string | null;
+  campaign_id: string | null;
+  campaign_name: string | null;
+  row: any;
+}
+
+interface ProductionCampaignGroup {
+  key: string;
+  project_id: string | null;
+  project_name: string | null;
+  campaign_id: string | null;
+  campaign_name: string | null;
+  order_ids: string[];
+  items: PhysicalProductionOrderItem[];
+}
+
 interface BatchTransitionOrderStatus {
   status: 'SUCCEEDED' | 'FAILED' | 'SKIPPED';
   errorMessage: string | null;
@@ -432,105 +457,175 @@ export class V2AdminBatchService {
       );
     }
 
-    const title =
-      requestedTitle || (await this.generateProductionSnapshotTitle());
-    const projectSummary =
-      await this.buildProductionProjectSummary(validOrderIds);
+    const ordersSnapshot = await this.fetchOrdersSnapshot(validOrderIds);
+    const physicalItemsByOrderId =
+      await this.fetchPhysicalProductionItemsByOrderIds(validOrderIds);
+    const groupedCampaignBatches = this.groupProductionItemsByCampaignScope(
+      validOrderIds,
+      physicalItemsByOrderId,
+    );
 
-    const batchNo = this.generateBatchNo('PB');
-    const snapshot = {
-      notes,
-      idempotency_key: idempotencyKey,
-      project_summary: projectSummary,
-      preview,
-    };
-
-    const { data: batch, error: batchError } = await this.supabase
-      .from('v2_admin_production_batches')
-      .insert({
-        batch_no: batchNo,
-        status: 'DRAFT',
-        title,
-        order_count: validOrderIds.length,
-        item_quantity_total: (preview.aggregates || []).reduce(
-          (sum: number, row: any) => sum + Number(row.quantity_total || 0),
-          0,
-        ),
-        snapshot_json: snapshot,
-        created_by: actor.id,
-        metadata: {
-          ...metadata,
-          project_summary: projectSummary,
-          auto_title: requestedTitle ? false : true,
-        },
-      })
-      .select('*')
-      .maybeSingle();
-
-    if (batchError || !batch) {
+    if (groupedCampaignBatches.length === 0) {
       throw new ApiException(
-        '제작 배치 생성 실패',
-        500,
-        'V2_ADMIN_PRODUCTION_BATCH_CREATE_FAILED',
+        '제작 가능한 실물 주문상품이 없어 배치를 생성할 수 없습니다.',
+        400,
+        'V2_ADMIN_PRODUCTION_BATCH_PHYSICAL_ITEMS_EMPTY',
       );
     }
 
-    const ordersSnapshot = await this.fetchOrdersSnapshot(validOrderIds);
+    const createdBatchDetails: any[] = [];
+    for (
+      let groupIndex = 0;
+      groupIndex < groupedCampaignBatches.length;
+      groupIndex += 1
+    ) {
+      const group = groupedCampaignBatches[groupIndex];
+      const title = requestedTitle
+        ? this.buildScopedProductionBatchTitle(
+            requestedTitle,
+            group,
+            groupIndex,
+            groupedCampaignBatches.length,
+          )
+        : await this.generateProductionSnapshotTitle();
 
-    const orderInsertRows = validOrderIds.map((orderId) => {
-      const queue = ordersSnapshot.queueMap.get(orderId);
-      const order = ordersSnapshot.orderMap.get(orderId);
-      const items = ordersSnapshot.itemsMap.get(orderId) || [];
+      const batchNo = this.generateBatchNo('PB');
+      const itemQuantityTotal = group.items.reduce(
+        (sum: number, item) => sum + Number(item.quantity || 0),
+        0,
+      );
+      const snapshot = {
+        notes,
+        idempotency_key: idempotencyKey,
+        preview,
+        grouping: {
+          key: group.key,
+          project_id: group.project_id,
+          project_name: group.project_name,
+          campaign_id: group.campaign_id,
+          campaign_name: group.campaign_name,
+          group_index: groupIndex + 1,
+          group_count: groupedCampaignBatches.length,
+        },
+      };
+
+      const { data: batch, error: batchError } = await this.supabase
+        .from('v2_admin_production_batches')
+        .insert({
+          batch_no: batchNo,
+          status: 'DRAFT',
+          title,
+          order_count: group.order_ids.length,
+          item_quantity_total: itemQuantityTotal,
+          snapshot_json: snapshot,
+          created_by: actor.id,
+          metadata: {
+            ...metadata,
+            project_summary: group.project_name || '프로젝트 미지정',
+            campaign_summary: group.campaign_name || '캠페인 미지정',
+            project_id: group.project_id,
+            campaign_id: group.campaign_id,
+            auto_title: requestedTitle ? false : true,
+            grouped_batch_count: groupedCampaignBatches.length,
+          },
+        })
+        .select('*')
+        .maybeSingle();
+
+      if (batchError || !batch) {
+        throw new ApiException(
+          '제작 배치 생성 실패',
+          500,
+          'V2_ADMIN_PRODUCTION_BATCH_CREATE_FAILED',
+        );
+      }
+
+      const orderItemsByOrderId = new Map<string, any[]>();
+      for (const item of group.items) {
+        const list = orderItemsByOrderId.get(item.order_id) || [];
+        list.push(item.row);
+        orderItemsByOrderId.set(item.order_id, list);
+      }
+
+      const orderInsertRows = group.order_ids.map((orderId) => {
+        const queue = ordersSnapshot.queueMap.get(orderId);
+        const order = ordersSnapshot.orderMap.get(orderId);
+        const scopedItems = orderItemsByOrderId.get(orderId) || [];
+        return {
+          batch_id: batch.id,
+          order_id: orderId,
+          order_no: queue?.order_no || order?.order_no || orderId,
+          stage_at_snapshot: this.resolveStageFromQueueRow(queue || {}),
+          customer_snapshot: order?.customer_snapshot || null,
+          pricing_snapshot: order?.pricing_snapshot || null,
+          line_items_snapshot: scopedItems,
+          metadata: {
+            project_id: group.project_id,
+            campaign_id: group.campaign_id,
+          },
+        };
+      });
+
+      const { error: orderInsertError } = await this.supabase
+        .from('v2_admin_production_batch_orders')
+        .insert(orderInsertRows);
+
+      if (orderInsertError) {
+        throw new ApiException(
+          '제작 배치 주문 스냅샷 저장 실패',
+          500,
+          'V2_ADMIN_PRODUCTION_BATCH_ORDER_INSERT_FAILED',
+        );
+      }
+
+      const aggregateRows = this.buildProductionAggregatesFromItems(
+        batch.id,
+        group.items,
+      );
+      if (aggregateRows.length > 0) {
+        const { error: aggInsertError } = await this.supabase
+          .from('v2_admin_production_batch_item_aggregates')
+          .insert(aggregateRows);
+
+        if (aggInsertError) {
+          throw new ApiException(
+            '제작 배치 집계 저장 실패',
+            500,
+            'V2_ADMIN_PRODUCTION_BATCH_AGG_INSERT_FAILED',
+          );
+        }
+      }
+
+      await this.insertProductionBatchItems(batch.id, group.items);
+      createdBatchDetails.push(await this.getProductionBatchDetail(batch.id));
+    }
+
+    const primaryBatchDetail = createdBatchDetails[0];
+    const createdBatches = createdBatchDetails.map((detail: any) => {
+      const batch = detail?.batch || {};
+      const batchMetadata =
+        this.normalizeOptionalJsonObject(batch.metadata) || {};
       return {
-        batch_id: batch.id,
-        order_id: orderId,
-        order_no: queue?.order_no || order?.order_no || orderId,
-        stage_at_snapshot: this.resolveStageFromQueueRow(queue || {}),
-        customer_snapshot: order?.customer_snapshot || null,
-        pricing_snapshot: order?.pricing_snapshot || null,
-        line_items_snapshot: items,
-        metadata: {},
+        id: this.normalizeOptionalUuid(batch.id),
+        batch_no: this.normalizeOptionalText(batch.batch_no),
+        title: this.normalizeOptionalText(batch.title),
+        project_id: this.normalizeOptionalUuid(batchMetadata.project_id),
+        project_name: this.normalizeOptionalText(batchMetadata.project_summary),
+        campaign_id: this.normalizeOptionalUuid(batchMetadata.campaign_id),
+        campaign_name: this.normalizeOptionalText(
+          batchMetadata.campaign_summary,
+        ),
+        order_count: Number(batch.order_count || 0),
+        item_quantity_total: Number(batch.item_quantity_total || 0),
       };
     });
 
-    const { error: orderInsertError } = await this.supabase
-      .from('v2_admin_production_batch_orders')
-      .insert(orderInsertRows);
-
-    if (orderInsertError) {
-      throw new ApiException(
-        '제작 배치 주문 스냅샷 저장 실패',
-        500,
-        'V2_ADMIN_PRODUCTION_BATCH_ORDER_INSERT_FAILED',
-      );
-    }
-
-    const aggInsertRows = (preview.aggregates || []).map((row: any) => ({
-      batch_id: batch.id,
-      product_id: row.product_id,
-      variant_id: row.variant_id,
-      product_name: row.product_name,
-      variant_name: row.variant_name,
-      quantity_total: row.quantity_total,
-      order_count: row.order_count,
-      metadata: {},
-    }));
-
-    if (aggInsertRows.length > 0) {
-      const { error: aggInsertError } = await this.supabase
-        .from('v2_admin_production_batch_item_aggregates')
-        .insert(aggInsertRows);
-
-      if (aggInsertError) {
-        throw new ApiException(
-          '제작 배치 집계 저장 실패',
-          500,
-          'V2_ADMIN_PRODUCTION_BATCH_AGG_INSERT_FAILED',
-        );
-      }
-    }
-
-    return this.getProductionBatchDetail(batch.id);
+    return {
+      ...primaryBatchDetail,
+      created_batch_count: createdBatches.length,
+      created_batches: createdBatches,
+      grouped_by: 'project_campaign',
+    };
   }
 
   async listProductionBatches(params: {
@@ -585,7 +680,7 @@ export class V2AdminBatchService {
       );
     }
 
-    const [ordersResult, aggResult] = await Promise.all([
+    const [ordersResult, aggResult, items] = await Promise.all([
       this.supabase
         .from('v2_admin_production_batch_orders')
         .select('*')
@@ -596,6 +691,7 @@ export class V2AdminBatchService {
         .select('*')
         .eq('batch_id', normalizedBatchId)
         .order('quantity_total', { ascending: false }),
+      this.fetchProductionBatchItemsByBatchIdSafe(normalizedBatchId),
     ]);
 
     if (ordersResult.error || aggResult.error) {
@@ -610,6 +706,7 @@ export class V2AdminBatchService {
       batch,
       orders: ordersResult.data || [],
       aggregates: aggResult.data || [],
+      items,
     };
   }
 
@@ -656,6 +753,11 @@ export class V2AdminBatchService {
       orderStatusMap = this.buildOrderTransitionStatusMap(transitionResult);
     }
     await this.updateProductionBatchOrderTransitionStatus(
+      batch.id,
+      'activate',
+      orderStatusMap,
+    );
+    await this.updateProductionBatchItemTransitionStatus(
       batch.id,
       'activate',
       orderStatusMap,
@@ -709,11 +811,36 @@ export class V2AdminBatchService {
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
 
     const orderIds = await this.fetchProductionBatchOrderIds(batch.id);
-    let orderStatusMap = new Map<string, BatchTransitionOrderStatus>();
-    if (orderIds.length > 0) {
+    const itemCompleteStatusMap = new Map<string, BatchTransitionOrderStatus>();
+    for (const orderId of orderIds) {
+      itemCompleteStatusMap.set(orderId, {
+        status: 'SUCCEEDED',
+        errorMessage: null,
+      });
+    }
+    await this.updateProductionBatchItemTransitionStatus(
+      batch.id,
+      'complete',
+      itemCompleteStatusMap,
+    );
+
+    const orderStatusMap = new Map<string, BatchTransitionOrderStatus>();
+    const eligibleOrderIds = await this.filterOrdersReadyToShip(orderIds);
+
+    for (const orderId of orderIds) {
+      if (!eligibleOrderIds.includes(orderId)) {
+        orderStatusMap.set(orderId, {
+          status: 'SKIPPED',
+          errorMessage:
+            '주문 내 다른 실물 주문상품의 제작이 완료되지 않아 배송 대기로 전환하지 않았습니다.',
+        });
+      }
+    }
+
+    if (eligibleOrderIds.length > 0) {
       const transitionResult = await this.v2AdminOrderTransitionService.execute(
         {
-          orderIds,
+          orderIds: eligibleOrderIds,
           targetStage: 'READY_TO_SHIP',
           reason,
           requestId,
@@ -721,8 +848,13 @@ export class V2AdminBatchService {
           actor,
         },
       );
-      orderStatusMap = this.buildOrderTransitionStatusMap(transitionResult);
+      const transitionMap =
+        this.buildOrderTransitionStatusMap(transitionResult);
+      for (const [orderId, status] of transitionMap.entries()) {
+        orderStatusMap.set(orderId, status);
+      }
     }
+
     await this.updateProductionBatchOrderTransitionStatus(
       batch.id,
       'complete',
@@ -872,6 +1004,8 @@ export class V2AdminBatchService {
         'V2_ADMIN_PRODUCTION_BATCH_CANCEL_FAILED',
       );
     }
+
+    await this.cancelProductionBatchItems(batch.id);
 
     return this.getProductionBatchDetail(batch.id);
   }
@@ -1141,6 +1275,12 @@ export class V2AdminBatchService {
         'V2_ADMIN_SHIPPING_BATCH_ORDER_INSERT_FAILED',
       );
     }
+
+    await this.insertShippingBatchItems(
+      batch.id,
+      orderInsertRows,
+      ordersSnapshot.itemsMap,
+    );
 
     return this.getShippingBatchDetail(batch.id);
   }
@@ -2040,6 +2180,667 @@ export class V2AdminBatchService {
       }
     }
     return false;
+  }
+
+  private buildScopedProductionBatchTitle(
+    baseTitle: string,
+    group: ProductionCampaignGroup,
+    groupIndex: number,
+    groupCount: number,
+  ): string {
+    if (groupCount <= 1) {
+      return baseTitle;
+    }
+
+    const projectLabel = group.project_name || '프로젝트 미지정';
+    const campaignLabel = group.campaign_name || '캠페인 미지정';
+    const scopedTitle = `${baseTitle} [${projectLabel} / ${campaignLabel}]`;
+    if (scopedTitle.length <= 255) {
+      return scopedTitle;
+    }
+
+    return `${baseTitle} [그룹 ${groupIndex + 1}/${groupCount}]`;
+  }
+
+  private groupProductionItemsByCampaignScope(
+    orderIds: string[],
+    itemMap: Map<string, PhysicalProductionOrderItem[]>,
+  ): ProductionCampaignGroup[] {
+    const grouped = new Map<
+      string,
+      {
+        key: string;
+        project_id: string | null;
+        project_name: string | null;
+        campaign_id: string | null;
+        campaign_name: string | null;
+        order_ids: Set<string>;
+        items: PhysicalProductionOrderItem[];
+      }
+    >();
+
+    for (const orderId of orderIds) {
+      const items = itemMap.get(orderId) || [];
+      for (const item of items) {
+        const groupKey = `${item.project_id || 'no-project'}::${item.campaign_id || 'no-campaign'}`;
+        const group = grouped.get(groupKey) || {
+          key: groupKey,
+          project_id: item.project_id,
+          project_name: item.project_name,
+          campaign_id: item.campaign_id,
+          campaign_name: item.campaign_name,
+          order_ids: new Set<string>(),
+          items: [],
+        };
+
+        group.order_ids.add(item.order_id);
+        group.items.push(item);
+        grouped.set(groupKey, group);
+      }
+    }
+
+    return Array.from(grouped.values()).map((group) => ({
+      key: group.key,
+      project_id: group.project_id,
+      project_name: group.project_name,
+      campaign_id: group.campaign_id,
+      campaign_name: group.campaign_name,
+      order_ids: Array.from(group.order_ids),
+      items: group.items,
+    }));
+  }
+
+  private buildProductionAggregatesFromItems(
+    batchId: string,
+    items: PhysicalProductionOrderItem[],
+  ): Array<Record<string, unknown>> {
+    const aggregateMap = new Map<
+      string,
+      {
+        product_id: string | null;
+        variant_id: string | null;
+        product_name: string;
+        variant_name: string | null;
+        quantity_total: number;
+        order_id_set: Set<string>;
+      }
+    >();
+
+    for (const item of items) {
+      const key =
+        item.variant_id ||
+        `product:${item.product_id || 'unknown'}:${item.product_name}`;
+      const existing = aggregateMap.get(key) || {
+        product_id: item.product_id,
+        variant_id: item.variant_id,
+        product_name: item.product_name,
+        variant_name: item.variant_name,
+        quantity_total: 0,
+        order_id_set: new Set<string>(),
+      };
+
+      existing.quantity_total += Number(item.quantity || 0);
+      existing.order_id_set.add(item.order_id);
+      aggregateMap.set(key, existing);
+    }
+
+    return Array.from(aggregateMap.values()).map((row) => ({
+      batch_id: batchId,
+      product_id: row.product_id,
+      variant_id: row.variant_id,
+      product_name: row.product_name,
+      variant_name: row.variant_name,
+      quantity_total: row.quantity_total,
+      order_count: row.order_id_set.size,
+      metadata: {},
+    }));
+  }
+
+  private async insertProductionBatchItems(
+    batchId: string,
+    items: PhysicalProductionOrderItem[],
+  ): Promise<void> {
+    if (items.length === 0) {
+      return;
+    }
+
+    const insertRows = items.map((item) => ({
+      batch_id: batchId,
+      order_id: item.order_id,
+      order_item_id: item.id,
+      project_id_snapshot: item.project_id,
+      project_name_snapshot: item.project_name,
+      campaign_id_snapshot: item.campaign_id,
+      campaign_name_snapshot: item.campaign_name,
+      product_id: item.product_id,
+      variant_id: item.variant_id,
+      product_name_snapshot: item.product_name,
+      variant_name_snapshot: item.variant_name,
+      quantity: item.quantity,
+      metadata: {},
+    }));
+
+    const { error } = await this.supabase
+      .from('v2_admin_production_batch_items')
+      .insert(insertRows);
+
+    if (error && !this.isMissingRelationError(error)) {
+      throw new ApiException(
+        '제작 배치 주문상품 스냅샷 저장 실패',
+        500,
+        'V2_ADMIN_PRODUCTION_BATCH_ITEM_INSERT_FAILED',
+      );
+    }
+  }
+
+  private async fetchProductionBatchItemsByBatchIdSafe(
+    batchId: string,
+  ): Promise<any[]> {
+    const { data, error } = await this.supabase
+      .from('v2_admin_production_batch_items')
+      .select('*')
+      .eq('batch_id', batchId)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      if (this.isMissingRelationError(error)) {
+        return [];
+      }
+      throw new ApiException(
+        '제작 배치 주문상품 상세 조회 실패',
+        500,
+        'V2_ADMIN_PRODUCTION_BATCH_ITEM_DETAIL_FAILED',
+      );
+    }
+
+    return data || [];
+  }
+
+  private async updateProductionBatchItemTransitionStatus(
+    batchId: string,
+    mode: 'activate' | 'complete',
+    statusMap: Map<string, BatchTransitionOrderStatus>,
+  ): Promise<void> {
+    const batchItems =
+      await this.fetchProductionBatchItemsByBatchIdSafe(batchId);
+    if (batchItems.length === 0) {
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const nextItemStateRows: Array<Record<string, unknown>> = [];
+
+    for (const row of batchItems) {
+      const rowId = this.normalizeOptionalUuid(row?.id);
+      const orderId = this.normalizeOptionalUuid(row?.order_id);
+      const orderItemId = this.normalizeOptionalUuid(row?.order_item_id);
+      if (!rowId || !orderId || !orderItemId) {
+        continue;
+      }
+
+      if (mode === 'activate') {
+        const orderStatus = statusMap.get(orderId);
+        const updatePayload: Record<string, unknown> = {
+          transition_activate_status: orderStatus?.status || 'SKIPPED',
+          error_message: orderStatus?.errorMessage || null,
+        };
+
+        if (orderStatus?.status === 'SUCCEEDED') {
+          updatePayload.production_status = 'IN_PROGRESS';
+          updatePayload.activated_at = nowIso;
+          updatePayload.error_message = null;
+          nextItemStateRows.push({
+            order_item_id: orderItemId,
+            current_status: 'IN_PROGRESS',
+            last_batch_id: batchId,
+            last_batch_item_id: rowId,
+            metadata: {
+              updated_by: 'PRODUCTION_BATCH_ACTIVATE',
+              updated_at: nowIso,
+            },
+          });
+        }
+
+        const { error: updateError } = await this.supabase
+          .from('v2_admin_production_batch_items')
+          .update(updatePayload)
+          .eq('id', rowId);
+
+        if (updateError) {
+          throw new ApiException(
+            '제작 배치 주문상품 활성화 상태 업데이트 실패',
+            500,
+            'V2_ADMIN_PRODUCTION_BATCH_ITEM_ACTIVATE_UPDATE_FAILED',
+          );
+        }
+        continue;
+      }
+
+      if (statusMap.size > 0 && !statusMap.has(orderId)) {
+        continue;
+      }
+
+      const updatePayload: Record<string, unknown> = {
+        production_status: 'COMPLETED',
+        transition_complete_status: 'SUCCEEDED',
+        completed_at: nowIso,
+        error_message: null,
+      };
+
+      const { error: updateError } = await this.supabase
+        .from('v2_admin_production_batch_items')
+        .update(updatePayload)
+        .eq('id', rowId);
+
+      if (updateError) {
+        throw new ApiException(
+          '제작 배치 주문상품 완료 상태 업데이트 실패',
+          500,
+          'V2_ADMIN_PRODUCTION_BATCH_ITEM_COMPLETE_UPDATE_FAILED',
+        );
+      }
+
+      nextItemStateRows.push({
+        order_item_id: orderItemId,
+        current_status: 'COMPLETED',
+        last_batch_id: batchId,
+        last_batch_item_id: rowId,
+        metadata: {
+          updated_by: 'PRODUCTION_BATCH_COMPLETE',
+          updated_at: nowIso,
+        },
+      });
+    }
+
+    await this.upsertOrderItemProductionState(nextItemStateRows);
+  }
+
+  private async cancelProductionBatchItems(batchId: string): Promise<void> {
+    const batchItems =
+      await this.fetchProductionBatchItemsByBatchIdSafe(batchId);
+    if (batchItems.length === 0) {
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const nextItemStateRows: Array<Record<string, unknown>> = [];
+
+    for (const row of batchItems) {
+      const rowId = this.normalizeOptionalUuid(row?.id);
+      const orderItemId = this.normalizeOptionalUuid(row?.order_item_id);
+      if (!rowId || !orderItemId) {
+        continue;
+      }
+
+      const { error: updateError } = await this.supabase
+        .from('v2_admin_production_batch_items')
+        .update({
+          production_status: 'CANCELED',
+          transition_complete_status: 'SKIPPED',
+          error_message:
+            this.normalizeOptionalText(row?.error_message) || '배치 취소 처리',
+        })
+        .eq('id', rowId);
+
+      if (updateError) {
+        throw new ApiException(
+          '제작 배치 주문상품 취소 상태 업데이트 실패',
+          500,
+          'V2_ADMIN_PRODUCTION_BATCH_ITEM_CANCEL_UPDATE_FAILED',
+        );
+      }
+
+      nextItemStateRows.push({
+        order_item_id: orderItemId,
+        current_status: 'READY',
+        last_batch_id: batchId,
+        last_batch_item_id: rowId,
+        metadata: {
+          updated_by: 'PRODUCTION_BATCH_CANCEL',
+          updated_at: nowIso,
+        },
+      });
+    }
+
+    await this.upsertOrderItemProductionState(nextItemStateRows);
+  }
+
+  private async upsertOrderItemProductionState(
+    rows: Array<Record<string, unknown>>,
+  ): Promise<void> {
+    if (rows.length === 0) {
+      return;
+    }
+
+    const { error } = await this.supabase
+      .from('v2_admin_order_item_production_state')
+      .upsert(rows, { onConflict: 'order_item_id' });
+
+    if (error && !this.isMissingRelationError(error)) {
+      throw new ApiException(
+        '주문상품 제작 상태 캐시 업데이트 실패',
+        500,
+        'V2_ADMIN_ORDER_ITEM_PRODUCTION_STATE_UPSERT_FAILED',
+      );
+    }
+  }
+
+  private async filterOrdersReadyToShip(orderIds: string[]): Promise<string[]> {
+    const normalizedOrderIds = Array.from(
+      new Set(
+        (orderIds || [])
+          .map((orderId) => this.normalizeOptionalUuid(orderId))
+          .filter((orderId): orderId is string => Boolean(orderId)),
+      ),
+    );
+    if (normalizedOrderIds.length === 0) {
+      return [];
+    }
+
+    const { data: itemRows, error: itemError } = await this.supabase
+      .from('v2_order_items')
+      .select(
+        'id, order_id, line_type, line_status, fulfillment_type_snapshot, requires_shipping_snapshot',
+      )
+      .in('order_id', normalizedOrderIds);
+
+    if (itemError) {
+      throw new ApiException(
+        '출고 가능 주문상품 조회 실패',
+        500,
+        'V2_ADMIN_PRODUCTION_READY_ORDER_ITEM_FETCH_FAILED',
+      );
+    }
+
+    const physicalItems = (itemRows || []).filter((row: any) =>
+      this.isPhysicalProductionOrderItemRow(row),
+    );
+
+    const physicalOrderItemIds = physicalItems
+      .map((row: any) => this.normalizeOptionalUuid(row.id))
+      .filter((itemId: string | null): itemId is string => Boolean(itemId));
+
+    const productionStateByOrderItemId = new Map<string, string>();
+    if (physicalOrderItemIds.length > 0) {
+      const { data: stateRows, error: stateError } = await this.supabase
+        .from('v2_admin_order_item_production_state')
+        .select('order_item_id, current_status')
+        .in('order_item_id', physicalOrderItemIds);
+
+      if (stateError) {
+        if (this.isMissingRelationError(stateError)) {
+          return normalizedOrderIds;
+        }
+        throw new ApiException(
+          '주문상품 제작 상태 캐시 조회 실패',
+          500,
+          'V2_ADMIN_PRODUCTION_READY_ORDER_ITEM_STATE_FETCH_FAILED',
+        );
+      }
+
+      for (const row of stateRows || []) {
+        const orderItemId = this.normalizeOptionalUuid(row?.order_item_id);
+        const currentStatus =
+          this.normalizeOptionalText(row?.current_status)?.toUpperCase() ||
+          null;
+        if (orderItemId && currentStatus) {
+          productionStateByOrderItemId.set(orderItemId, currentStatus);
+        }
+      }
+    }
+
+    const readinessByOrderId = new Map<
+      string,
+      { total: number; completed: number }
+    >();
+    for (const row of physicalItems) {
+      const orderId = this.normalizeOptionalUuid(row.order_id);
+      const orderItemId = this.normalizeOptionalUuid(row.id);
+      if (!orderId || !orderItemId) {
+        continue;
+      }
+
+      const current = readinessByOrderId.get(orderId) || {
+        total: 0,
+        completed: 0,
+      };
+      current.total += 1;
+
+      const itemState =
+        productionStateByOrderItemId.get(orderItemId) || 'READY';
+      if (itemState === 'COMPLETED') {
+        current.completed += 1;
+      }
+
+      readinessByOrderId.set(orderId, current);
+    }
+
+    return normalizedOrderIds.filter((orderId) => {
+      const readiness = readinessByOrderId.get(orderId);
+      if (!readiness || readiness.total <= 0) {
+        return false;
+      }
+      return readiness.total === readiness.completed;
+    });
+  }
+
+  private async fetchPhysicalProductionItemsByOrderIds(
+    orderIds: string[],
+  ): Promise<Map<string, PhysicalProductionOrderItem[]>> {
+    if (orderIds.length === 0) {
+      return new Map();
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_order_items')
+      .select(
+        [
+          'id',
+          'order_id',
+          'product_id',
+          'variant_id',
+          'product_name_snapshot',
+          'variant_name_snapshot',
+          'quantity',
+          'line_type',
+          'line_status',
+          'fulfillment_type_snapshot',
+          'requires_shipping_snapshot',
+          'project_id_snapshot',
+          'project_name_snapshot',
+          'campaign_id_snapshot',
+          'campaign_name_snapshot',
+          'display_snapshot',
+          'created_at',
+        ].join(', '),
+      )
+      .in('order_id', orderIds)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        '제작 배치 주문상품 조회 실패',
+        500,
+        'V2_ADMIN_PRODUCTION_BATCH_ITEM_FETCH_FAILED',
+      );
+    }
+
+    const scopedRows = (data || []).filter((row: any) =>
+      this.isPhysicalProductionOrderItemRow(row),
+    );
+    const projectIds = scopedRows
+      .map((row: any) => this.normalizeOptionalUuid(row.project_id_snapshot))
+      .filter((value: string | null): value is string => Boolean(value));
+    const campaignIds = scopedRows
+      .map((row: any) => this.normalizeOptionalUuid(row.campaign_id_snapshot))
+      .filter((value: string | null): value is string => Boolean(value));
+    const priceListIds = scopedRows
+      .map((row: any) => this.extractSelectedPriceListId(row.display_snapshot))
+      .filter((value: string | null): value is string => Boolean(value));
+
+    const [projectNameById, campaignIdByPriceListId] = await Promise.all([
+      this.fetchProjectNameByIds(Array.from(new Set(projectIds))),
+      this.fetchCampaignIdByPriceListIds(Array.from(new Set(priceListIds))),
+    ]);
+
+    const mergedCampaignIds = Array.from(
+      new Set([
+        ...campaignIds,
+        ...Array.from(campaignIdByPriceListId.values()),
+      ]),
+    );
+    const campaignNameById =
+      await this.fetchCampaignNameByIds(mergedCampaignIds);
+
+    const map = new Map<string, PhysicalProductionOrderItem[]>();
+    for (const row of scopedRows) {
+      const itemId = this.normalizeOptionalUuid(row.id);
+      const orderId = this.normalizeOptionalUuid(row.order_id);
+      if (!itemId || !orderId) {
+        continue;
+      }
+
+      const projectId = this.normalizeOptionalUuid(row.project_id_snapshot);
+      const projectName =
+        this.normalizeOptionalText(row.project_name_snapshot) ||
+        (projectId ? projectNameById.get(projectId) || null : null);
+      const selectedPriceListId = this.extractSelectedPriceListId(
+        row.display_snapshot,
+      );
+      const campaignIdFromPriceList = selectedPriceListId
+        ? campaignIdByPriceListId.get(selectedPriceListId) || null
+        : null;
+      const campaignId =
+        this.normalizeOptionalUuid(row.campaign_id_snapshot) ||
+        campaignIdFromPriceList;
+      const campaignName =
+        this.normalizeOptionalText(row.campaign_name_snapshot) ||
+        (campaignId ? campaignNameById.get(campaignId) || null : null);
+
+      const item: PhysicalProductionOrderItem = {
+        id: itemId,
+        order_id: orderId,
+        product_id: this.normalizeOptionalUuid(row.product_id),
+        variant_id: this.normalizeOptionalUuid(row.variant_id),
+        product_name:
+          this.normalizeOptionalText(row.product_name_snapshot) ||
+          '이름 없는 상품',
+        variant_name: this.normalizeOptionalText(row.variant_name_snapshot),
+        quantity: Math.max(1, Number(row.quantity || 0)),
+        project_id: projectId,
+        project_name: projectName,
+        campaign_id: campaignId,
+        campaign_name: campaignName,
+        row,
+      };
+
+      const list = map.get(orderId) || [];
+      list.push(item);
+      map.set(orderId, list);
+    }
+
+    return map;
+  }
+
+  private isPhysicalProductionOrderItemRow(row: any): boolean {
+    const lineStatus = this.normalizeOptionalText(
+      row?.line_status,
+    )?.toUpperCase();
+    if (lineStatus === 'CANCELED' || lineStatus === 'REFUNDED') {
+      return false;
+    }
+    if (
+      this.normalizeOptionalText(row?.line_type)?.toUpperCase() ===
+      'BUNDLE_PARENT'
+    ) {
+      return false;
+    }
+    return this.isPhysicalProductionLine(row);
+  }
+
+  private async insertShippingBatchItems(
+    batchId: string,
+    batchOrderRows: Array<{ order_id: string }>,
+    itemsMap: Map<string, any[]>,
+  ): Promise<void> {
+    const { data: orders, error: orderError } = await this.supabase
+      .from('v2_admin_shipping_batch_orders')
+      .select('id, order_id')
+      .eq('batch_id', batchId);
+
+    if (orderError) {
+      throw new ApiException(
+        '배송 배치 주문상품 스냅샷용 주문 조회 실패',
+        500,
+        'V2_ADMIN_SHIPPING_BATCH_ITEM_ORDER_FETCH_FAILED',
+      );
+    }
+
+    const batchOrderIdByOrderId = new Map<string, string>();
+    for (const row of orders || []) {
+      const batchOrderId = this.normalizeOptionalUuid(row.id);
+      const orderId = this.normalizeOptionalUuid(row.order_id);
+      if (batchOrderId && orderId) {
+        batchOrderIdByOrderId.set(orderId, batchOrderId);
+      }
+    }
+
+    const itemInsertRows: Array<Record<string, unknown>> = [];
+    for (const row of batchOrderRows) {
+      const orderId = this.normalizeOptionalUuid(row.order_id);
+      if (!orderId) {
+        continue;
+      }
+      const batchOrderId = batchOrderIdByOrderId.get(orderId);
+      if (!batchOrderId) {
+        continue;
+      }
+      const orderItems = itemsMap.get(orderId) || [];
+      for (const orderItem of orderItems) {
+        if (!this.isPhysicalProductionOrderItemRow(orderItem)) {
+          continue;
+        }
+        const orderItemId = this.normalizeOptionalUuid(orderItem.id);
+        if (!orderItemId) {
+          continue;
+        }
+        itemInsertRows.push({
+          batch_id: batchId,
+          batch_order_id: batchOrderId,
+          order_id: orderId,
+          order_item_id: orderItemId,
+          quantity: Math.max(1, Number(orderItem.quantity || 0)),
+          metadata: {},
+        });
+      }
+    }
+
+    if (itemInsertRows.length === 0) {
+      return;
+    }
+
+    const { error } = await this.supabase
+      .from('v2_admin_shipping_batch_items')
+      .insert(itemInsertRows);
+
+    if (error && !this.isMissingRelationError(error)) {
+      throw new ApiException(
+        '배송 배치 주문상품 스냅샷 저장 실패',
+        500,
+        'V2_ADMIN_SHIPPING_BATCH_ITEM_INSERT_FAILED',
+      );
+    }
+  }
+
+  private isMissingRelationError(error: any): boolean {
+    const code = this.normalizeOptionalText(error?.code);
+    const message =
+      this.normalizeOptionalText(error?.message)?.toLowerCase() || '';
+    return (
+      code === '42P01' ||
+      message.includes('does not exist') ||
+      message.includes('undefined table')
+    );
   }
 
   private async buildProductionAggregates(orderIds: string[]): Promise<any[]> {
