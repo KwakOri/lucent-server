@@ -2155,6 +2155,28 @@ export class V2AdminBatchService {
       }
 
       if (rowLogs.length === 0) {
+        const currentStage =
+          this.normalizeOptionalText(row?.current_stage)?.toUpperCase() || null;
+        const targetStage =
+          this.normalizeOptionalText(row?.target_stage)?.toUpperCase() || null;
+        const blockedReasons = Array.isArray(row?.blocked_reasons)
+          ? row.blocked_reasons
+          : [];
+        const isNoopSuccess =
+          row?.executable === true &&
+          blockedReasons.length === 0 &&
+          Boolean(currentStage) &&
+          Boolean(targetStage) &&
+          currentStage === targetStage;
+
+        if (isNoopSuccess) {
+          map.set(orderId, {
+            status: 'SUCCEEDED',
+            errorMessage: null,
+          });
+          continue;
+        }
+
         map.set(orderId, {
           status: 'SKIPPED',
           errorMessage: '전이 로그가 생성되지 않았습니다.',
