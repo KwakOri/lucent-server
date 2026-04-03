@@ -415,6 +415,21 @@ export class V2AdminOrderTransitionService {
       sequence += 1;
     };
 
+    const addEntitlementEnsureFallbackAction = () => {
+      addAction({
+        action_key: 'FULFILLMENT_ENTITLEMENT_ENSURE',
+        resource_type: 'ORDER',
+        resource_id: input.order.id,
+        from_state:
+          input.entitlements.length > 0
+            ? 'EXISTING_ENTITLEMENTS'
+            : 'MISSING_ENTITLEMENTS',
+        to_state: 'GRANTED',
+        requires_approval: false,
+        note: '입금 확인 이후 누락/미지급 디지털 entitlement 복구',
+      });
+    };
+
     const addPaymentActionsUpToCaptured = () => {
       if (paymentNeedsAuthorize) {
         addAction({
@@ -604,8 +619,12 @@ export class V2AdminOrderTransitionService {
 
       if (input.targetStage === 'PAYMENT_CONFIRMED') {
         if (isDigitalOnlyOrder) {
+          let canProceedPaymentConfirmed = true;
+          let paymentConfirmationActionPlanned = false;
+
           if (paymentNeedsCapture) {
             addPaymentActionsUpToCaptured();
+            paymentConfirmationActionPlanned = true;
           } else if (
             paymentStatus !== 'AUTHORIZED' &&
             !PAYMENT_CAPTURED_STATUSES.has(paymentStatus)
@@ -613,11 +632,27 @@ export class V2AdminOrderTransitionService {
             blockedReasons.push(
               `현재 결제 상태(${paymentStatus})에서는 입금 확인 단계로 전환할 수 없습니다.`,
             );
+            canProceedPaymentConfirmed = false;
           }
 
-          addDigitalCompletionActions();
+          if (
+            canProceedPaymentConfirmed &&
+            !paymentConfirmationActionPlanned &&
+            input.entitlements.length > 0
+          ) {
+            addDigitalCompletionActions();
+          }
+
+          if (
+            canProceedPaymentConfirmed &&
+            !paymentConfirmationActionPlanned &&
+            input.entitlements.length === 0
+          ) {
+            addEntitlementEnsureFallbackAction();
+          }
         } else {
           let canProceedPaymentConfirmed = false;
+          let paymentConfirmationActionPlanned = false;
           if (paymentNeedsAuthorize) {
             addAction({
               action_key: 'ORDER_PAYMENT_MARK_AUTHORIZED',
@@ -629,6 +664,7 @@ export class V2AdminOrderTransitionService {
               note: '입금 확인(결제 AUTHORIZED) 처리',
             });
             canProceedPaymentConfirmed = true;
+            paymentConfirmationActionPlanned = true;
           } else if (paymentStatus === 'AUTHORIZED') {
             canProceedPaymentConfirmed = true;
           } else {
@@ -637,19 +673,20 @@ export class V2AdminOrderTransitionService {
             );
           }
 
-          if (canProceedPaymentConfirmed && composition.has_digital) {
-            addAction({
-              action_key: 'FULFILLMENT_ENTITLEMENT_ENSURE',
-              resource_type: 'ORDER',
-              resource_id: input.order.id,
-              from_state:
-                input.entitlements.length > 0
-                  ? 'EXISTING_ENTITLEMENTS'
-                  : 'MISSING_ENTITLEMENTS',
-              to_state: 'GRANTED',
-              requires_approval: false,
-              note: '입금 확인 시 디지털 entitlement 발급/지급 보장',
+          const needsEntitlementEnsureFallback =
+            composition.has_digital &&
+            input.entitlements.some((entitlement) => {
+              const status = entitlementStatus(entitlement);
+              return status !== 'GRANTED';
             });
+
+          if (
+            canProceedPaymentConfirmed &&
+            composition.has_digital &&
+            !paymentConfirmationActionPlanned &&
+            (input.entitlements.length === 0 || needsEntitlementEnsureFallback)
+          ) {
+            addEntitlementEnsureFallbackAction();
           }
         }
       }
