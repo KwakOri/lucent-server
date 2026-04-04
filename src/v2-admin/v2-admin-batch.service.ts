@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { existsSync } from 'fs';
-import PDFDocument from 'pdfkit';
+import * as PDFDocument from 'pdfkit';
 import { ApiException } from '../common/errors/api.exception';
 import { getSupabaseClient } from '../supabase/supabase.client';
 import { V2AdminActionActor } from './v2-admin-action-executor.service';
