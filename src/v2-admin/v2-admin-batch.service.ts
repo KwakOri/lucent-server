@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { existsSync } from 'fs';
 import PDFDocument from 'pdfkit';
 import { ApiException } from '../common/errors/api.exception';
@@ -98,6 +98,8 @@ const PAYMENT_EXCLUDED_STATUSES = new Set(['CANCELED', 'REFUNDED']);
 
 @Injectable()
 export class V2AdminBatchService {
+  private readonly logger = new Logger(V2AdminBatchService.name);
+
   constructor(
     private readonly v2AdminOrderTransitionService: V2AdminOrderTransitionService,
   ) {}
@@ -1470,9 +1472,17 @@ export class V2AdminBatchService {
         buffer,
         fileName,
       };
-    } catch {
+    } catch (error) {
+      const causeMessage = this.summarizeUnexpectedError(error);
+      this.logger.error(
+        `배송 리스트 PDF 생성 실패 (batchId=${batchId}): ${causeMessage}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+
       throw new ApiException(
-        '배송 리스트 PDF 생성 실패',
+        process.env.NODE_ENV === 'production'
+          ? '배송 리스트 PDF 생성 실패'
+          : `배송 리스트 PDF 생성 실패: ${causeMessage}`,
         500,
         'V2_ADMIN_SHIPPING_BATCH_PDF_RENDER_FAILED',
       );
@@ -3818,6 +3828,31 @@ export class V2AdminBatchService {
     } catch {
       // 폰트 포맷/환경 이슈가 있어도 PDF 생성이 실패하지 않도록 기본 폰트를 사용한다.
     }
+  }
+
+  private summarizeUnexpectedError(error: unknown): string {
+    if (error instanceof Error) {
+      const message = this.normalizeOptionalText(error.message);
+      return message || error.name || 'UNKNOWN_ERROR';
+    }
+
+    if (typeof error === 'string') {
+      const message = error.trim();
+      return message || 'UNKNOWN_ERROR';
+    }
+
+    if (error && typeof error === 'object') {
+      try {
+        const serialized = JSON.stringify(error);
+        if (serialized && serialized !== '{}') {
+          return serialized;
+        }
+      } catch {
+        // ignore JSON serialization failure
+      }
+    }
+
+    return 'UNKNOWN_ERROR';
   }
 
   private formatShippingPdfDate(value: Date): string {

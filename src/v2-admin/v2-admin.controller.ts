@@ -997,7 +997,7 @@ export class V2AdminController {
   async downloadShippingBatchPrintPdf(
     @Headers('authorization') authorization: string | undefined,
     @Param('batchId') batchId: string,
-    @Res() response: Response,
+    @Res({ passthrough: true }) response: Response,
   ) {
     await this.requireAdmin(authorization);
     const result =
@@ -1009,7 +1009,7 @@ export class V2AdminController {
       `attachment; filename="${result.fileName}"`,
     );
     response.setHeader('Cache-Control', 'no-store');
-    return response.status(200).send(result.buffer);
+    return result.buffer;
   }
 
   @Post('ops/shipping/batches/:batchId/activate')
