@@ -95,6 +95,7 @@ interface ShippingPdfOrderRow {
 
 const BATCH_EXCLUDED_ORDER_MESSAGE = '배치 제외 주문입니다.';
 const PAYMENT_EXCLUDED_STATUSES = new Set(['CANCELED', 'REFUNDED']);
+const OPEN_BATCH_STATUSES_FOR_CANDIDATES = ['DRAFT', 'ACTIVE'];
 
 @Injectable()
 export class V2AdminBatchService {
@@ -124,7 +125,10 @@ export class V2AdminBatchService {
     const projectId = this.normalizeOptionalUuid(params.projectId);
     const campaignId = this.normalizeOptionalUuid(params.campaignId);
 
-    const rows = await this.fetchQueueRows(limit);
+    const [rows, reservedOrderIds] = await Promise.all([
+      this.fetchQueueRows(limit),
+      this.fetchReservedProductionCandidateOrderIds(),
+    ]);
     const orderScopeByOrderId = await this.fetchOrderScopeByOrderIds(
       rows
         .map((row) => this.normalizeOptionalUuid(row.order_id))
@@ -136,6 +140,9 @@ export class V2AdminBatchService {
     const items = rows
       .filter(
         (row) => this.resolveStageFromQueueRow(row) === 'PAYMENT_CONFIRMED',
+      )
+      .filter(
+        (row) => !this.isReservedCandidateOrder(row.order_id, reservedOrderIds),
       )
       .filter((row) => Boolean(row.has_physical))
       .filter((row) =>
@@ -1046,7 +1053,10 @@ export class V2AdminBatchService {
     const projectId = this.normalizeOptionalUuid(params.projectId);
     const campaignId = this.normalizeOptionalUuid(params.campaignId);
 
-    const rows = await this.fetchQueueRows(limit);
+    const [rows, reservedOrderIds] = await Promise.all([
+      this.fetchQueueRows(limit),
+      this.fetchReservedShippingCandidateOrderIds(),
+    ]);
     const orderScopeByOrderId = await this.fetchOrderScopeByOrderIds(
       rows
         .map((row) => this.normalizeOptionalUuid(row.order_id))
@@ -1057,6 +1067,9 @@ export class V2AdminBatchService {
 
     const items = rows
       .filter((row) => this.resolveStageFromQueueRow(row) === 'READY_TO_SHIP')
+      .filter(
+        (row) => !this.isReservedCandidateOrder(row.order_id, reservedOrderIds),
+      )
       .filter((row) =>
         this.matchesDateRange(
           row.placed_at || row.created_at,
@@ -3190,6 +3203,100 @@ export class V2AdminBatchService {
           : null,
       };
     });
+  }
+
+  private isReservedCandidateOrder(
+    orderId: string | null | undefined,
+    reservedOrderIds: Set<string>,
+  ): boolean {
+    const normalizedOrderId = this.normalizeOptionalUuid(orderId);
+    if (!normalizedOrderId) {
+      return false;
+    }
+    return reservedOrderIds.has(normalizedOrderId);
+  }
+
+  private async fetchReservedProductionCandidateOrderIds(): Promise<
+    Set<string>
+  > {
+    return this.fetchReservedCandidateOrderIdsByBatch({
+      batchTable: 'v2_admin_production_batches',
+      batchOrderTable: 'v2_admin_production_batch_orders',
+      batchFetchErrorCode:
+        'V2_ADMIN_PRODUCTION_CANDIDATE_OPEN_BATCH_FETCH_FAILED',
+      batchOrderFetchErrorCode:
+        'V2_ADMIN_PRODUCTION_CANDIDATE_OPEN_BATCH_ORDERS_FETCH_FAILED',
+      batchLabel: '제작',
+    });
+  }
+
+  private async fetchReservedShippingCandidateOrderIds(): Promise<Set<string>> {
+    return this.fetchReservedCandidateOrderIdsByBatch({
+      batchTable: 'v2_admin_shipping_batches',
+      batchOrderTable: 'v2_admin_shipping_batch_orders',
+      batchFetchErrorCode:
+        'V2_ADMIN_SHIPPING_CANDIDATE_OPEN_BATCH_FETCH_FAILED',
+      batchOrderFetchErrorCode:
+        'V2_ADMIN_SHIPPING_CANDIDATE_OPEN_BATCH_ORDERS_FETCH_FAILED',
+      batchLabel: '배송',
+    });
+  }
+
+  private async fetchReservedCandidateOrderIdsByBatch(input: {
+    batchTable: 'v2_admin_production_batches' | 'v2_admin_shipping_batches';
+    batchOrderTable:
+      | 'v2_admin_production_batch_orders'
+      | 'v2_admin_shipping_batch_orders';
+    batchFetchErrorCode: string;
+    batchOrderFetchErrorCode: string;
+    batchLabel: string;
+  }): Promise<Set<string>> {
+    const { data: batchRows, error: batchError } = await this.supabase
+      .from(input.batchTable)
+      .select('id')
+      .in('status', OPEN_BATCH_STATUSES_FOR_CANDIDATES);
+
+    if (batchError) {
+      throw new ApiException(
+        `${input.batchLabel} 후보 잠금 배치 조회 실패`,
+        500,
+        input.batchFetchErrorCode,
+      );
+    }
+
+    const openBatchIds = (batchRows || [])
+      .map((row: any) => this.normalizeOptionalUuid(row?.id))
+      .filter((batchId: string | null): batchId is string => Boolean(batchId));
+
+    if (openBatchIds.length === 0) {
+      return new Set();
+    }
+
+    const { data: batchOrderRows, error: batchOrderError } = await this.supabase
+      .from(input.batchOrderTable)
+      .select('order_id, is_excluded')
+      .in('batch_id', openBatchIds);
+
+    if (batchOrderError) {
+      throw new ApiException(
+        `${input.batchLabel} 후보 잠금 주문 조회 실패`,
+        500,
+        input.batchOrderFetchErrorCode,
+      );
+    }
+
+    const reservedOrderIds = new Set<string>();
+    for (const row of batchOrderRows || []) {
+      if (row?.is_excluded === true) {
+        continue;
+      }
+      const orderId = this.normalizeOptionalUuid(row?.order_id);
+      if (orderId) {
+        reservedOrderIds.add(orderId);
+      }
+    }
+
+    return reservedOrderIds;
   }
 
   private async fetchQueueMapByOrderIds(
