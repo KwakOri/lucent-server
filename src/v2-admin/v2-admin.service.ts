@@ -2841,6 +2841,10 @@ export class V2AdminService {
         (sum: number, row: any) => sum + Number(row?.quantity || 0),
         0,
       ),
+      item_gross_amount: activeSalesItems.reduce(
+        (sum: number, row: any) => sum + Number(row?.final_line_total || 0),
+        0,
+      ),
       order_gross_amount: Array.from(orderGrossByOrderId.values()).reduce(
         (sum: number, row) => sum + Number(row.grossAmount || 0),
         0,
@@ -3003,6 +3007,7 @@ export class V2AdminService {
         date: string;
         orders_count: number;
         units_sold: number;
+        item_gross_amount: number;
         order_gross_amount: number;
         captured_amount: number;
         refund_amount: number;
@@ -3017,6 +3022,7 @@ export class V2AdminService {
         date,
         orders_count: 0,
         units_sold: 0,
+        item_gross_amount: 0,
         order_gross_amount: 0,
         captured_amount: 0,
         refund_amount: 0,
@@ -3031,6 +3037,7 @@ export class V2AdminService {
       }
       const daily = dailyMap.get(date)!;
       daily.units_sold += Number(row.quantity || 0);
+      daily.item_gross_amount += Number(row.final_line_total || 0);
 
       const orderId = this.normalizeOptionalText(row.order_id);
       if (orderId) {
@@ -3108,6 +3115,10 @@ export class V2AdminService {
       metadata: {
         sales_basis: 'placed_at',
         settlement_basis: 'financial_event.occurred_at',
+        gross_amount_metrics: {
+          order_gross_amount: 'v2_orders.grand_total_sum',
+          item_gross_amount: 'v2_order_items.final_line_total_sum',
+        },
         allocation_policy_versions: policyVersions,
         capture_policy_version: this.captureAllocationPolicyVersion,
         refund_policy_version: this.refundAllocationPolicyVersion,
@@ -3350,6 +3361,7 @@ export class V2AdminService {
       filters: salesStats.filters,
       kpis: {
         orders_count: Number(salesStats.summary?.orders_count || 0),
+        item_gross_amount: Number(salesStats.summary?.item_gross_amount || 0),
         order_gross_amount: Number(salesStats.summary?.order_gross_amount || 0),
         captured_amount: capturedAmount,
         refund_amount: refundAmount,
