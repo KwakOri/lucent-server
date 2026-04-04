@@ -3708,10 +3708,7 @@ export class V2AdminBatchService {
       doc.on('error', (error) => reject(error));
       doc.on('end', () => resolve(Buffer.concat(chunks)));
 
-      const preferredFontPath = this.resolveShippingPdfFontPath();
-      if (preferredFontPath) {
-        doc.font(preferredFontPath);
-      }
+      this.applyShippingPdfFont(doc);
 
       const totalQuantity = input.rows.reduce(
         (sum, row) => sum + row.quantityTotal,
@@ -3780,18 +3777,16 @@ export class V2AdminBatchService {
       return;
     }
     doc.addPage();
-    const preferredFontPath = this.resolveShippingPdfFontPath();
-    if (preferredFontPath) {
-      doc.font(preferredFontPath);
-    }
+    this.applyShippingPdfFont(doc);
   }
 
   private resolveShippingPdfFontPath(): string | null {
     const candidates = [
-      '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
-      '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
       '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
-      '/System/Library/Fonts/AppleSDGothicNeo.ttc',
+      '/usr/share/fonts/truetype/noto/NotoSansKR-Regular.ttf',
+      '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.otf',
+      '/System/Library/Fonts/Supplemental/AppleGothic.ttf',
+      '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
     ];
 
     for (const candidate of candidates) {
@@ -3800,6 +3795,19 @@ export class V2AdminBatchService {
       }
     }
     return null;
+  }
+
+  private applyShippingPdfFont(doc: PDFKit.PDFDocument): void {
+    const preferredFontPath = this.resolveShippingPdfFontPath();
+    if (!preferredFontPath) {
+      return;
+    }
+
+    try {
+      doc.font(preferredFontPath);
+    } catch {
+      // 폰트 포맷/환경 이슈가 있어도 PDF 생성이 실패하지 않도록 기본 폰트를 사용한다.
+    }
   }
 
   private formatShippingPdfDate(value: Date): string {
