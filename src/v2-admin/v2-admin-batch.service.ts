@@ -3940,10 +3940,6 @@ export class V2AdminBatchService {
       (sum, row) => sum + row.quantityTotal,
       0,
     );
-    const trackingFilledCount = input.rows.filter((row) => {
-      const tracking = this.normalizeOptionalText(row.trackingDisplay);
-      return Boolean(tracking && tracking !== '-');
-    }).length;
 
     const orderRowsHtml = input.rows
       .map((row) => {
@@ -3952,7 +3948,7 @@ export class V2AdminBatchService {
             ? `<ul class="item-list">${row.items
                 .map(
                   (item) =>
-                    `<li><span class="item-label">${this.escapeHtml(item.label)}</span><span class="item-qty">x ${item.quantity.toLocaleString()}</span></li>`,
+                    `<li><span class="item-checkbox" aria-hidden="true"></span><span class="item-label">${this.escapeHtml(item.label)}</span><span class="item-qty">x ${item.quantity.toLocaleString()}</span></li>`,
                 )
                 .join('')}</ul>`
             : '<p class="empty-items">배송 대상 상품이 없습니다.</p>';
@@ -3969,8 +3965,8 @@ export class V2AdminBatchService {
                 <p class="cell-value">${this.escapeHtml(row.recipientName)} / ${this.escapeHtml(row.recipientPhone)}</p>
               </div>
               <div class="head-cell">
-                <p class="cell-label">운송장</p>
-                <p class="cell-value">${this.escapeHtml(this.normalizeOptionalText(row.trackingDisplay) || '-')}</p>
+                <p class="cell-label">운송장 / 메모</p>
+                <div class="memo-blank" aria-label="메모 공간"></div>
               </div>
             </div>
             <div class="order-address"><span class="cell-key">주소</span>: ${this.escapeHtml(row.address)}</div>
@@ -4009,6 +4005,7 @@ export class V2AdminBatchService {
             }
             .sheet {
               width: 100%;
+              padding: 0 1.5mm;
             }
             .header {
               padding: 4mm 0 3mm 0;
@@ -4070,6 +4067,13 @@ export class V2AdminBatchService {
               color: #111827;
               word-break: break-word;
             }
+            .memo-blank {
+              margin-top: 4px;
+              height: 20px;
+              border: 1px dashed #d1d5db;
+              border-radius: 4px;
+              background: #ffffff;
+            }
             .cell-key {
               font-weight: 600;
               color: #111827;
@@ -4107,11 +4111,19 @@ export class V2AdminBatchService {
             }
             .item-list li {
               display: flex;
-              justify-content: space-between;
+              align-items: center;
               gap: 12px;
               padding: 0;
               font-size: 12px;
               color: #1f2937;
+            }
+            .item-checkbox {
+              flex: 0 0 auto;
+              width: 13px;
+              height: 13px;
+              border: 1px solid #4b5563;
+              border-radius: 2px;
+              background: #ffffff;
             }
             .item-label {
               flex: 1;
@@ -4142,7 +4154,6 @@ export class V2AdminBatchService {
               <p><strong>배치 상태</strong>: ${this.escapeHtml(statusLabel)}</p>
               <p><strong>주문 건수</strong>: ${input.rows.length}건</p>
               <p><strong>상품 수량합</strong>: ${totalQuantity.toLocaleString()}개</p>
-              <p><strong>운송장 입력</strong>: ${trackingFilledCount}/${input.rows.length}</p>
               <p><strong>출력 기준</strong>: A4 세로</p>
             </section>
 
