@@ -8,10 +8,14 @@ import {
   Patch,
   Post,
   Query,
+  Res,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { AuthSessionService } from '../auth/auth-session.service';
 import { successResponse } from '../common/api-response';
 import { ApiException } from '../common/errors/api.exception';
+import { V2CheckoutService } from '../v2-checkout/v2-checkout.service';
+import { V2AdminActionExecutorService } from './v2-admin-action-executor.service';
 import { V2AdminBatchService } from './v2-admin-batch.service';
 import { V2AdminOrderTransitionService } from './v2-admin-order-transition.service';
 import { V2AdminService } from './v2-admin.service';
@@ -60,8 +64,16 @@ interface BulkOrderActionBody {
 interface OrderLinearTransitionBody {
   order_ids?: string[];
   target_stage?: string;
+  scope?: string;
   reason?: string | null;
   request_id?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface RefundOrderBody {
+  amount?: number | null;
+  reason?: string | null;
+  external_reference?: string | null;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -334,6 +346,8 @@ export class V2AdminController {
     private readonly v2AdminService: V2AdminService,
     private readonly v2AdminOrderTransitionService: V2AdminOrderTransitionService,
     private readonly v2AdminBatchService: V2AdminBatchService,
+    private readonly v2AdminActionExecutorService: V2AdminActionExecutorService,
+    private readonly v2CheckoutService: V2CheckoutService,
     private readonly authSessionService: AuthSessionService,
   ) {}
 
@@ -858,6 +872,26 @@ export class V2AdminController {
     return successResponse(result);
   }
 
+  @Get('ops/production/batches/:batchId/print-pdf')
+  async downloadProductionBatchPrintPdf(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('batchId') batchId: string,
+    @Res() response: Response,
+  ) {
+    await this.requireAdmin(authorization);
+    const result =
+      await this.v2AdminBatchService.generateProductionBatchPrintPdf(batchId);
+
+    response.setHeader('Content-Type', 'application/pdf');
+    response.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${result.fileName}"`,
+    );
+    response.setHeader('Cache-Control', 'no-store');
+    response.setHeader('Content-Length', result.buffer.length.toString());
+    response.status(200).send(result.buffer);
+  }
+
   @Post('ops/production/batches/:batchId/activate')
   async activateProductionBatch(
     @Headers('authorization') authorization: string | undefined,
@@ -977,6 +1011,29 @@ export class V2AdminController {
     const result =
       await this.v2AdminBatchService.getShippingBatchDetail(batchId);
     return successResponse(result);
+  }
+
+  @Get('ops/shipping/batches/:batchId/print-pdf')
+  async downloadShippingBatchPrintPdf(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('batchId') batchId: string,
+    @Res() response: Response,
+  ) {
+    await this.requireAdmin(authorization);
+    const result =
+      await this.v2AdminBatchService.generateShippingBatchPrintPdf(batchId);
+
+    // NOTE: Use express `send` directly for binary payloads.
+    // Returning Buffer from Nest handler can be JSON-serialized (`{ type, data }`),
+    // which corrupts downloadable files.
+    response.setHeader('Content-Type', 'application/pdf');
+    response.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${result.fileName}"`,
+    );
+    response.setHeader('Cache-Control', 'no-store');
+    response.setHeader('Content-Length', result.buffer.length.toString());
+    response.status(200).send(result.buffer);
   }
 
   @Post('ops/shipping/batches/:batchId/activate')
@@ -1106,6 +1163,7 @@ export class V2AdminController {
     const result = await this.v2AdminOrderTransitionService.preview({
       orderIds: body.order_ids,
       targetStage: body.target_stage,
+      scope: body.scope,
       reason: body.reason,
       requestId: body.request_id,
       metadata: body.metadata,
@@ -1129,6 +1187,7 @@ export class V2AdminController {
     const result = await this.v2AdminOrderTransitionService.execute({
       orderIds: body.order_ids,
       targetStage: body.target_stage,
+      scope: body.scope,
       reason: body.reason,
       requestId: body.request_id,
       metadata: body.metadata,
@@ -1141,6 +1200,38 @@ export class V2AdminController {
       },
     });
     return successResponse(result);
+  }
+
+  @Post('ops/orders/:orderId/refund')
+  async refundOrderFromOps(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('orderId') orderId: string,
+    @Body() body: RefundOrderBody,
+  ) {
+    const admin = await this.requireAdmin(authorization);
+    const actor = this.buildActionActor(admin);
+    const execution = await this.v2AdminActionExecutorService.execute({
+      actionKey: 'ORDER_REFUND_EXECUTE',
+      domain: 'ORDER',
+      actor,
+      requiredPermissionCode: 'ORDER_REFUND_APPROVE',
+      approval: {
+        required: true,
+        assigneeRoleCode: 'FINANCE_MANAGER',
+        reason: body.reason || null,
+      },
+      resourceType: 'ORDER',
+      resourceId: orderId,
+      inputPayload: {
+        order_id: orderId,
+        ...body,
+      },
+      transition: () => ({
+        transitionKey: 'ORDER_REFUND',
+      }),
+      execute: () => this.v2CheckoutService.refundOrder(orderId, body),
+    });
+    return successResponse(execution.result, 'v2 환불이 반영되었습니다');
   }
 
   @Get('ops/orders/:orderId/detail')

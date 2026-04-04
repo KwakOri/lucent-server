@@ -1,4 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { existsSync } from 'fs';
+import * as PDFDocument from 'pdfkit';
 import { ApiException } from '../common/errors/api.exception';
 import { getSupabaseClient } from '../supabase/supabase.client';
 import { V2AdminActionActor } from './v2-admin-action-executor.service';
@@ -11,14 +13,6 @@ type QueueLinearStage =
   | 'READY_TO_SHIP'
   | 'IN_TRANSIT'
   | 'DELIVERED';
-
-type ProductionBatchStatus = 'DRAFT' | 'ACTIVE' | 'COMPLETED' | 'CANCELED';
-type ShippingBatchStatus =
-  | 'DRAFT'
-  | 'ACTIVE'
-  | 'DISPATCHED'
-  | 'COMPLETED'
-  | 'CANCELED';
 
 interface QueueRow {
   order_id: string;
@@ -53,13 +47,74 @@ interface OrderScopeContext {
   campaign_ids: string[];
 }
 
+interface PhysicalProductionOrderItem {
+  id: string;
+  order_id: string;
+  product_id: string | null;
+  variant_id: string | null;
+  product_name: string;
+  variant_name: string | null;
+  quantity: number;
+  project_id: string | null;
+  project_name: string | null;
+  campaign_id: string | null;
+  campaign_name: string | null;
+  row: any;
+}
+
+interface ProductionCampaignGroup {
+  key: string;
+  project_id: string | null;
+  project_name: string | null;
+  campaign_id: string | null;
+  campaign_name: string | null;
+  order_ids: string[];
+  items: PhysicalProductionOrderItem[];
+}
+
 interface BatchTransitionOrderStatus {
   status: 'SUCCEEDED' | 'FAILED' | 'SKIPPED';
   errorMessage: string | null;
 }
 
+interface ShippingPdfLineItemRow {
+  label: string;
+  quantity: number;
+}
+
+interface ShippingPdfOrderRow {
+  sequence: number;
+  orderNo: string;
+  recipientName: string;
+  recipientPhone: string;
+  address: string;
+  trackingDisplay: string;
+  quantityTotal: number;
+  items: ShippingPdfLineItemRow[];
+}
+
+interface ProductionPdfAggregateRow {
+  productName: string;
+  variantName: string;
+  quantityTotal: number;
+  orderCount: number;
+}
+
+interface ProductionPdfOrderRow {
+  sequence: number;
+  orderNo: string;
+  statusLabel: string;
+  quantityTotal: number;
+}
+
+const BATCH_EXCLUDED_ORDER_MESSAGE = '배치 제외 주문입니다.';
+const PAYMENT_EXCLUDED_STATUSES = new Set(['CANCELED', 'REFUNDED']);
+const OPEN_BATCH_STATUSES_FOR_CANDIDATES = ['DRAFT', 'ACTIVE'];
+
 @Injectable()
 export class V2AdminBatchService {
+  private readonly logger = new Logger(V2AdminBatchService.name);
+
   constructor(
     private readonly v2AdminOrderTransitionService: V2AdminOrderTransitionService,
   ) {}
@@ -84,7 +139,10 @@ export class V2AdminBatchService {
     const projectId = this.normalizeOptionalUuid(params.projectId);
     const campaignId = this.normalizeOptionalUuid(params.campaignId);
 
-    const rows = await this.fetchQueueRows(limit);
+    const [rows, reservedOrderIds] = await Promise.all([
+      this.fetchQueueRows(limit),
+      this.fetchReservedProductionCandidateOrderIds(),
+    ]);
     const orderScopeByOrderId = await this.fetchOrderScopeByOrderIds(
       rows
         .map((row) => this.normalizeOptionalUuid(row.order_id))
@@ -97,6 +155,10 @@ export class V2AdminBatchService {
       .filter(
         (row) => this.resolveStageFromQueueRow(row) === 'PAYMENT_CONFIRMED',
       )
+      .filter(
+        (row) => !this.isReservedCandidateOrder(row.order_id, reservedOrderIds),
+      )
+      .filter((row) => Boolean(row.has_physical))
       .filter((row) =>
         this.matchesDateRange(
           row.placed_at || row.created_at,
@@ -377,6 +439,14 @@ export class V2AdminBatchService {
       }
 
       const stage = this.resolveStageFromQueueRow(row);
+      if (!Boolean(row.has_physical)) {
+        blockedRows.push({
+          order_id: orderId,
+          order_no: row.order_no,
+          reason: '실물 상품이 없는 주문은 제작 배치를 생성할 수 없습니다.',
+        });
+        continue;
+      }
       if (stage !== 'PAYMENT_CONFIRMED') {
         blockedRows.push({
           order_id: orderId,
@@ -428,105 +498,175 @@ export class V2AdminBatchService {
       );
     }
 
-    const title =
-      requestedTitle || (await this.generateProductionSnapshotTitle());
-    const projectSummary =
-      await this.buildProductionProjectSummary(validOrderIds);
+    const ordersSnapshot = await this.fetchOrdersSnapshot(validOrderIds);
+    const physicalItemsByOrderId =
+      await this.fetchPhysicalProductionItemsByOrderIds(validOrderIds);
+    const groupedCampaignBatches = this.groupProductionItemsByCampaignScope(
+      validOrderIds,
+      physicalItemsByOrderId,
+    );
 
-    const batchNo = this.generateBatchNo('PB');
-    const snapshot = {
-      notes,
-      idempotency_key: idempotencyKey,
-      project_summary: projectSummary,
-      preview,
-    };
-
-    const { data: batch, error: batchError } = await this.supabase
-      .from('v2_admin_production_batches')
-      .insert({
-        batch_no: batchNo,
-        status: 'DRAFT',
-        title,
-        order_count: validOrderIds.length,
-        item_quantity_total: (preview.aggregates || []).reduce(
-          (sum: number, row: any) => sum + Number(row.quantity_total || 0),
-          0,
-        ),
-        snapshot_json: snapshot,
-        created_by: actor.id,
-        metadata: {
-          ...metadata,
-          project_summary: projectSummary,
-          auto_title: requestedTitle ? false : true,
-        },
-      })
-      .select('*')
-      .maybeSingle();
-
-    if (batchError || !batch) {
+    if (groupedCampaignBatches.length === 0) {
       throw new ApiException(
-        '제작 배치 생성 실패',
-        500,
-        'V2_ADMIN_PRODUCTION_BATCH_CREATE_FAILED',
+        '제작 가능한 실물 주문상품이 없어 배치를 생성할 수 없습니다.',
+        400,
+        'V2_ADMIN_PRODUCTION_BATCH_PHYSICAL_ITEMS_EMPTY',
       );
     }
 
-    const ordersSnapshot = await this.fetchOrdersSnapshot(validOrderIds);
+    const createdBatchDetails: any[] = [];
+    for (
+      let groupIndex = 0;
+      groupIndex < groupedCampaignBatches.length;
+      groupIndex += 1
+    ) {
+      const group = groupedCampaignBatches[groupIndex];
+      const title = requestedTitle
+        ? this.buildScopedProductionBatchTitle(
+            requestedTitle,
+            group,
+            groupIndex,
+            groupedCampaignBatches.length,
+          )
+        : await this.generateProductionSnapshotTitle();
 
-    const orderInsertRows = validOrderIds.map((orderId) => {
-      const queue = ordersSnapshot.queueMap.get(orderId);
-      const order = ordersSnapshot.orderMap.get(orderId);
-      const items = ordersSnapshot.itemsMap.get(orderId) || [];
+      const batchNo = this.generateBatchNo('PB');
+      const itemQuantityTotal = group.items.reduce(
+        (sum: number, item) => sum + Number(item.quantity || 0),
+        0,
+      );
+      const snapshot = {
+        notes,
+        idempotency_key: idempotencyKey,
+        preview,
+        grouping: {
+          key: group.key,
+          project_id: group.project_id,
+          project_name: group.project_name,
+          campaign_id: group.campaign_id,
+          campaign_name: group.campaign_name,
+          group_index: groupIndex + 1,
+          group_count: groupedCampaignBatches.length,
+        },
+      };
+
+      const { data: batch, error: batchError } = await this.supabase
+        .from('v2_admin_production_batches')
+        .insert({
+          batch_no: batchNo,
+          status: 'DRAFT',
+          title,
+          order_count: group.order_ids.length,
+          item_quantity_total: itemQuantityTotal,
+          snapshot_json: snapshot,
+          created_by: actor.id,
+          metadata: {
+            ...metadata,
+            project_summary: group.project_name || '프로젝트 미지정',
+            campaign_summary: group.campaign_name || '캠페인 미지정',
+            project_id: group.project_id,
+            campaign_id: group.campaign_id,
+            auto_title: requestedTitle ? false : true,
+            grouped_batch_count: groupedCampaignBatches.length,
+          },
+        })
+        .select('*')
+        .maybeSingle();
+
+      if (batchError || !batch) {
+        throw new ApiException(
+          '제작 배치 생성 실패',
+          500,
+          'V2_ADMIN_PRODUCTION_BATCH_CREATE_FAILED',
+        );
+      }
+
+      const orderItemsByOrderId = new Map<string, any[]>();
+      for (const item of group.items) {
+        const list = orderItemsByOrderId.get(item.order_id) || [];
+        list.push(item.row);
+        orderItemsByOrderId.set(item.order_id, list);
+      }
+
+      const orderInsertRows = group.order_ids.map((orderId) => {
+        const queue = ordersSnapshot.queueMap.get(orderId);
+        const order = ordersSnapshot.orderMap.get(orderId);
+        const scopedItems = orderItemsByOrderId.get(orderId) || [];
+        return {
+          batch_id: batch.id,
+          order_id: orderId,
+          order_no: queue?.order_no || order?.order_no || orderId,
+          stage_at_snapshot: this.resolveStageFromQueueRow(queue || {}),
+          customer_snapshot: order?.customer_snapshot || null,
+          pricing_snapshot: order?.pricing_snapshot || null,
+          line_items_snapshot: scopedItems,
+          metadata: {
+            project_id: group.project_id,
+            campaign_id: group.campaign_id,
+          },
+        };
+      });
+
+      const { error: orderInsertError } = await this.supabase
+        .from('v2_admin_production_batch_orders')
+        .insert(orderInsertRows);
+
+      if (orderInsertError) {
+        throw new ApiException(
+          '제작 배치 주문 스냅샷 저장 실패',
+          500,
+          'V2_ADMIN_PRODUCTION_BATCH_ORDER_INSERT_FAILED',
+        );
+      }
+
+      const aggregateRows = this.buildProductionAggregatesFromItems(
+        batch.id,
+        group.items,
+      );
+      if (aggregateRows.length > 0) {
+        const { error: aggInsertError } = await this.supabase
+          .from('v2_admin_production_batch_item_aggregates')
+          .insert(aggregateRows);
+
+        if (aggInsertError) {
+          throw new ApiException(
+            '제작 배치 집계 저장 실패',
+            500,
+            'V2_ADMIN_PRODUCTION_BATCH_AGG_INSERT_FAILED',
+          );
+        }
+      }
+
+      await this.insertProductionBatchItems(batch.id, group.items);
+      createdBatchDetails.push(await this.getProductionBatchDetail(batch.id));
+    }
+
+    const primaryBatchDetail = createdBatchDetails[0];
+    const createdBatches = createdBatchDetails.map((detail: any) => {
+      const batch = detail?.batch || {};
+      const batchMetadata =
+        this.normalizeOptionalJsonObject(batch.metadata) || {};
       return {
-        batch_id: batch.id,
-        order_id: orderId,
-        order_no: queue?.order_no || order?.order_no || orderId,
-        stage_at_snapshot: this.resolveStageFromQueueRow(queue || {}),
-        customer_snapshot: order?.customer_snapshot || null,
-        pricing_snapshot: order?.pricing_snapshot || null,
-        line_items_snapshot: items,
-        metadata: {},
+        id: this.normalizeOptionalUuid(batch.id),
+        batch_no: this.normalizeOptionalText(batch.batch_no),
+        title: this.normalizeOptionalText(batch.title),
+        project_id: this.normalizeOptionalUuid(batchMetadata.project_id),
+        project_name: this.normalizeOptionalText(batchMetadata.project_summary),
+        campaign_id: this.normalizeOptionalUuid(batchMetadata.campaign_id),
+        campaign_name: this.normalizeOptionalText(
+          batchMetadata.campaign_summary,
+        ),
+        order_count: Number(batch.order_count || 0),
+        item_quantity_total: Number(batch.item_quantity_total || 0),
       };
     });
 
-    const { error: orderInsertError } = await this.supabase
-      .from('v2_admin_production_batch_orders')
-      .insert(orderInsertRows);
-
-    if (orderInsertError) {
-      throw new ApiException(
-        '제작 배치 주문 스냅샷 저장 실패',
-        500,
-        'V2_ADMIN_PRODUCTION_BATCH_ORDER_INSERT_FAILED',
-      );
-    }
-
-    const aggInsertRows = (preview.aggregates || []).map((row: any) => ({
-      batch_id: batch.id,
-      product_id: row.product_id,
-      variant_id: row.variant_id,
-      product_name: row.product_name,
-      variant_name: row.variant_name,
-      quantity_total: row.quantity_total,
-      order_count: row.order_count,
-      metadata: {},
-    }));
-
-    if (aggInsertRows.length > 0) {
-      const { error: aggInsertError } = await this.supabase
-        .from('v2_admin_production_batch_item_aggregates')
-        .insert(aggInsertRows);
-
-      if (aggInsertError) {
-        throw new ApiException(
-          '제작 배치 집계 저장 실패',
-          500,
-          'V2_ADMIN_PRODUCTION_BATCH_AGG_INSERT_FAILED',
-        );
-      }
-    }
-
-    return this.getProductionBatchDetail(batch.id);
+    return {
+      ...primaryBatchDetail,
+      created_batch_count: createdBatches.length,
+      created_batches: createdBatches,
+      grouped_by: 'project_campaign',
+    };
   }
 
   async listProductionBatches(params: {
@@ -581,7 +721,7 @@ export class V2AdminBatchService {
       );
     }
 
-    const [ordersResult, aggResult] = await Promise.all([
+    const [ordersResult, aggResult, items] = await Promise.all([
       this.supabase
         .from('v2_admin_production_batch_orders')
         .select('*')
@@ -592,6 +732,7 @@ export class V2AdminBatchService {
         .select('*')
         .eq('batch_id', normalizedBatchId)
         .order('quantity_total', { ascending: false }),
+      this.fetchProductionBatchItemsByBatchIdSafe(normalizedBatchId),
     ]);
 
     if (ordersResult.error || aggResult.error) {
@@ -606,7 +747,79 @@ export class V2AdminBatchService {
       batch,
       orders: ordersResult.data || [],
       aggregates: aggResult.data || [],
+      items,
     };
+  }
+
+  async generateProductionBatchPrintPdf(batchId: string): Promise<{
+    buffer: Buffer;
+    fileName: string;
+  }> {
+    const detail = await this.getProductionBatchDetail(batchId);
+    const batchNo =
+      this.normalizeOptionalText(detail?.batch?.batch_no) || 'production_batch';
+    const batchTitle = this.normalizeOptionalText(detail?.batch?.title) || '-';
+    const batchStatus =
+      this.normalizeOptionalText(detail?.batch?.status) || '-';
+    const safeBatchNo = batchNo.replace(/[^A-Za-z0-9_-]/g, '_');
+    const fileName = `${safeBatchNo || 'production_batch'}_production_request.pdf`;
+
+    const aggregateRows: ProductionPdfAggregateRow[] = (detail?.aggregates || []).map(
+      (row: any) => ({
+        productName:
+          this.normalizeOptionalText(row?.product_name) || '이름 없는 상품',
+        variantName: this.normalizeOptionalText(row?.variant_name) || '-',
+        quantityTotal: Math.max(0, Number(row?.quantity_total || 0)),
+        orderCount: Math.max(0, Number(row?.order_count || 0)),
+      }),
+    );
+
+    const orderRows: ProductionPdfOrderRow[] = (detail?.orders || []).map(
+      (row: any, index: number) => {
+        const lineItems = this.extractShippingPdfLineItems(
+          row?.line_items_snapshot,
+        );
+        return {
+          sequence: index + 1,
+          orderNo: this.normalizeOptionalText(row?.order_no) || '-',
+          statusLabel: this.resolveProductionOrderStatusLabelForPdf(row),
+          quantityTotal: lineItems.reduce(
+            (sum, lineItem) => sum + lineItem.quantity,
+            0,
+          ),
+        };
+      },
+    );
+
+    try {
+      const html = this.buildProductionBatchPdfHtml({
+        batchNo,
+        batchTitle,
+        batchStatus,
+        generatedAt: new Date(),
+        aggregateRows,
+        orderRows,
+      });
+      const buffer = await this.renderPdfBufferFromHtml(html);
+      return {
+        buffer,
+        fileName,
+      };
+    } catch (error) {
+      const causeMessage = this.summarizeUnexpectedError(error);
+      this.logger.error(
+        `제작 의뢰서 PDF 생성 실패 (batchId=${batchId}): ${causeMessage}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+
+      throw new ApiException(
+        process.env.NODE_ENV === 'production'
+          ? '제작 의뢰서 PDF 생성 실패'
+          : `제작 의뢰서 PDF 생성 실패: ${causeMessage}`,
+        500,
+        'V2_ADMIN_PRODUCTION_BATCH_PDF_RENDER_FAILED',
+      );
+    }
   }
 
   async activateProductionBatch(input: {
@@ -637,17 +850,26 @@ export class V2AdminBatchService {
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
 
     const orderIds = await this.fetchProductionBatchOrderIds(batch.id);
-    const transitionResult = await this.v2AdminOrderTransitionService.execute({
-      orderIds,
-      targetStage: 'PRODUCTION',
-      reason,
-      requestId,
-      metadata,
-      actor,
-    });
-
-    const orderStatusMap = this.buildOrderTransitionStatusMap(transitionResult);
+    let orderStatusMap = new Map<string, BatchTransitionOrderStatus>();
+    if (orderIds.length > 0) {
+      const transitionResult = await this.v2AdminOrderTransitionService.execute(
+        {
+          orderIds,
+          targetStage: 'PRODUCTION',
+          reason,
+          requestId,
+          metadata,
+          actor,
+        },
+      );
+      orderStatusMap = this.buildOrderTransitionStatusMap(transitionResult);
+    }
     await this.updateProductionBatchOrderTransitionStatus(
+      batch.id,
+      'activate',
+      orderStatusMap,
+    );
+    await this.updateProductionBatchItemTransitionStatus(
       batch.id,
       'activate',
       orderStatusMap,
@@ -701,16 +923,50 @@ export class V2AdminBatchService {
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
 
     const orderIds = await this.fetchProductionBatchOrderIds(batch.id);
-    const transitionResult = await this.v2AdminOrderTransitionService.execute({
-      orderIds,
-      targetStage: 'READY_TO_SHIP',
-      reason,
-      requestId,
-      metadata,
-      actor,
-    });
+    const itemCompleteStatusMap = new Map<string, BatchTransitionOrderStatus>();
+    for (const orderId of orderIds) {
+      itemCompleteStatusMap.set(orderId, {
+        status: 'SUCCEEDED',
+        errorMessage: null,
+      });
+    }
+    await this.updateProductionBatchItemTransitionStatus(
+      batch.id,
+      'complete',
+      itemCompleteStatusMap,
+    );
 
-    const orderStatusMap = this.buildOrderTransitionStatusMap(transitionResult);
+    const orderStatusMap = new Map<string, BatchTransitionOrderStatus>();
+    const eligibleOrderIds = await this.filterOrdersReadyToShip(orderIds);
+
+    for (const orderId of orderIds) {
+      if (!eligibleOrderIds.includes(orderId)) {
+        orderStatusMap.set(orderId, {
+          status: 'SKIPPED',
+          errorMessage:
+            '주문 내 다른 실물 주문상품의 제작이 완료되지 않아 배송 대기로 전환하지 않았습니다.',
+        });
+      }
+    }
+
+    if (eligibleOrderIds.length > 0) {
+      const transitionResult = await this.v2AdminOrderTransitionService.execute(
+        {
+          orderIds: eligibleOrderIds,
+          targetStage: 'READY_TO_SHIP',
+          reason,
+          requestId,
+          metadata,
+          actor,
+        },
+      );
+      const transitionMap =
+        this.buildOrderTransitionStatusMap(transitionResult);
+      for (const [orderId, status] of transitionMap.entries()) {
+        orderStatusMap.set(orderId, status);
+      }
+    }
+
     await this.updateProductionBatchOrderTransitionStatus(
       batch.id,
       'complete',
@@ -861,6 +1117,8 @@ export class V2AdminBatchService {
       );
     }
 
+    await this.cancelProductionBatchItems(batch.id);
+
     return this.getProductionBatchDetail(batch.id);
   }
 
@@ -880,7 +1138,10 @@ export class V2AdminBatchService {
     const projectId = this.normalizeOptionalUuid(params.projectId);
     const campaignId = this.normalizeOptionalUuid(params.campaignId);
 
-    const rows = await this.fetchQueueRows(limit);
+    const [rows, reservedOrderIds] = await Promise.all([
+      this.fetchQueueRows(limit),
+      this.fetchReservedShippingCandidateOrderIds(),
+    ]);
     const orderScopeByOrderId = await this.fetchOrderScopeByOrderIds(
       rows
         .map((row) => this.normalizeOptionalUuid(row.order_id))
@@ -891,6 +1152,9 @@ export class V2AdminBatchService {
 
     const items = rows
       .filter((row) => this.resolveStageFromQueueRow(row) === 'READY_TO_SHIP')
+      .filter(
+        (row) => !this.isReservedCandidateOrder(row.order_id, reservedOrderIds),
+      )
       .filter((row) =>
         this.matchesDateRange(
           row.placed_at || row.created_at,
@@ -957,7 +1221,9 @@ export class V2AdminBatchService {
     const orderIds = this.normalizeOrderIds(input.orderIds);
     const queueMap = await this.fetchQueueMapByOrderIds(orderIds);
     const ordersMap = await this.fetchOrdersMapByIds(orderIds);
-    const itemsMap = await this.fetchOrderItemsMapByOrderIds(orderIds);
+    const orderItemsMap = await this.fetchOrderItemsMapByOrderIds(orderIds);
+    const shippingItemsMap =
+      this.filterPhysicalOrderItemsByOrderId(orderItemsMap);
 
     const blockedRows: Array<{
       order_id: string;
@@ -992,26 +1258,27 @@ export class V2AdminBatchService {
       const shippingSnapshot = this.normalizeOptionalJsonObject(
         order?.shipping_address_snapshot,
       );
-      const items = itemsMap.get(orderId) || [];
+      const customerSnapshot = this.normalizeOptionalJsonObject(
+        order?.customer_snapshot,
+      );
+      const items = shippingItemsMap.get(orderId) || [];
 
       validOrderIds.push(orderId);
       packingRows.push({
         order_id: orderId,
         order_no: row.order_no,
         recipient_name:
-          this.readSnapshotText(shippingSnapshot, 'name') ||
+          this.readSnapshotText(shippingSnapshot, 'recipient_name') ||
           this.readSnapshotText(shippingSnapshot, 'receiver_name') ||
-          this.readSnapshotText(
-            this.normalizeOptionalJsonObject(order?.customer_snapshot),
-            'name',
-          ),
+          this.readSnapshotText(shippingSnapshot, 'name') ||
+          this.readSnapshotText(customerSnapshot, 'recipient_name') ||
+          this.readSnapshotText(customerSnapshot, 'name'),
         recipient_phone:
-          this.readSnapshotText(shippingSnapshot, 'phone') ||
+          this.readSnapshotText(shippingSnapshot, 'recipient_phone') ||
           this.readSnapshotText(shippingSnapshot, 'receiver_phone') ||
-          this.readSnapshotText(
-            this.normalizeOptionalJsonObject(order?.customer_snapshot),
-            'phone',
-          ),
+          this.readSnapshotText(shippingSnapshot, 'phone') ||
+          this.readSnapshotText(customerSnapshot, 'recipient_phone') ||
+          this.readSnapshotText(customerSnapshot, 'phone'),
         address_summary: this.buildAddressSummary(shippingSnapshot),
         item_count: items.reduce(
           (sum: number, item: any) => sum + Number(item.quantity || 0),
@@ -1090,6 +1357,9 @@ export class V2AdminBatchService {
     }
 
     const ordersSnapshot = await this.fetchOrdersSnapshot(validOrderIds);
+    const shippingItemsMap = this.filterPhysicalOrderItemsByOrderId(
+      ordersSnapshot.itemsMap,
+    );
 
     const orderInsertRows = validOrderIds.map((orderId) => {
       const queue = ordersSnapshot.queueMap.get(orderId);
@@ -1097,7 +1367,10 @@ export class V2AdminBatchService {
       const shippingSnapshot = this.normalizeOptionalJsonObject(
         order?.shipping_address_snapshot,
       );
-      const items = ordersSnapshot.itemsMap.get(orderId) || [];
+      const customerSnapshot = this.normalizeOptionalJsonObject(
+        order?.customer_snapshot,
+      );
+      const items = shippingItemsMap.get(orderId) || [];
 
       return {
         batch_id: batch.id,
@@ -1105,12 +1378,18 @@ export class V2AdminBatchService {
         order_no: queue?.order_no || order?.order_no || orderId,
         stage_at_snapshot: this.resolveStageFromQueueRow(queue || {}),
         recipient_name:
-          this.readSnapshotText(shippingSnapshot, 'name') ||
+          this.readSnapshotText(shippingSnapshot, 'recipient_name') ||
           this.readSnapshotText(shippingSnapshot, 'receiver_name') ||
+          this.readSnapshotText(shippingSnapshot, 'name') ||
+          this.readSnapshotText(customerSnapshot, 'recipient_name') ||
+          this.readSnapshotText(customerSnapshot, 'name') ||
           null,
         recipient_phone:
-          this.readSnapshotText(shippingSnapshot, 'phone') ||
+          this.readSnapshotText(shippingSnapshot, 'recipient_phone') ||
           this.readSnapshotText(shippingSnapshot, 'receiver_phone') ||
+          this.readSnapshotText(shippingSnapshot, 'phone') ||
+          this.readSnapshotText(customerSnapshot, 'recipient_phone') ||
+          this.readSnapshotText(customerSnapshot, 'phone') ||
           null,
         shipping_address_snapshot: shippingSnapshot || null,
         line_items_snapshot: items,
@@ -1129,6 +1408,12 @@ export class V2AdminBatchService {
         'V2_ADMIN_SHIPPING_BATCH_ORDER_INSERT_FAILED',
       );
     }
+
+    await this.insertShippingBatchItems(
+      batch.id,
+      orderInsertRows,
+      shippingItemsMap,
+    );
 
     return this.getShippingBatchDetail(batch.id);
   }
@@ -1211,6 +1496,95 @@ export class V2AdminBatchService {
       orders: ordersResult.data || [],
       packages: packagesResult.data || [],
     };
+  }
+
+  async generateShippingBatchPrintPdf(batchId: string): Promise<{
+    buffer: Buffer;
+    fileName: string;
+  }> {
+    const detail = await this.getShippingBatchDetail(batchId);
+    const batchNo =
+      this.normalizeOptionalText(detail?.batch?.batch_no) || 'shipping_batch';
+    const batchTitle = this.normalizeOptionalText(detail?.batch?.title) || '-';
+    const batchStatus =
+      this.normalizeOptionalText(detail?.batch?.status) || '-';
+    const safeBatchNo = batchNo.replace(/[^A-Za-z0-9_-]/g, '_');
+    const fileName = `${safeBatchNo || 'shipping_batch'}_shipping_list.pdf`;
+
+    const packageByBatchOrderId = new Map<string, any>();
+    for (const row of detail?.packages || []) {
+      const batchOrderId = this.normalizeOptionalUuid(row?.batch_order_id);
+      if (!batchOrderId || packageByBatchOrderId.has(batchOrderId)) {
+        continue;
+      }
+      packageByBatchOrderId.set(batchOrderId, row);
+    }
+
+    const rows: ShippingPdfOrderRow[] = (detail?.orders || []).map(
+      (order: any, index: number) => {
+        const lineItems = this.extractShippingPdfLineItems(
+          order?.line_items_snapshot,
+        );
+        const quantityTotal = lineItems.reduce(
+          (sum, row) => sum + row.quantity,
+          0,
+        );
+        const packageRow =
+          packageByBatchOrderId.get(
+            this.normalizeOptionalUuid(order?.id) || '',
+          ) || null;
+        const carrier =
+          this.normalizeOptionalText(packageRow?.carrier_code) || '-';
+        const trackingNo = this.normalizeOptionalText(packageRow?.tracking_no);
+        const trackingDisplay = trackingNo ? `${carrier} / ${trackingNo}` : '-';
+
+        return {
+          sequence: index + 1,
+          orderNo: this.normalizeOptionalText(order?.order_no) || '-',
+          recipientName:
+            this.normalizeOptionalText(order?.recipient_name) || '-',
+          recipientPhone:
+            this.normalizeOptionalText(order?.recipient_phone) || '-',
+          address:
+            this.buildAddressSummary(
+              this.normalizeOptionalJsonObject(
+                order?.shipping_address_snapshot,
+              ),
+            ) || '-',
+          trackingDisplay,
+          quantityTotal,
+          items: lineItems,
+        };
+      },
+    );
+
+    try {
+      const buffer = await this.renderShippingBatchPdfBuffer({
+        batchNo,
+        batchTitle,
+        batchStatus,
+        generatedAt: new Date(),
+        rows,
+      });
+      return {
+        buffer,
+        fileName,
+      };
+    } catch (error) {
+      const causeMessage = this.summarizeUnexpectedError(error);
+      this.logger.error(
+        `배송 리스트 PDF 생성 실패 (batchId=${batchId}): ${causeMessage}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+
+      throw new ApiException(
+        process.env.NODE_ENV === 'production'
+          ? '배송 리스트 PDF 생성 실패'
+          : `배송 리스트 PDF 생성 실패: ${causeMessage}`,
+        500,
+        'V2_ADMIN_SHIPPING_BATCH_PDF_RENDER_FAILED',
+      );
+    }
   }
 
   async saveShippingBatchPackages(input: {
@@ -1386,16 +1760,20 @@ export class V2AdminBatchService {
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
 
     const orderIds = await this.fetchShippingBatchOrderIds(batch.id);
-    const transitionResult = await this.v2AdminOrderTransitionService.execute({
-      orderIds,
-      targetStage: 'IN_TRANSIT',
-      reason,
-      requestId,
-      metadata,
-      actor,
-    });
-
-    const orderStatusMap = this.buildOrderTransitionStatusMap(transitionResult);
+    let orderStatusMap = new Map<string, BatchTransitionOrderStatus>();
+    if (orderIds.length > 0) {
+      const transitionResult = await this.v2AdminOrderTransitionService.execute(
+        {
+          orderIds,
+          targetStage: 'IN_TRANSIT',
+          reason,
+          requestId,
+          metadata,
+          actor,
+        },
+      );
+      orderStatusMap = this.buildOrderTransitionStatusMap(transitionResult);
+    }
     await this.updateShippingBatchOrderTransitionStatus(
       batch.id,
       'dispatch',
@@ -1469,16 +1847,20 @@ export class V2AdminBatchService {
     const metadata = this.normalizeOptionalJsonObject(input.metadata) || {};
 
     const orderIds = await this.fetchShippingBatchOrderIds(batch.id);
-    const transitionResult = await this.v2AdminOrderTransitionService.execute({
-      orderIds,
-      targetStage: 'DELIVERED',
-      reason,
-      requestId,
-      metadata,
-      actor,
-    });
-
-    const orderStatusMap = this.buildOrderTransitionStatusMap(transitionResult);
+    let orderStatusMap = new Map<string, BatchTransitionOrderStatus>();
+    if (orderIds.length > 0) {
+      const transitionResult = await this.v2AdminOrderTransitionService.execute(
+        {
+          orderIds,
+          targetStage: 'DELIVERED',
+          reason,
+          requestId,
+          metadata,
+          actor,
+        },
+      );
+      orderStatusMap = this.buildOrderTransitionStatusMap(transitionResult);
+    }
     await this.updateShippingBatchOrderTransitionStatus(
       batch.id,
       'complete',
@@ -1663,13 +2045,154 @@ export class V2AdminBatchService {
     return data;
   }
 
+  private async syncProductionBatchOrderExclusions(
+    batchId: string,
+  ): Promise<void> {
+    await this.syncBatchOrderExclusions({
+      tableName: 'v2_admin_production_batch_orders',
+      batchId,
+    });
+  }
+
+  private async syncShippingBatchOrderExclusions(
+    batchId: string,
+  ): Promise<void> {
+    await this.syncBatchOrderExclusions({
+      tableName: 'v2_admin_shipping_batch_orders',
+      batchId,
+    });
+  }
+
+  private async syncBatchOrderExclusions(input: {
+    tableName:
+      | 'v2_admin_production_batch_orders'
+      | 'v2_admin_shipping_batch_orders';
+    batchId: string;
+  }): Promise<void> {
+    const { data: batchOrderRows, error: batchOrderError } = await this.supabase
+      .from(input.tableName)
+      .select('id, order_id, is_excluded')
+      .eq('batch_id', input.batchId);
+
+    if (batchOrderError) {
+      throw new ApiException(
+        '배치 제외 주문 동기화 조회 실패',
+        500,
+        'V2_ADMIN_BATCH_EXCLUDED_SYNC_FETCH_FAILED',
+      );
+    }
+
+    const activeRows = (batchOrderRows || [])
+      .map((row: any) => ({
+        id: this.normalizeOptionalUuid(row?.id),
+        orderId: this.normalizeOptionalUuid(row?.order_id),
+        isExcluded: row?.is_excluded === true,
+      }))
+      .filter(
+        (row): row is { id: string; orderId: string; isExcluded: boolean } =>
+          Boolean(row.id) && Boolean(row.orderId),
+      )
+      .filter((row) => row.isExcluded === false);
+
+    if (activeRows.length === 0) {
+      return;
+    }
+
+    const orderIds = Array.from(new Set(activeRows.map((row) => row.orderId)));
+    const { data: orderRows, error: orderFetchError } = await this.supabase
+      .from('v2_orders')
+      .select('id, order_status, payment_status, fulfillment_status')
+      .in('id', orderIds);
+
+    if (orderFetchError) {
+      throw new ApiException(
+        '배치 제외 주문 상태 조회 실패',
+        500,
+        'V2_ADMIN_BATCH_EXCLUDED_ORDER_FETCH_FAILED',
+      );
+    }
+
+    const orderById = new Map<string, any>();
+    for (const order of orderRows || []) {
+      const orderId = this.normalizeOptionalUuid(order?.id);
+      if (orderId) {
+        orderById.set(orderId, order);
+      }
+    }
+
+    const now = new Date().toISOString();
+    for (const row of activeRows) {
+      const order = orderById.get(row.orderId);
+      if (!order || !this.shouldExcludeOrderFromBatch(order)) {
+        continue;
+      }
+
+      const orderStatus =
+        this.normalizeOptionalText(order?.order_status)?.toUpperCase() || '-';
+      const paymentStatus =
+        this.normalizeOptionalText(order?.payment_status)?.toUpperCase() || '-';
+      const fulfillmentStatus =
+        this.normalizeOptionalText(order?.fulfillment_status)?.toUpperCase() ||
+        '-';
+
+      const { error: updateError } = await this.supabase
+        .from(input.tableName)
+        .update({
+          is_excluded: true,
+          excluded_reason: `배치 실행 제외: order=${orderStatus}, payment=${paymentStatus}, fulfillment=${fulfillmentStatus}`,
+          excluded_at: now,
+          excluded_by: {
+            source: 'ORDER_STATUS_SYNC',
+            order_status: orderStatus,
+            payment_status: paymentStatus,
+            fulfillment_status: fulfillmentStatus,
+            synced_at: now,
+          },
+        })
+        .eq('id', row.id)
+        .eq('is_excluded', false);
+
+      if (updateError) {
+        throw new ApiException(
+          '배치 제외 주문 동기화 업데이트 실패',
+          500,
+          'V2_ADMIN_BATCH_EXCLUDED_SYNC_UPDATE_FAILED',
+        );
+      }
+    }
+  }
+
+  private shouldExcludeOrderFromBatch(order: any): boolean {
+    const orderStatus =
+      this.normalizeOptionalText(order?.order_status)?.toUpperCase() || '';
+    const paymentStatus =
+      this.normalizeOptionalText(order?.payment_status)?.toUpperCase() || '';
+    const fulfillmentStatus =
+      this.normalizeOptionalText(order?.fulfillment_status)?.toUpperCase() ||
+      '';
+
+    if (orderStatus === 'CANCELED') {
+      return true;
+    }
+    if (PAYMENT_EXCLUDED_STATUSES.has(paymentStatus)) {
+      return true;
+    }
+    if (fulfillmentStatus === 'CANCELED') {
+      return true;
+    }
+    return false;
+  }
+
   private async fetchProductionBatchOrderIds(
     batchId: string,
   ): Promise<string[]> {
+    await this.syncProductionBatchOrderExclusions(batchId);
+
     const { data, error } = await this.supabase
       .from('v2_admin_production_batch_orders')
       .select('order_id')
       .eq('batch_id', batchId)
+      .eq('is_excluded', false)
       .order('created_at', { ascending: true });
 
     if (error) {
@@ -1686,10 +2209,13 @@ export class V2AdminBatchService {
   }
 
   private async fetchShippingBatchOrderIds(batchId: string): Promise<string[]> {
+    await this.syncShippingBatchOrderExclusions(batchId);
+
     const { data, error } = await this.supabase
       .from('v2_admin_shipping_batch_orders')
       .select('order_id')
       .eq('batch_id', batchId)
+      .eq('is_excluded', false)
       .order('created_at', { ascending: true });
 
     if (error) {
@@ -1717,7 +2243,7 @@ export class V2AdminBatchService {
 
     const { data, error } = await this.supabase
       .from('v2_admin_production_batch_orders')
-      .select('id, order_id')
+      .select('id, order_id, is_excluded, excluded_reason, error_message')
       .eq('batch_id', batchId);
 
     if (error) {
@@ -1731,9 +2257,13 @@ export class V2AdminBatchService {
     for (const row of data || []) {
       const orderId = this.normalizeOptionalUuid(row.order_id);
       const status = orderId ? statusMap.get(orderId) : null;
+      const isExcluded = row?.is_excluded === true;
+      const excludedReason = this.normalizeOptionalText(row?.excluded_reason);
       const updatePayload: Record<string, unknown> = {
-        [fieldName]: status?.status || 'SKIPPED',
-        error_message: status?.errorMessage || null,
+        [fieldName]: isExcluded ? 'SKIPPED' : status?.status || 'SKIPPED',
+        error_message: isExcluded
+          ? excludedReason || BATCH_EXCLUDED_ORDER_MESSAGE
+          : status?.errorMessage || null,
       };
 
       const { error: updateError } = await this.supabase
@@ -1763,7 +2293,7 @@ export class V2AdminBatchService {
 
     const { data, error } = await this.supabase
       .from('v2_admin_shipping_batch_orders')
-      .select('id, order_id')
+      .select('id, order_id, is_excluded, excluded_reason, error_message')
       .eq('batch_id', batchId);
 
     if (error) {
@@ -1777,9 +2307,13 @@ export class V2AdminBatchService {
     for (const row of data || []) {
       const orderId = this.normalizeOptionalUuid(row.order_id);
       const status = orderId ? statusMap.get(orderId) : null;
+      const isExcluded = row?.is_excluded === true;
+      const excludedReason = this.normalizeOptionalText(row?.excluded_reason);
       const updatePayload: Record<string, unknown> = {
-        [fieldName]: status?.status || 'SKIPPED',
-        error_message: status?.errorMessage || null,
+        [fieldName]: isExcluded ? 'SKIPPED' : status?.status || 'SKIPPED',
+        error_message: isExcluded
+          ? excludedReason || BATCH_EXCLUDED_ORDER_MESSAGE
+          : status?.errorMessage || null,
       };
 
       const { error: updateError } = await this.supabase
@@ -1843,6 +2377,28 @@ export class V2AdminBatchService {
       }
 
       if (rowLogs.length === 0) {
+        const currentStage =
+          this.normalizeOptionalText(row?.current_stage)?.toUpperCase() || null;
+        const targetStage =
+          this.normalizeOptionalText(row?.target_stage)?.toUpperCase() || null;
+        const blockedReasons = Array.isArray(row?.blocked_reasons)
+          ? row.blocked_reasons
+          : [];
+        const isNoopSuccess =
+          row?.executable === true &&
+          blockedReasons.length === 0 &&
+          Boolean(currentStage) &&
+          Boolean(targetStage) &&
+          currentStage === targetStage;
+
+        if (isNoopSuccess) {
+          map.set(orderId, {
+            status: 'SUCCEEDED',
+            errorMessage: null,
+          });
+          continue;
+        }
+
         map.set(orderId, {
           status: 'SKIPPED',
           errorMessage: '전이 로그가 생성되지 않았습니다.',
@@ -1870,6 +2426,667 @@ export class V2AdminBatchService {
     return false;
   }
 
+  private buildScopedProductionBatchTitle(
+    baseTitle: string,
+    group: ProductionCampaignGroup,
+    groupIndex: number,
+    groupCount: number,
+  ): string {
+    if (groupCount <= 1) {
+      return baseTitle;
+    }
+
+    const projectLabel = group.project_name || '프로젝트 미지정';
+    const campaignLabel = group.campaign_name || '캠페인 미지정';
+    const scopedTitle = `${baseTitle} [${projectLabel} / ${campaignLabel}]`;
+    if (scopedTitle.length <= 255) {
+      return scopedTitle;
+    }
+
+    return `${baseTitle} [그룹 ${groupIndex + 1}/${groupCount}]`;
+  }
+
+  private groupProductionItemsByCampaignScope(
+    orderIds: string[],
+    itemMap: Map<string, PhysicalProductionOrderItem[]>,
+  ): ProductionCampaignGroup[] {
+    const grouped = new Map<
+      string,
+      {
+        key: string;
+        project_id: string | null;
+        project_name: string | null;
+        campaign_id: string | null;
+        campaign_name: string | null;
+        order_ids: Set<string>;
+        items: PhysicalProductionOrderItem[];
+      }
+    >();
+
+    for (const orderId of orderIds) {
+      const items = itemMap.get(orderId) || [];
+      for (const item of items) {
+        const groupKey = `${item.project_id || 'no-project'}::${item.campaign_id || 'no-campaign'}`;
+        const group = grouped.get(groupKey) || {
+          key: groupKey,
+          project_id: item.project_id,
+          project_name: item.project_name,
+          campaign_id: item.campaign_id,
+          campaign_name: item.campaign_name,
+          order_ids: new Set<string>(),
+          items: [],
+        };
+
+        group.order_ids.add(item.order_id);
+        group.items.push(item);
+        grouped.set(groupKey, group);
+      }
+    }
+
+    return Array.from(grouped.values()).map((group) => ({
+      key: group.key,
+      project_id: group.project_id,
+      project_name: group.project_name,
+      campaign_id: group.campaign_id,
+      campaign_name: group.campaign_name,
+      order_ids: Array.from(group.order_ids),
+      items: group.items,
+    }));
+  }
+
+  private buildProductionAggregatesFromItems(
+    batchId: string,
+    items: PhysicalProductionOrderItem[],
+  ): Array<Record<string, unknown>> {
+    const aggregateMap = new Map<
+      string,
+      {
+        product_id: string | null;
+        variant_id: string | null;
+        product_name: string;
+        variant_name: string | null;
+        quantity_total: number;
+        order_id_set: Set<string>;
+      }
+    >();
+
+    for (const item of items) {
+      const key =
+        item.variant_id ||
+        `product:${item.product_id || 'unknown'}:${item.product_name}`;
+      const existing = aggregateMap.get(key) || {
+        product_id: item.product_id,
+        variant_id: item.variant_id,
+        product_name: item.product_name,
+        variant_name: item.variant_name,
+        quantity_total: 0,
+        order_id_set: new Set<string>(),
+      };
+
+      existing.quantity_total += Number(item.quantity || 0);
+      existing.order_id_set.add(item.order_id);
+      aggregateMap.set(key, existing);
+    }
+
+    return Array.from(aggregateMap.values()).map((row) => ({
+      batch_id: batchId,
+      product_id: row.product_id,
+      variant_id: row.variant_id,
+      product_name: row.product_name,
+      variant_name: row.variant_name,
+      quantity_total: row.quantity_total,
+      order_count: row.order_id_set.size,
+      metadata: {},
+    }));
+  }
+
+  private async insertProductionBatchItems(
+    batchId: string,
+    items: PhysicalProductionOrderItem[],
+  ): Promise<void> {
+    if (items.length === 0) {
+      return;
+    }
+
+    const insertRows = items.map((item) => ({
+      batch_id: batchId,
+      order_id: item.order_id,
+      order_item_id: item.id,
+      project_id_snapshot: item.project_id,
+      project_name_snapshot: item.project_name,
+      campaign_id_snapshot: item.campaign_id,
+      campaign_name_snapshot: item.campaign_name,
+      product_id: item.product_id,
+      variant_id: item.variant_id,
+      product_name_snapshot: item.product_name,
+      variant_name_snapshot: item.variant_name,
+      quantity: item.quantity,
+      metadata: {},
+    }));
+
+    const { error } = await this.supabase
+      .from('v2_admin_production_batch_items')
+      .insert(insertRows);
+
+    if (error && !this.isMissingRelationError(error)) {
+      throw new ApiException(
+        '제작 배치 주문상품 스냅샷 저장 실패',
+        500,
+        'V2_ADMIN_PRODUCTION_BATCH_ITEM_INSERT_FAILED',
+      );
+    }
+  }
+
+  private async fetchProductionBatchItemsByBatchIdSafe(
+    batchId: string,
+  ): Promise<any[]> {
+    const { data, error } = await this.supabase
+      .from('v2_admin_production_batch_items')
+      .select('*')
+      .eq('batch_id', batchId)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      if (this.isMissingRelationError(error)) {
+        return [];
+      }
+      throw new ApiException(
+        '제작 배치 주문상품 상세 조회 실패',
+        500,
+        'V2_ADMIN_PRODUCTION_BATCH_ITEM_DETAIL_FAILED',
+      );
+    }
+
+    return data || [];
+  }
+
+  private async updateProductionBatchItemTransitionStatus(
+    batchId: string,
+    mode: 'activate' | 'complete',
+    statusMap: Map<string, BatchTransitionOrderStatus>,
+  ): Promise<void> {
+    const batchItems =
+      await this.fetchProductionBatchItemsByBatchIdSafe(batchId);
+    if (batchItems.length === 0) {
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const nextItemStateRows: Array<Record<string, unknown>> = [];
+
+    for (const row of batchItems) {
+      const rowId = this.normalizeOptionalUuid(row?.id);
+      const orderId = this.normalizeOptionalUuid(row?.order_id);
+      const orderItemId = this.normalizeOptionalUuid(row?.order_item_id);
+      if (!rowId || !orderId || !orderItemId) {
+        continue;
+      }
+
+      if (mode === 'activate') {
+        const orderStatus = statusMap.get(orderId);
+        const updatePayload: Record<string, unknown> = {
+          transition_activate_status: orderStatus?.status || 'SKIPPED',
+          error_message: orderStatus?.errorMessage || null,
+        };
+
+        if (orderStatus?.status === 'SUCCEEDED') {
+          updatePayload.production_status = 'IN_PROGRESS';
+          updatePayload.activated_at = nowIso;
+          updatePayload.error_message = null;
+          nextItemStateRows.push({
+            order_item_id: orderItemId,
+            current_status: 'IN_PROGRESS',
+            last_batch_id: batchId,
+            last_batch_item_id: rowId,
+            metadata: {
+              updated_by: 'PRODUCTION_BATCH_ACTIVATE',
+              updated_at: nowIso,
+            },
+          });
+        }
+
+        const { error: updateError } = await this.supabase
+          .from('v2_admin_production_batch_items')
+          .update(updatePayload)
+          .eq('id', rowId);
+
+        if (updateError) {
+          throw new ApiException(
+            '제작 배치 주문상품 활성화 상태 업데이트 실패',
+            500,
+            'V2_ADMIN_PRODUCTION_BATCH_ITEM_ACTIVATE_UPDATE_FAILED',
+          );
+        }
+        continue;
+      }
+
+      if (statusMap.size > 0 && !statusMap.has(orderId)) {
+        continue;
+      }
+
+      const updatePayload: Record<string, unknown> = {
+        production_status: 'COMPLETED',
+        transition_complete_status: 'SUCCEEDED',
+        completed_at: nowIso,
+        error_message: null,
+      };
+
+      const { error: updateError } = await this.supabase
+        .from('v2_admin_production_batch_items')
+        .update(updatePayload)
+        .eq('id', rowId);
+
+      if (updateError) {
+        throw new ApiException(
+          '제작 배치 주문상품 완료 상태 업데이트 실패',
+          500,
+          'V2_ADMIN_PRODUCTION_BATCH_ITEM_COMPLETE_UPDATE_FAILED',
+        );
+      }
+
+      nextItemStateRows.push({
+        order_item_id: orderItemId,
+        current_status: 'COMPLETED',
+        last_batch_id: batchId,
+        last_batch_item_id: rowId,
+        metadata: {
+          updated_by: 'PRODUCTION_BATCH_COMPLETE',
+          updated_at: nowIso,
+        },
+      });
+    }
+
+    await this.upsertOrderItemProductionState(nextItemStateRows);
+  }
+
+  private async cancelProductionBatchItems(batchId: string): Promise<void> {
+    const batchItems =
+      await this.fetchProductionBatchItemsByBatchIdSafe(batchId);
+    if (batchItems.length === 0) {
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const nextItemStateRows: Array<Record<string, unknown>> = [];
+
+    for (const row of batchItems) {
+      const rowId = this.normalizeOptionalUuid(row?.id);
+      const orderItemId = this.normalizeOptionalUuid(row?.order_item_id);
+      if (!rowId || !orderItemId) {
+        continue;
+      }
+
+      const { error: updateError } = await this.supabase
+        .from('v2_admin_production_batch_items')
+        .update({
+          production_status: 'CANCELED',
+          transition_complete_status: 'SKIPPED',
+          error_message:
+            this.normalizeOptionalText(row?.error_message) || '배치 취소 처리',
+        })
+        .eq('id', rowId);
+
+      if (updateError) {
+        throw new ApiException(
+          '제작 배치 주문상품 취소 상태 업데이트 실패',
+          500,
+          'V2_ADMIN_PRODUCTION_BATCH_ITEM_CANCEL_UPDATE_FAILED',
+        );
+      }
+
+      nextItemStateRows.push({
+        order_item_id: orderItemId,
+        current_status: 'READY',
+        last_batch_id: batchId,
+        last_batch_item_id: rowId,
+        metadata: {
+          updated_by: 'PRODUCTION_BATCH_CANCEL',
+          updated_at: nowIso,
+        },
+      });
+    }
+
+    await this.upsertOrderItemProductionState(nextItemStateRows);
+  }
+
+  private async upsertOrderItemProductionState(
+    rows: Array<Record<string, unknown>>,
+  ): Promise<void> {
+    if (rows.length === 0) {
+      return;
+    }
+
+    const { error } = await this.supabase
+      .from('v2_admin_order_item_production_state')
+      .upsert(rows, { onConflict: 'order_item_id' });
+
+    if (error && !this.isMissingRelationError(error)) {
+      throw new ApiException(
+        '주문상품 제작 상태 캐시 업데이트 실패',
+        500,
+        'V2_ADMIN_ORDER_ITEM_PRODUCTION_STATE_UPSERT_FAILED',
+      );
+    }
+  }
+
+  private async filterOrdersReadyToShip(orderIds: string[]): Promise<string[]> {
+    const normalizedOrderIds = Array.from(
+      new Set(
+        (orderIds || [])
+          .map((orderId) => this.normalizeOptionalUuid(orderId))
+          .filter((orderId): orderId is string => Boolean(orderId)),
+      ),
+    );
+    if (normalizedOrderIds.length === 0) {
+      return [];
+    }
+
+    const { data: itemRows, error: itemError } = await this.supabase
+      .from('v2_order_items')
+      .select(
+        'id, order_id, line_type, line_status, fulfillment_type_snapshot, requires_shipping_snapshot',
+      )
+      .in('order_id', normalizedOrderIds);
+
+    if (itemError) {
+      throw new ApiException(
+        '출고 가능 주문상품 조회 실패',
+        500,
+        'V2_ADMIN_PRODUCTION_READY_ORDER_ITEM_FETCH_FAILED',
+      );
+    }
+
+    const physicalItems = (itemRows || []).filter((row: any) =>
+      this.isPhysicalProductionOrderItemRow(row),
+    );
+
+    const physicalOrderItemIds = physicalItems
+      .map((row: any) => this.normalizeOptionalUuid(row.id))
+      .filter((itemId: string | null): itemId is string => Boolean(itemId));
+
+    const productionStateByOrderItemId = new Map<string, string>();
+    if (physicalOrderItemIds.length > 0) {
+      const { data: stateRows, error: stateError } = await this.supabase
+        .from('v2_admin_order_item_production_state')
+        .select('order_item_id, current_status')
+        .in('order_item_id', physicalOrderItemIds);
+
+      if (stateError) {
+        if (this.isMissingRelationError(stateError)) {
+          return normalizedOrderIds;
+        }
+        throw new ApiException(
+          '주문상품 제작 상태 캐시 조회 실패',
+          500,
+          'V2_ADMIN_PRODUCTION_READY_ORDER_ITEM_STATE_FETCH_FAILED',
+        );
+      }
+
+      for (const row of stateRows || []) {
+        const orderItemId = this.normalizeOptionalUuid(row?.order_item_id);
+        const currentStatus =
+          this.normalizeOptionalText(row?.current_status)?.toUpperCase() ||
+          null;
+        if (orderItemId && currentStatus) {
+          productionStateByOrderItemId.set(orderItemId, currentStatus);
+        }
+      }
+    }
+
+    const readinessByOrderId = new Map<
+      string,
+      { total: number; completed: number }
+    >();
+    for (const row of physicalItems) {
+      const orderId = this.normalizeOptionalUuid(row.order_id);
+      const orderItemId = this.normalizeOptionalUuid(row.id);
+      if (!orderId || !orderItemId) {
+        continue;
+      }
+
+      const current = readinessByOrderId.get(orderId) || {
+        total: 0,
+        completed: 0,
+      };
+      current.total += 1;
+
+      const itemState =
+        productionStateByOrderItemId.get(orderItemId) || 'READY';
+      if (itemState === 'COMPLETED') {
+        current.completed += 1;
+      }
+
+      readinessByOrderId.set(orderId, current);
+    }
+
+    return normalizedOrderIds.filter((orderId) => {
+      const readiness = readinessByOrderId.get(orderId);
+      if (!readiness || readiness.total <= 0) {
+        return false;
+      }
+      return readiness.total === readiness.completed;
+    });
+  }
+
+  private async fetchPhysicalProductionItemsByOrderIds(
+    orderIds: string[],
+  ): Promise<Map<string, PhysicalProductionOrderItem[]>> {
+    if (orderIds.length === 0) {
+      return new Map();
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_order_items')
+      .select(
+        [
+          'id',
+          'order_id',
+          'product_id',
+          'variant_id',
+          'product_name_snapshot',
+          'variant_name_snapshot',
+          'quantity',
+          'line_type',
+          'line_status',
+          'fulfillment_type_snapshot',
+          'requires_shipping_snapshot',
+          'project_id_snapshot',
+          'project_name_snapshot',
+          'campaign_id_snapshot',
+          'campaign_name_snapshot',
+          'display_snapshot',
+          'created_at',
+        ].join(', '),
+      )
+      .in('order_id', orderIds)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        '제작 배치 주문상품 조회 실패',
+        500,
+        'V2_ADMIN_PRODUCTION_BATCH_ITEM_FETCH_FAILED',
+      );
+    }
+
+    const scopedRows = (data || []).filter((row: any) =>
+      this.isPhysicalProductionOrderItemRow(row),
+    );
+    const projectIds = scopedRows
+      .map((row: any) => this.normalizeOptionalUuid(row.project_id_snapshot))
+      .filter((value: string | null): value is string => Boolean(value));
+    const campaignIds = scopedRows
+      .map((row: any) => this.normalizeOptionalUuid(row.campaign_id_snapshot))
+      .filter((value: string | null): value is string => Boolean(value));
+    const priceListIds = scopedRows
+      .map((row: any) => this.extractSelectedPriceListId(row.display_snapshot))
+      .filter((value: string | null): value is string => Boolean(value));
+
+    const [projectNameById, campaignIdByPriceListId] = await Promise.all([
+      this.fetchProjectNameByIds(Array.from(new Set(projectIds))),
+      this.fetchCampaignIdByPriceListIds(Array.from(new Set(priceListIds))),
+    ]);
+
+    const mergedCampaignIds = Array.from(
+      new Set([
+        ...campaignIds,
+        ...Array.from(campaignIdByPriceListId.values()),
+      ]),
+    );
+    const campaignNameById =
+      await this.fetchCampaignNameByIds(mergedCampaignIds);
+
+    const map = new Map<string, PhysicalProductionOrderItem[]>();
+    for (const row of scopedRows) {
+      const itemId = this.normalizeOptionalUuid(row.id);
+      const orderId = this.normalizeOptionalUuid(row.order_id);
+      if (!itemId || !orderId) {
+        continue;
+      }
+
+      const projectId = this.normalizeOptionalUuid(row.project_id_snapshot);
+      const projectName =
+        this.normalizeOptionalText(row.project_name_snapshot) ||
+        (projectId ? projectNameById.get(projectId) || null : null);
+      const selectedPriceListId = this.extractSelectedPriceListId(
+        row.display_snapshot,
+      );
+      const campaignIdFromPriceList = selectedPriceListId
+        ? campaignIdByPriceListId.get(selectedPriceListId) || null
+        : null;
+      const campaignId =
+        this.normalizeOptionalUuid(row.campaign_id_snapshot) ||
+        campaignIdFromPriceList;
+      const campaignName =
+        this.normalizeOptionalText(row.campaign_name_snapshot) ||
+        (campaignId ? campaignNameById.get(campaignId) || null : null);
+
+      const item: PhysicalProductionOrderItem = {
+        id: itemId,
+        order_id: orderId,
+        product_id: this.normalizeOptionalUuid(row.product_id),
+        variant_id: this.normalizeOptionalUuid(row.variant_id),
+        product_name:
+          this.normalizeOptionalText(row.product_name_snapshot) ||
+          '이름 없는 상품',
+        variant_name: this.normalizeOptionalText(row.variant_name_snapshot),
+        quantity: Math.max(1, Number(row.quantity || 0)),
+        project_id: projectId,
+        project_name: projectName,
+        campaign_id: campaignId,
+        campaign_name: campaignName,
+        row,
+      };
+
+      const list = map.get(orderId) || [];
+      list.push(item);
+      map.set(orderId, list);
+    }
+
+    return map;
+  }
+
+  private isPhysicalProductionOrderItemRow(row: any): boolean {
+    const lineStatus = this.normalizeOptionalText(
+      row?.line_status,
+    )?.toUpperCase();
+    if (lineStatus === 'CANCELED' || lineStatus === 'REFUNDED') {
+      return false;
+    }
+    if (
+      this.normalizeOptionalText(row?.line_type)?.toUpperCase() ===
+      'BUNDLE_PARENT'
+    ) {
+      return false;
+    }
+    return this.isPhysicalProductionLine(row);
+  }
+
+  private async insertShippingBatchItems(
+    batchId: string,
+    batchOrderRows: Array<{ order_id: string }>,
+    itemsMap: Map<string, any[]>,
+  ): Promise<void> {
+    const { data: orders, error: orderError } = await this.supabase
+      .from('v2_admin_shipping_batch_orders')
+      .select('id, order_id')
+      .eq('batch_id', batchId);
+
+    if (orderError) {
+      throw new ApiException(
+        '배송 배치 주문상품 스냅샷용 주문 조회 실패',
+        500,
+        'V2_ADMIN_SHIPPING_BATCH_ITEM_ORDER_FETCH_FAILED',
+      );
+    }
+
+    const batchOrderIdByOrderId = new Map<string, string>();
+    for (const row of orders || []) {
+      const batchOrderId = this.normalizeOptionalUuid(row.id);
+      const orderId = this.normalizeOptionalUuid(row.order_id);
+      if (batchOrderId && orderId) {
+        batchOrderIdByOrderId.set(orderId, batchOrderId);
+      }
+    }
+
+    const itemInsertRows: Array<Record<string, unknown>> = [];
+    for (const row of batchOrderRows) {
+      const orderId = this.normalizeOptionalUuid(row.order_id);
+      if (!orderId) {
+        continue;
+      }
+      const batchOrderId = batchOrderIdByOrderId.get(orderId);
+      if (!batchOrderId) {
+        continue;
+      }
+      const orderItems = itemsMap.get(orderId) || [];
+      for (const orderItem of orderItems) {
+        if (!this.isPhysicalProductionOrderItemRow(orderItem)) {
+          continue;
+        }
+        const orderItemId = this.normalizeOptionalUuid(orderItem.id);
+        if (!orderItemId) {
+          continue;
+        }
+        itemInsertRows.push({
+          batch_id: batchId,
+          batch_order_id: batchOrderId,
+          order_id: orderId,
+          order_item_id: orderItemId,
+          quantity: Math.max(1, Number(orderItem.quantity || 0)),
+          metadata: {},
+        });
+      }
+    }
+
+    if (itemInsertRows.length === 0) {
+      return;
+    }
+
+    const { error } = await this.supabase
+      .from('v2_admin_shipping_batch_items')
+      .insert(itemInsertRows);
+
+    if (error && !this.isMissingRelationError(error)) {
+      throw new ApiException(
+        '배송 배치 주문상품 스냅샷 저장 실패',
+        500,
+        'V2_ADMIN_SHIPPING_BATCH_ITEM_INSERT_FAILED',
+      );
+    }
+  }
+
+  private isMissingRelationError(error: any): boolean {
+    const code = this.normalizeOptionalText(error?.code);
+    const message =
+      this.normalizeOptionalText(error?.message)?.toLowerCase() || '';
+    return (
+      code === '42P01' ||
+      message.includes('does not exist') ||
+      message.includes('undefined table')
+    );
+  }
+
   private async buildProductionAggregates(orderIds: string[]): Promise<any[]> {
     if (orderIds.length === 0) {
       return [];
@@ -1878,7 +3095,7 @@ export class V2AdminBatchService {
     const { data, error } = await this.supabase
       .from('v2_order_items')
       .select(
-        'order_id, product_id, variant_id, product_name_snapshot, variant_name_snapshot, quantity, line_type, line_status',
+        'order_id, product_id, variant_id, product_name_snapshot, variant_name_snapshot, quantity, line_type, line_status, fulfillment_type_snapshot, requires_shipping_snapshot',
       )
       .in('order_id', orderIds);
 
@@ -1908,6 +3125,9 @@ export class V2AdminBatchService {
         continue;
       }
       if (String(row.line_type || '').toUpperCase() === 'BUNDLE_PARENT') {
+        continue;
+      }
+      if (!this.isPhysicalProductionLine(row)) {
         continue;
       }
 
@@ -1948,6 +3168,28 @@ export class V2AdminBatchService {
         order_count: row.order_id_set.size,
       }))
       .sort((a, b) => b.quantity_total - a.quantity_total);
+  }
+
+  private isPhysicalProductionLine(row: {
+    fulfillment_type_snapshot?: string | null;
+    requires_shipping_snapshot?: boolean | string | null;
+  }): boolean {
+    const fulfillmentType =
+      this.normalizeOptionalText(
+        row.fulfillment_type_snapshot,
+      )?.toUpperCase() || null;
+    if (fulfillmentType === 'DIGITAL') {
+      return false;
+    }
+    if (fulfillmentType === 'PHYSICAL') {
+      return true;
+    }
+
+    const requiresShipping =
+      row.requires_shipping_snapshot === true ||
+      String(row.requires_shipping_snapshot || '').toLowerCase() === 'true';
+
+    return requiresShipping;
   }
 
   private async generateProductionSnapshotTitle(): Promise<string> {
@@ -2046,6 +3288,100 @@ export class V2AdminBatchService {
           : null,
       };
     });
+  }
+
+  private isReservedCandidateOrder(
+    orderId: string | null | undefined,
+    reservedOrderIds: Set<string>,
+  ): boolean {
+    const normalizedOrderId = this.normalizeOptionalUuid(orderId);
+    if (!normalizedOrderId) {
+      return false;
+    }
+    return reservedOrderIds.has(normalizedOrderId);
+  }
+
+  private async fetchReservedProductionCandidateOrderIds(): Promise<
+    Set<string>
+  > {
+    return this.fetchReservedCandidateOrderIdsByBatch({
+      batchTable: 'v2_admin_production_batches',
+      batchOrderTable: 'v2_admin_production_batch_orders',
+      batchFetchErrorCode:
+        'V2_ADMIN_PRODUCTION_CANDIDATE_OPEN_BATCH_FETCH_FAILED',
+      batchOrderFetchErrorCode:
+        'V2_ADMIN_PRODUCTION_CANDIDATE_OPEN_BATCH_ORDERS_FETCH_FAILED',
+      batchLabel: '제작',
+    });
+  }
+
+  private async fetchReservedShippingCandidateOrderIds(): Promise<Set<string>> {
+    return this.fetchReservedCandidateOrderIdsByBatch({
+      batchTable: 'v2_admin_shipping_batches',
+      batchOrderTable: 'v2_admin_shipping_batch_orders',
+      batchFetchErrorCode:
+        'V2_ADMIN_SHIPPING_CANDIDATE_OPEN_BATCH_FETCH_FAILED',
+      batchOrderFetchErrorCode:
+        'V2_ADMIN_SHIPPING_CANDIDATE_OPEN_BATCH_ORDERS_FETCH_FAILED',
+      batchLabel: '배송',
+    });
+  }
+
+  private async fetchReservedCandidateOrderIdsByBatch(input: {
+    batchTable: 'v2_admin_production_batches' | 'v2_admin_shipping_batches';
+    batchOrderTable:
+      | 'v2_admin_production_batch_orders'
+      | 'v2_admin_shipping_batch_orders';
+    batchFetchErrorCode: string;
+    batchOrderFetchErrorCode: string;
+    batchLabel: string;
+  }): Promise<Set<string>> {
+    const { data: batchRows, error: batchError } = await this.supabase
+      .from(input.batchTable)
+      .select('id')
+      .in('status', OPEN_BATCH_STATUSES_FOR_CANDIDATES);
+
+    if (batchError) {
+      throw new ApiException(
+        `${input.batchLabel} 후보 잠금 배치 조회 실패`,
+        500,
+        input.batchFetchErrorCode,
+      );
+    }
+
+    const openBatchIds = (batchRows || [])
+      .map((row: any) => this.normalizeOptionalUuid(row?.id))
+      .filter((batchId: string | null): batchId is string => Boolean(batchId));
+
+    if (openBatchIds.length === 0) {
+      return new Set();
+    }
+
+    const { data: batchOrderRows, error: batchOrderError } = await this.supabase
+      .from(input.batchOrderTable)
+      .select('order_id, is_excluded')
+      .in('batch_id', openBatchIds);
+
+    if (batchOrderError) {
+      throw new ApiException(
+        `${input.batchLabel} 후보 잠금 주문 조회 실패`,
+        500,
+        input.batchOrderFetchErrorCode,
+      );
+    }
+
+    const reservedOrderIds = new Set<string>();
+    for (const row of batchOrderRows || []) {
+      if (row?.is_excluded === true) {
+        continue;
+      }
+      const orderId = this.normalizeOptionalUuid(row?.order_id);
+      if (orderId) {
+        reservedOrderIds.add(orderId);
+      }
+    }
+
+    return reservedOrderIds;
   }
 
   private async fetchQueueMapByOrderIds(
@@ -2151,6 +3487,19 @@ export class V2AdminBatchService {
       map.set(orderId, list);
     }
 
+    return map;
+  }
+
+  private filterPhysicalOrderItemsByOrderId(
+    itemsMap: Map<string, any[]>,
+  ): Map<string, any[]> {
+    const map = new Map<string, any[]>();
+    for (const [orderId, items] of itemsMap.entries()) {
+      const physicalItems = (items || []).filter((item: any) =>
+        this.isPhysicalProductionOrderItemRow(item),
+      );
+      map.set(orderId, physicalItems);
+    }
     return map;
   }
 
@@ -2549,6 +3898,927 @@ export class V2AdminBatchService {
     }
 
     return values.join(' ');
+  }
+
+  private async renderShippingBatchPdfBuffer(input: {
+    batchNo: string;
+    batchTitle: string;
+    batchStatus: string;
+    generatedAt: Date;
+    rows: ShippingPdfOrderRow[];
+  }): Promise<Buffer> {
+    try {
+      return await this.renderShippingBatchPdfBufferFromHtml(input);
+    } catch (error) {
+      const reason = this.summarizeUnexpectedError(error);
+      this.logger.warn(
+        `배송 리스트 HTML->PDF 렌더링 실패, PDFKit fallback 사용: ${reason}`,
+      );
+      return this.renderShippingBatchPdfBufferLegacy(input);
+    }
+  }
+
+  private async renderShippingBatchPdfBufferFromHtml(input: {
+    batchNo: string;
+    batchTitle: string;
+    batchStatus: string;
+    generatedAt: Date;
+    rows: ShippingPdfOrderRow[];
+  }): Promise<Buffer> {
+    const playwright = await import('playwright');
+    const browser = await this.launchShippingPdfBrowser(playwright);
+
+    try {
+      const page = await browser.newPage({
+        deviceScaleFactor: 2,
+      });
+      const html = this.buildShippingBatchPdfHtml(input);
+      await page.setContent(html, { waitUntil: 'networkidle' });
+
+      const pdfBuffer = await page.pdf({
+        format: 'A4',
+        printBackground: true,
+        margin: {
+          top: '12mm',
+          right: '12mm',
+          bottom: '12mm',
+          left: '12mm',
+        },
+      });
+      return Buffer.from(pdfBuffer);
+    } finally {
+      await browser.close();
+    }
+  }
+
+  private async renderPdfBufferFromHtml(html: string): Promise<Buffer> {
+    const playwright = await import('playwright');
+    const browser = await this.launchShippingPdfBrowser(playwright);
+
+    try {
+      const page = await browser.newPage({
+        deviceScaleFactor: 2,
+      });
+      await page.setContent(html, { waitUntil: 'networkidle' });
+
+      const pdfBuffer = await page.pdf({
+        format: 'A4',
+        printBackground: true,
+        margin: {
+          top: '12mm',
+          right: '12mm',
+          bottom: '12mm',
+          left: '12mm',
+        },
+      });
+      return Buffer.from(pdfBuffer);
+    } finally {
+      await browser.close();
+    }
+  }
+
+  private async launchShippingPdfBrowser(
+    playwright: typeof import('playwright'),
+  ) {
+    const launchArgs = [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--font-render-hinting=medium',
+    ];
+    const launchAttempts: Array<{
+      label: string;
+      options: Parameters<typeof playwright.chromium.launch>[0];
+    }> = [];
+
+    const executablePath = this.normalizeOptionalText(
+      process.env.SHIPPING_PDF_CHROMIUM_PATH,
+    );
+    if (executablePath) {
+      launchAttempts.push({
+        label: 'env-executable',
+        options: {
+          headless: true,
+          executablePath,
+          args: launchArgs,
+        },
+      });
+    }
+
+    launchAttempts.push(
+      {
+        label: 'bundled-chromium',
+        options: {
+          headless: true,
+          args: launchArgs,
+        },
+      },
+      {
+        label: 'chrome-channel',
+        options: {
+          headless: true,
+          channel: 'chrome',
+          args: launchArgs,
+        },
+      },
+    );
+
+    const failures: string[] = [];
+    for (const attempt of launchAttempts) {
+      try {
+        return await playwright.chromium.launch(attempt.options);
+      } catch (error) {
+        failures.push(
+          `${attempt.label}: ${this.summarizeUnexpectedError(error)}`,
+        );
+      }
+    }
+
+    throw new Error(`HTML PDF browser launch failed: ${failures.join(' | ')}`);
+  }
+
+  private buildShippingBatchPdfHtml(input: {
+    batchNo: string;
+    batchTitle: string;
+    batchStatus: string;
+    generatedAt: Date;
+    rows: ShippingPdfOrderRow[];
+  }): string {
+    const printedAt = this.formatShippingPdfDate(input.generatedAt);
+    const statusLabel = this.resolveShippingBatchStatusLabelForPdf(
+      input.batchStatus,
+    );
+    const totalQuantity = input.rows.reduce(
+      (sum, row) => sum + row.quantityTotal,
+      0,
+    );
+
+    const orderRowsHtml = input.rows
+      .map((row) => {
+        const itemsHtml =
+          row.items.length > 0
+            ? `<ul class="item-list">${row.items
+                .map(
+                  (item) =>
+                    `<li><span class="item-checkbox" aria-hidden="true"></span><span class="item-label">${this.escapeHtml(item.label)}</span><span class="item-qty">x ${item.quantity.toLocaleString()}</span></li>`,
+                )
+                .join('')}</ul>`
+            : '<p class="empty-items">배송 대상 상품이 없습니다.</p>';
+
+        return `
+          <article class="order-card">
+            <div class="order-head">
+              <div class="head-cell">
+                <p class="cell-label">No / 주문번호</p>
+                <p class="cell-value">${row.sequence}. ${this.escapeHtml(row.orderNo)}</p>
+              </div>
+              <div class="head-cell">
+                <p class="cell-label">수취인 / 연락처</p>
+                <p class="cell-value">${this.escapeHtml(row.recipientName)} / ${this.escapeHtml(row.recipientPhone)}</p>
+              </div>
+              <div class="head-cell">
+                <p class="cell-label">운송장 / 메모</p>
+                <div class="memo-blank" aria-label="메모 공간"></div>
+              </div>
+            </div>
+            <div class="order-address"><span class="cell-key">주소</span>: ${this.escapeHtml(row.address)}</div>
+            <div class="order-items">
+              <div class="items-title-row">
+                <p class="cell-key">출고 품목</p>
+                <p class="qty-total">수량합 ${row.quantityTotal.toLocaleString()}</p>
+              </div>
+              ${itemsHtml}
+            </div>
+          </article>
+        `;
+      })
+      .join('');
+
+    return `
+      <!doctype html>
+      <html lang="ko">
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width,initial-scale=1" />
+          <title>배송 리스트</title>
+          <style>
+            :root {
+              color-scheme: light;
+            }
+            * {
+              box-sizing: border-box;
+            }
+            body {
+              margin: 0;
+              font-family: "Apple SD Gothic Neo", "Malgun Gothic", "NanumGothic", "Noto Sans KR", sans-serif;
+              color: #111827;
+              background: #ffffff;
+              line-height: 1.45;
+            }
+            .sheet {
+              width: 100%;
+              padding: 0 1.5mm;
+            }
+            .header {
+              padding: 4mm 0 3mm 0;
+              border-bottom: 1px solid #d1d5db;
+            }
+            .title {
+              margin: 0;
+              font-size: 20px;
+              font-weight: 700;
+            }
+            .subtitle {
+              margin: 4px 0 0 0;
+              font-size: 12px;
+              color: #4b5563;
+            }
+            .meta-grid {
+              margin-top: 4mm;
+              display: grid;
+              grid-template-columns: 1fr 1fr;
+              gap: 4px 12px;
+              font-size: 12px;
+              color: #374151;
+            }
+            .meta-grid strong {
+              color: #111827;
+            }
+            .orders {
+              margin-top: 6mm;
+              display: grid;
+              gap: 4mm;
+            }
+            .order-card {
+              border: 1px solid #d1d5db;
+              border-radius: 8px;
+              overflow: hidden;
+              break-inside: avoid;
+              page-break-inside: avoid;
+            }
+            .order-head {
+              display: grid;
+              grid-template-columns: 1fr 1fr 1fr;
+              border-bottom: 1px solid #d1d5db;
+              background: #ffffff;
+            }
+            .head-cell {
+              padding: 8px 10px;
+            }
+            .head-cell + .head-cell {
+              border-left: 1px solid #d1d5db;
+            }
+            .cell-label {
+              margin: 0;
+              font-size: 11px;
+              color: #6b7280;
+            }
+            .cell-value {
+              margin: 3px 0 0 0;
+              font-size: 12px;
+              color: #111827;
+              word-break: break-word;
+            }
+            .memo-blank {
+              margin-top: 4px;
+              height: 20px;
+              border: 1px dashed #d1d5db;
+              border-radius: 4px;
+              background: #ffffff;
+            }
+            .cell-key {
+              font-weight: 600;
+              color: #111827;
+            }
+            .order-address {
+              padding: 6px 10px;
+              font-size: 12px;
+              background: #f9fafb;
+              border-bottom: 1px solid #e5e7eb;
+            }
+            .order-items {
+              padding: 8px 10px 9px 10px;
+            }
+            .items-title-row {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              gap: 12px;
+              margin-bottom: 6px;
+            }
+            .items-title-row p {
+              margin: 0;
+              font-size: 12px;
+            }
+            .qty-total {
+              font-weight: 600;
+              color: #1f2937;
+            }
+            .item-list {
+              margin: 0;
+              padding: 0;
+              list-style: none;
+              display: grid;
+              gap: 3px;
+            }
+            .item-list li {
+              display: flex;
+              align-items: center;
+              gap: 12px;
+              padding: 0;
+              font-size: 12px;
+              color: #1f2937;
+            }
+            .item-checkbox {
+              flex: 0 0 auto;
+              width: 13px;
+              height: 13px;
+              border: 1px solid #4b5563;
+              border-radius: 2px;
+              background: #ffffff;
+            }
+            .item-label {
+              flex: 1;
+              word-break: break-word;
+            }
+            .item-qty {
+              white-space: nowrap;
+              color: #374151;
+            }
+            .empty-items {
+              margin: 0;
+              font-size: 12px;
+              color: #6b7280;
+            }
+          </style>
+        </head>
+        <body>
+          <main class="sheet">
+            <header class="header">
+              <h1 class="title">배송 리스트</h1>
+              <p class="subtitle">배송 작업에 필요한 정보만 요약한 출력 문서입니다.</p>
+            </header>
+
+            <section class="meta-grid">
+              <p><strong>작성 일시</strong>: ${this.escapeHtml(printedAt)}</p>
+              <p><strong>배치 번호</strong>: ${this.escapeHtml(input.batchNo)}</p>
+              <p><strong>배치명</strong>: ${this.escapeHtml(input.batchTitle)}</p>
+              <p><strong>배치 상태</strong>: ${this.escapeHtml(statusLabel)}</p>
+              <p><strong>주문 건수</strong>: ${input.rows.length}건</p>
+              <p><strong>상품 수량합</strong>: ${totalQuantity.toLocaleString()}개</p>
+              <p><strong>출력 기준</strong>: A4 세로</p>
+            </section>
+
+            <section class="orders">
+              ${orderRowsHtml}
+            </section>
+          </main>
+        </body>
+      </html>
+    `;
+  }
+
+  private buildProductionBatchPdfHtml(input: {
+    batchNo: string;
+    batchTitle: string;
+    batchStatus: string;
+    generatedAt: Date;
+    aggregateRows: ProductionPdfAggregateRow[];
+    orderRows: ProductionPdfOrderRow[];
+  }): string {
+    const printedAt = this.formatShippingPdfDate(input.generatedAt);
+    const statusLabel = this.resolveProductionBatchStatusLabelForPdf(
+      input.batchStatus,
+    );
+    const totalQuantity = input.aggregateRows.reduce(
+      (sum, row) => sum + row.quantityTotal,
+      0,
+    );
+
+    const aggregateRowsHtml =
+      input.aggregateRows.length === 0
+        ? `
+          <tr>
+            <td colspan="4" class="empty-cell">집계된 제작 대상 상품이 없습니다.</td>
+          </tr>
+        `
+        : input.aggregateRows
+            .map(
+              (row) => `
+          <tr>
+            <td>${this.escapeHtml(row.productName)}</td>
+            <td>${this.escapeHtml(row.variantName)}</td>
+            <td class="num">${row.quantityTotal.toLocaleString()}</td>
+            <td class="num">${row.orderCount.toLocaleString()}</td>
+          </tr>
+        `,
+            )
+            .join('');
+
+    const orderRowsHtml =
+      input.orderRows.length === 0
+        ? `
+          <tr>
+            <td colspan="4" class="empty-cell">배치 주문이 없습니다.</td>
+          </tr>
+        `
+        : input.orderRows
+            .map(
+              (row) => `
+          <tr>
+            <td>${row.sequence}</td>
+            <td>${this.escapeHtml(row.orderNo)}</td>
+            <td>${this.escapeHtml(row.statusLabel)}</td>
+            <td class="num">${row.quantityTotal.toLocaleString()}</td>
+          </tr>
+        `,
+            )
+            .join('');
+
+    return `
+      <!doctype html>
+      <html lang="ko">
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width,initial-scale=1" />
+          <title>제작 의뢰서</title>
+          <style>
+            :root {
+              color-scheme: light;
+            }
+            * {
+              box-sizing: border-box;
+            }
+            body {
+              margin: 0;
+              font-family: "Apple SD Gothic Neo", "Malgun Gothic", "NanumGothic", "Noto Sans KR", sans-serif;
+              color: #111827;
+              background: #ffffff;
+              line-height: 1.45;
+            }
+            .sheet {
+              width: 100%;
+              padding: 0 1.5mm;
+            }
+            .header {
+              padding: 4mm 0 3mm 0;
+              border-bottom: 1px solid #d1d5db;
+            }
+            .title {
+              margin: 0;
+              font-size: 20px;
+              font-weight: 700;
+            }
+            .subtitle {
+              margin: 4px 0 0 0;
+              font-size: 12px;
+              color: #4b5563;
+            }
+            .meta-grid {
+              margin-top: 4mm;
+              display: grid;
+              grid-template-columns: 1fr 1fr;
+              gap: 4px 12px;
+              font-size: 12px;
+              color: #374151;
+            }
+            .meta-grid strong {
+              color: #111827;
+            }
+            .section {
+              margin-top: 6mm;
+            }
+            .section h2 {
+              margin: 0 0 6px 0;
+              font-size: 14px;
+              font-weight: 700;
+              color: #111827;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              font-size: 12px;
+            }
+            th,
+            td {
+              border: 1px solid #d1d5db;
+              padding: 6px 8px;
+              vertical-align: middle;
+              text-align: left;
+            }
+            th {
+              background: #f9fafb;
+              color: #374151;
+              font-weight: 600;
+            }
+            .num {
+              text-align: right;
+              white-space: nowrap;
+            }
+            .empty-cell {
+              text-align: center;
+              color: #6b7280;
+              padding: 10px 8px;
+            }
+          </style>
+        </head>
+        <body>
+          <main class="sheet">
+            <header class="header">
+              <h1 class="title">제작 의뢰서</h1>
+              <p class="subtitle">제작 배치 기준 수량/주문 정보를 정리한 출력 문서입니다.</p>
+            </header>
+
+            <section class="meta-grid">
+              <p><strong>작성 일시</strong>: ${this.escapeHtml(printedAt)}</p>
+              <p><strong>배치 번호</strong>: ${this.escapeHtml(input.batchNo)}</p>
+              <p><strong>배치명</strong>: ${this.escapeHtml(input.batchTitle)}</p>
+              <p><strong>배치 상태</strong>: ${this.escapeHtml(statusLabel)}</p>
+              <p><strong>주문 건수</strong>: ${input.orderRows.length}건</p>
+              <p><strong>상품 수량합</strong>: ${totalQuantity.toLocaleString()}개</p>
+              <p><strong>출력 기준</strong>: A4 세로</p>
+            </section>
+
+            <section class="section">
+              <h2>상품 집계</h2>
+              <table>
+                <thead>
+                  <tr>
+                    <th>상품</th>
+                    <th>옵션</th>
+                    <th class="num">수량</th>
+                    <th class="num">주문수</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${aggregateRowsHtml}
+                </tbody>
+              </table>
+            </section>
+
+            <section class="section">
+              <h2>배치 주문</h2>
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width: 52px;">No</th>
+                    <th>주문번호</th>
+                    <th style="width: 120px;">상태</th>
+                    <th class="num" style="width: 90px;">품목수량</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${orderRowsHtml}
+                </tbody>
+              </table>
+            </section>
+          </main>
+        </body>
+      </html>
+    `;
+  }
+
+  private resolveProductionBatchStatusLabelForPdf(status: string): string {
+    const normalized = String(status || '').toUpperCase();
+    if (normalized === 'DRAFT') {
+      return '준비중';
+    }
+    if (normalized === 'ACTIVE') {
+      return '제작중';
+    }
+    if (normalized === 'COMPLETED') {
+      return '제작 완료';
+    }
+    if (normalized === 'CANCELED') {
+      return '취소됨';
+    }
+    return status || '-';
+  }
+
+  private resolveProductionOrderStatusLabelForPdf(orderRow: any): string {
+    if (orderRow?.is_excluded === true) {
+      return '배치 제외';
+    }
+
+    const activateStatus =
+      this.normalizeOptionalText(orderRow?.transition_activate_status)?.toUpperCase() ||
+      'PENDING';
+    const completeStatus =
+      this.normalizeOptionalText(orderRow?.transition_complete_status)?.toUpperCase() ||
+      'PENDING';
+
+    if (completeStatus === 'FAILED') {
+      return '제작 완료 실패';
+    }
+    if (activateStatus === 'FAILED') {
+      return '제작 시작 실패';
+    }
+    if (completeStatus === 'SUCCEEDED' || completeStatus === 'SKIPPED') {
+      return '제작 완료';
+    }
+    if (activateStatus === 'SUCCEEDED' || activateStatus === 'SKIPPED') {
+      return '제작중';
+    }
+    return '제작 대기';
+  }
+
+  private resolveShippingBatchStatusLabelForPdf(status: string): string {
+    const normalized = String(status || '').toUpperCase();
+    if (normalized === 'DRAFT') {
+      return '출고 준비 전';
+    }
+    if (normalized === 'ACTIVE') {
+      return '출고 준비중';
+    }
+    if (normalized === 'DISPATCHED') {
+      return '배송중';
+    }
+    if (normalized === 'COMPLETED') {
+      return '배송 완료';
+    }
+    if (normalized === 'CANCELED') {
+      return '취소됨';
+    }
+    return status || '-';
+  }
+
+  private escapeHtml(value: unknown): string {
+    const text = typeof value === 'string' ? value : String(value ?? '');
+    return text
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
+  private async renderShippingBatchPdfBufferLegacy(input: {
+    batchNo: string;
+    batchTitle: string;
+    batchStatus: string;
+    generatedAt: Date;
+    rows: ShippingPdfOrderRow[];
+  }): Promise<Buffer> {
+    return await new Promise<Buffer>((resolve, reject) => {
+      const doc = new PDFDocument({
+        size: 'A4',
+        margin: 36,
+      });
+      const chunks: Buffer[] = [];
+
+      doc.on('data', (chunk: Buffer) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      doc.on('error', (error) => reject(error));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+
+      this.applyShippingPdfFont(doc);
+
+      const totalQuantity = input.rows.reduce(
+        (sum, row) => sum + row.quantityTotal,
+        0,
+      );
+
+      doc.fontSize(18).fillColor('#111111').text('배송 리스트');
+      doc.moveDown(0.3);
+      doc.fontSize(10).fillColor('#4B5563');
+      doc.text(`작성 일시: ${this.formatShippingPdfDate(input.generatedAt)}`);
+      doc.text(`배치 번호: ${input.batchNo}`);
+      doc.text(`배치명: ${input.batchTitle}`);
+      doc.text(`배치 상태: ${input.batchStatus}`);
+      doc.text(`주문 건수: ${input.rows.length}건`);
+      doc.text(`상품 수량합: ${totalQuantity.toLocaleString()}개`);
+      doc.moveDown(0.6);
+
+      for (const row of input.rows) {
+        const estimatedHeight = 96 + Math.max(row.items.length, 1) * 14;
+        this.ensureShippingPdfPageSpace(doc, estimatedHeight);
+
+        doc
+          .fontSize(11)
+          .fillColor('#111111')
+          .text(`${row.sequence}. 주문번호 ${row.orderNo}`);
+        doc
+          .fontSize(9)
+          .fillColor('#374151')
+          .text(
+            `수취인 / 연락처: ${row.recipientName} / ${row.recipientPhone}`,
+          );
+        doc.text(`주소: ${row.address}`);
+        doc.text(`운송장: ${row.trackingDisplay}`);
+        doc.text(`수량합: ${row.quantityTotal.toLocaleString()}`);
+
+        if (row.items.length === 0) {
+          doc.text('- 배송 대상 상품이 없습니다.');
+        } else {
+          doc.text('배송 대상 상품:');
+          for (const item of row.items) {
+            doc.text(`- ${item.label} x ${item.quantity.toLocaleString()}`);
+          }
+        }
+
+        doc.moveDown(0.35);
+        const lineY = doc.y;
+        doc
+          .lineWidth(0.5)
+          .strokeColor('#E5E7EB')
+          .moveTo(doc.page.margins.left, lineY)
+          .lineTo(doc.page.width - doc.page.margins.right, lineY)
+          .stroke();
+        doc.moveDown(0.5);
+      }
+
+      doc.end();
+    });
+  }
+
+  private ensureShippingPdfPageSpace(
+    doc: PDFKit.PDFDocument,
+    requiredHeight: number,
+  ): void {
+    const maxY = doc.page.height - doc.page.margins.bottom;
+    if (doc.y + requiredHeight <= maxY) {
+      return;
+    }
+    doc.addPage();
+    this.applyShippingPdfFont(doc);
+  }
+
+  private resolveShippingPdfFontPath(): string | null {
+    const candidates = [
+      '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+      '/usr/share/fonts/truetype/noto/NotoSansKR-Regular.ttf',
+      '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.otf',
+      '/System/Library/Fonts/Supplemental/AppleGothic.ttf',
+      '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
+    ];
+
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  private applyShippingPdfFont(doc: PDFKit.PDFDocument): void {
+    const preferredFontPath = this.resolveShippingPdfFontPath();
+    if (!preferredFontPath) {
+      return;
+    }
+
+    try {
+      doc.font(preferredFontPath);
+    } catch {
+      // 폰트 포맷/환경 이슈가 있어도 PDF 생성이 실패하지 않도록 기본 폰트를 사용한다.
+    }
+  }
+
+  private summarizeUnexpectedError(error: unknown): string {
+    if (error instanceof Error) {
+      const message = this.normalizeOptionalText(error.message);
+      return message || error.name || 'UNKNOWN_ERROR';
+    }
+
+    if (typeof error === 'string') {
+      const message = error.trim();
+      return message || 'UNKNOWN_ERROR';
+    }
+
+    if (error && typeof error === 'object') {
+      try {
+        const serialized = JSON.stringify(error);
+        if (serialized && serialized !== '{}') {
+          return serialized;
+        }
+      } catch {
+        // ignore JSON serialization failure
+      }
+    }
+
+    return 'UNKNOWN_ERROR';
+  }
+
+  private formatShippingPdfDate(value: Date): string {
+    return value.toLocaleString('ko-KR', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  private extractShippingPdfLineItems(
+    lineItemsSnapshot: unknown,
+  ): ShippingPdfLineItemRow[] {
+    if (!Array.isArray(lineItemsSnapshot)) {
+      return [];
+    }
+
+    const rows: ShippingPdfLineItemRow[] = [];
+    for (const item of lineItemsSnapshot) {
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+
+      const lineItem = item as Record<string, unknown>;
+      if (this.isShippingPdfCanceledLineItem(lineItem)) {
+        continue;
+      }
+      if (!this.isShippingPdfPhysicalLineItem(lineItem)) {
+        continue;
+      }
+
+      const quantity = this.normalizeShippingPdfQuantity(
+        lineItem.quantity ?? lineItem.qty ?? lineItem.item_quantity,
+      );
+      if (quantity <= 0) {
+        continue;
+      }
+
+      const productName =
+        this.readFirstSnapshotText(lineItem, [
+          'product_name_snapshot',
+          'product_name',
+          'product_title',
+        ]) || '이름 없는 상품';
+      const variantName = this.readFirstSnapshotText(lineItem, [
+        'variant_name_snapshot',
+        'variant_name',
+        'variant_title',
+      ]);
+
+      rows.push({
+        label: variantName ? `${productName} (${variantName})` : productName,
+        quantity,
+      });
+    }
+    return rows;
+  }
+
+  private isShippingPdfCanceledLineItem(
+    lineItem: Record<string, unknown>,
+  ): boolean {
+    const status =
+      this.normalizeOptionalText(
+        lineItem.line_status || lineItem.status,
+      )?.toUpperCase() || '';
+    return status === 'CANCELED' || status === 'REFUNDED';
+  }
+
+  private isShippingPdfPhysicalLineItem(
+    lineItem: Record<string, unknown>,
+  ): boolean {
+    const lineType =
+      this.normalizeOptionalText(lineItem.line_type)?.toUpperCase() || '';
+    if (lineType === 'BUNDLE_PARENT') {
+      return false;
+    }
+
+    const fulfillmentType =
+      this.normalizeOptionalText(
+        lineItem.fulfillment_type_snapshot || lineItem.fulfillment_type,
+      )?.toUpperCase() || '';
+    if (fulfillmentType === 'DIGITAL') {
+      return false;
+    }
+    if (fulfillmentType === 'PHYSICAL') {
+      return true;
+    }
+
+    if (
+      lineItem.requires_shipping_snapshot === true ||
+      lineItem.requires_shipping === true
+    ) {
+      return true;
+    }
+
+    return (
+      String(
+        lineItem.requires_shipping_snapshot ?? lineItem.requires_shipping ?? '',
+      ).toLowerCase() === 'true'
+    );
+  }
+
+  private normalizeShippingPdfQuantity(raw: unknown): number {
+    const quantity = Number(raw);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      return 0;
+    }
+    return Math.floor(quantity);
+  }
+
+  private readFirstSnapshotText(
+    snapshot: Record<string, unknown> | null,
+    keys: string[],
+  ): string | null {
+    for (const key of keys) {
+      const value = this.readSnapshotText(snapshot, key);
+      if (value) {
+        return value;
+      }
+    }
+    return null;
   }
 
   private readSnapshotText(
