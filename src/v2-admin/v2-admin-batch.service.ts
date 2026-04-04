@@ -3822,6 +3822,376 @@ export class V2AdminBatchService {
     generatedAt: Date;
     rows: ShippingPdfOrderRow[];
   }): Promise<Buffer> {
+    try {
+      return await this.renderShippingBatchPdfBufferFromHtml(input);
+    } catch (error) {
+      const reason = this.summarizeUnexpectedError(error);
+      this.logger.warn(
+        `배송 리스트 HTML->PDF 렌더링 실패, PDFKit fallback 사용: ${reason}`,
+      );
+      return this.renderShippingBatchPdfBufferLegacy(input);
+    }
+  }
+
+  private async renderShippingBatchPdfBufferFromHtml(input: {
+    batchNo: string;
+    batchTitle: string;
+    batchStatus: string;
+    generatedAt: Date;
+    rows: ShippingPdfOrderRow[];
+  }): Promise<Buffer> {
+    const playwright = await import('playwright');
+    const browser = await this.launchShippingPdfBrowser(playwright);
+
+    try {
+      const page = await browser.newPage({
+        deviceScaleFactor: 2,
+      });
+      const html = this.buildShippingBatchPdfHtml(input);
+      await page.setContent(html, { waitUntil: 'networkidle' });
+
+      const pdfBuffer = await page.pdf({
+        format: 'A4',
+        printBackground: true,
+        margin: {
+          top: '12mm',
+          right: '12mm',
+          bottom: '12mm',
+          left: '12mm',
+        },
+      });
+      return Buffer.from(pdfBuffer);
+    } finally {
+      await browser.close();
+    }
+  }
+
+  private async launchShippingPdfBrowser(
+    playwright: typeof import('playwright'),
+  ) {
+    const launchArgs = [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--font-render-hinting=medium',
+    ];
+    const launchAttempts: Array<{
+      label: string;
+      options: Parameters<typeof playwright.chromium.launch>[0];
+    }> = [];
+
+    const executablePath = this.normalizeOptionalText(
+      process.env.SHIPPING_PDF_CHROMIUM_PATH,
+    );
+    if (executablePath) {
+      launchAttempts.push({
+        label: 'env-executable',
+        options: {
+          headless: true,
+          executablePath,
+          args: launchArgs,
+        },
+      });
+    }
+
+    launchAttempts.push(
+      {
+        label: 'bundled-chromium',
+        options: {
+          headless: true,
+          args: launchArgs,
+        },
+      },
+      {
+        label: 'chrome-channel',
+        options: {
+          headless: true,
+          channel: 'chrome',
+          args: launchArgs,
+        },
+      },
+    );
+
+    const failures: string[] = [];
+    for (const attempt of launchAttempts) {
+      try {
+        return await playwright.chromium.launch(attempt.options);
+      } catch (error) {
+        failures.push(
+          `${attempt.label}: ${this.summarizeUnexpectedError(error)}`,
+        );
+      }
+    }
+
+    throw new Error(`HTML PDF browser launch failed: ${failures.join(' | ')}`);
+  }
+
+  private buildShippingBatchPdfHtml(input: {
+    batchNo: string;
+    batchTitle: string;
+    batchStatus: string;
+    generatedAt: Date;
+    rows: ShippingPdfOrderRow[];
+  }): string {
+    const printedAt = this.formatShippingPdfDate(input.generatedAt);
+    const statusLabel = this.resolveShippingBatchStatusLabelForPdf(
+      input.batchStatus,
+    );
+    const totalQuantity = input.rows.reduce(
+      (sum, row) => sum + row.quantityTotal,
+      0,
+    );
+    const trackingFilledCount = input.rows.filter((row) => {
+      const tracking = this.normalizeOptionalText(row.trackingDisplay);
+      return Boolean(tracking && tracking !== '-');
+    }).length;
+
+    const orderRowsHtml = input.rows
+      .map((row) => {
+        const itemsHtml =
+          row.items.length > 0
+            ? `<ul class="item-list">${row.items
+                .map(
+                  (item) =>
+                    `<li><span class="item-label">${this.escapeHtml(item.label)}</span><span class="item-qty">x ${item.quantity.toLocaleString()}</span></li>`,
+                )
+                .join('')}</ul>`
+            : '<p class="empty-items">배송 대상 상품이 없습니다.</p>';
+
+        return `
+          <article class="order-card">
+            <div class="order-head">
+              <div class="head-cell">
+                <p class="cell-label">No / 주문번호</p>
+                <p class="cell-value">${row.sequence}. ${this.escapeHtml(row.orderNo)}</p>
+              </div>
+              <div class="head-cell">
+                <p class="cell-label">수취인 / 연락처</p>
+                <p class="cell-value">${this.escapeHtml(row.recipientName)} / ${this.escapeHtml(row.recipientPhone)}</p>
+              </div>
+              <div class="head-cell">
+                <p class="cell-label">운송장</p>
+                <p class="cell-value">${this.escapeHtml(this.normalizeOptionalText(row.trackingDisplay) || '-')}</p>
+              </div>
+            </div>
+            <div class="order-address"><span class="cell-key">주소</span>: ${this.escapeHtml(row.address)}</div>
+            <div class="order-items">
+              <div class="items-title-row">
+                <p class="cell-key">출고 품목</p>
+                <p class="qty-total">수량합 ${row.quantityTotal.toLocaleString()}</p>
+              </div>
+              ${itemsHtml}
+            </div>
+          </article>
+        `;
+      })
+      .join('');
+
+    return `
+      <!doctype html>
+      <html lang="ko">
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width,initial-scale=1" />
+          <title>배송 리스트</title>
+          <style>
+            :root {
+              color-scheme: light;
+            }
+            * {
+              box-sizing: border-box;
+            }
+            body {
+              margin: 0;
+              font-family: "Apple SD Gothic Neo", "Malgun Gothic", "NanumGothic", "Noto Sans KR", sans-serif;
+              color: #111827;
+              background: #ffffff;
+              line-height: 1.45;
+            }
+            .sheet {
+              width: 100%;
+            }
+            .header {
+              padding: 4mm 0 3mm 0;
+              border-bottom: 1px solid #d1d5db;
+            }
+            .title {
+              margin: 0;
+              font-size: 20px;
+              font-weight: 700;
+            }
+            .subtitle {
+              margin: 4px 0 0 0;
+              font-size: 12px;
+              color: #4b5563;
+            }
+            .meta-grid {
+              margin-top: 4mm;
+              display: grid;
+              grid-template-columns: 1fr 1fr;
+              gap: 4px 12px;
+              font-size: 12px;
+              color: #374151;
+            }
+            .meta-grid strong {
+              color: #111827;
+            }
+            .orders {
+              margin-top: 6mm;
+              display: grid;
+              gap: 4mm;
+            }
+            .order-card {
+              border: 1px solid #d1d5db;
+              border-radius: 8px;
+              overflow: hidden;
+              break-inside: avoid;
+              page-break-inside: avoid;
+            }
+            .order-head {
+              display: grid;
+              grid-template-columns: 1fr 1fr 1fr;
+              border-bottom: 1px solid #d1d5db;
+              background: #ffffff;
+            }
+            .head-cell {
+              padding: 8px 10px;
+            }
+            .head-cell + .head-cell {
+              border-left: 1px solid #d1d5db;
+            }
+            .cell-label {
+              margin: 0;
+              font-size: 11px;
+              color: #6b7280;
+            }
+            .cell-value {
+              margin: 3px 0 0 0;
+              font-size: 12px;
+              color: #111827;
+              word-break: break-word;
+            }
+            .cell-key {
+              font-weight: 600;
+              color: #111827;
+            }
+            .order-address {
+              padding: 6px 10px;
+              font-size: 12px;
+              background: #f9fafb;
+              border-bottom: 1px solid #e5e7eb;
+            }
+            .order-items {
+              padding: 8px 10px 9px 10px;
+            }
+            .items-title-row {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              gap: 12px;
+              margin-bottom: 6px;
+            }
+            .items-title-row p {
+              margin: 0;
+              font-size: 12px;
+            }
+            .qty-total {
+              font-weight: 600;
+              color: #1f2937;
+            }
+            .item-list {
+              margin: 0;
+              padding: 0;
+              list-style: none;
+              display: grid;
+              gap: 3px;
+            }
+            .item-list li {
+              display: flex;
+              justify-content: space-between;
+              gap: 12px;
+              padding: 0;
+              font-size: 12px;
+              color: #1f2937;
+            }
+            .item-label {
+              flex: 1;
+              word-break: break-word;
+            }
+            .item-qty {
+              white-space: nowrap;
+              color: #374151;
+            }
+            .empty-items {
+              margin: 0;
+              font-size: 12px;
+              color: #6b7280;
+            }
+          </style>
+        </head>
+        <body>
+          <main class="sheet">
+            <header class="header">
+              <h1 class="title">배송 리스트</h1>
+              <p class="subtitle">배송 작업에 필요한 정보만 요약한 출력 문서입니다.</p>
+            </header>
+
+            <section class="meta-grid">
+              <p><strong>작성 일시</strong>: ${this.escapeHtml(printedAt)}</p>
+              <p><strong>배치 번호</strong>: ${this.escapeHtml(input.batchNo)}</p>
+              <p><strong>배치명</strong>: ${this.escapeHtml(input.batchTitle)}</p>
+              <p><strong>배치 상태</strong>: ${this.escapeHtml(statusLabel)}</p>
+              <p><strong>주문 건수</strong>: ${input.rows.length}건</p>
+              <p><strong>상품 수량합</strong>: ${totalQuantity.toLocaleString()}개</p>
+              <p><strong>운송장 입력</strong>: ${trackingFilledCount}/${input.rows.length}</p>
+              <p><strong>출력 기준</strong>: A4 세로</p>
+            </section>
+
+            <section class="orders">
+              ${orderRowsHtml}
+            </section>
+          </main>
+        </body>
+      </html>
+    `;
+  }
+
+  private resolveShippingBatchStatusLabelForPdf(status: string): string {
+    const normalized = String(status || '').toUpperCase();
+    if (normalized === 'DRAFT') {
+      return '출고 준비 전';
+    }
+    if (normalized === 'ACTIVE') {
+      return '출고 준비중';
+    }
+    if (normalized === 'DISPATCHED') {
+      return '배송중';
+    }
+    if (normalized === 'COMPLETED') {
+      return '배송 완료';
+    }
+    if (normalized === 'CANCELED') {
+      return '취소됨';
+    }
+    return status || '-';
+  }
+
+  private escapeHtml(value: unknown): string {
+    const text = typeof value === 'string' ? value : String(value ?? '');
+    return text
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
+  private async renderShippingBatchPdfBufferLegacy(input: {
+    batchNo: string;
+    batchTitle: string;
+    batchStatus: string;
+    generatedAt: Date;
+    rows: ShippingPdfOrderRow[];
+  }): Promise<Buffer> {
     return await new Promise<Buffer>((resolve, reject) => {
       const doc = new PDFDocument({
         size: 'A4',
