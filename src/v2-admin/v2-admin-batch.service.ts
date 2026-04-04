@@ -1,4 +1,6 @@
 import { Injectable } from '@nestjs/common';
+import { existsSync } from 'fs';
+import PDFDocument from 'pdfkit';
 import { ApiException } from '../common/errors/api.exception';
 import { getSupabaseClient } from '../supabase/supabase.client';
 import { V2AdminActionActor } from './v2-admin-action-executor.service';
@@ -73,6 +75,22 @@ interface ProductionCampaignGroup {
 interface BatchTransitionOrderStatus {
   status: 'SUCCEEDED' | 'FAILED' | 'SKIPPED';
   errorMessage: string | null;
+}
+
+interface ShippingPdfLineItemRow {
+  label: string;
+  quantity: number;
+}
+
+interface ShippingPdfOrderRow {
+  sequence: number;
+  orderNo: string;
+  recipientName: string;
+  recipientPhone: string;
+  address: string;
+  trackingDisplay: string;
+  quantityTotal: number;
+  items: ShippingPdfLineItemRow[];
 }
 
 const BATCH_EXCLUDED_ORDER_MESSAGE = '배치 제외 주문입니다.';
@@ -1368,6 +1386,87 @@ export class V2AdminBatchService {
       orders: ordersResult.data || [],
       packages: packagesResult.data || [],
     };
+  }
+
+  async generateShippingBatchPrintPdf(batchId: string): Promise<{
+    buffer: Buffer;
+    fileName: string;
+  }> {
+    const detail = await this.getShippingBatchDetail(batchId);
+    const batchNo =
+      this.normalizeOptionalText(detail?.batch?.batch_no) || 'shipping_batch';
+    const batchTitle = this.normalizeOptionalText(detail?.batch?.title) || '-';
+    const batchStatus =
+      this.normalizeOptionalText(detail?.batch?.status) || '-';
+    const safeBatchNo = batchNo.replace(/[^A-Za-z0-9_-]/g, '_');
+    const fileName = `${safeBatchNo || 'shipping_batch'}_shipping_list.pdf`;
+
+    const packageByBatchOrderId = new Map<string, any>();
+    for (const row of detail?.packages || []) {
+      const batchOrderId = this.normalizeOptionalUuid(row?.batch_order_id);
+      if (!batchOrderId || packageByBatchOrderId.has(batchOrderId)) {
+        continue;
+      }
+      packageByBatchOrderId.set(batchOrderId, row);
+    }
+
+    const rows: ShippingPdfOrderRow[] = (detail?.orders || []).map(
+      (order: any, index: number) => {
+        const lineItems = this.extractShippingPdfLineItems(
+          order?.line_items_snapshot,
+        );
+        const quantityTotal = lineItems.reduce(
+          (sum, row) => sum + row.quantity,
+          0,
+        );
+        const packageRow =
+          packageByBatchOrderId.get(
+            this.normalizeOptionalUuid(order?.id) || '',
+          ) || null;
+        const carrier =
+          this.normalizeOptionalText(packageRow?.carrier_code) || '-';
+        const trackingNo = this.normalizeOptionalText(packageRow?.tracking_no);
+        const trackingDisplay = trackingNo ? `${carrier} / ${trackingNo}` : '-';
+
+        return {
+          sequence: index + 1,
+          orderNo: this.normalizeOptionalText(order?.order_no) || '-',
+          recipientName:
+            this.normalizeOptionalText(order?.recipient_name) || '-',
+          recipientPhone:
+            this.normalizeOptionalText(order?.recipient_phone) || '-',
+          address:
+            this.buildAddressSummary(
+              this.normalizeOptionalJsonObject(
+                order?.shipping_address_snapshot,
+              ),
+            ) || '-',
+          trackingDisplay,
+          quantityTotal,
+          items: lineItems,
+        };
+      },
+    );
+
+    try {
+      const buffer = await this.renderShippingBatchPdfBuffer({
+        batchNo,
+        batchTitle,
+        batchStatus,
+        generatedAt: new Date(),
+        rows,
+      });
+      return {
+        buffer,
+        fileName,
+      };
+    } catch {
+      throw new ApiException(
+        '배송 리스트 PDF 생성 실패',
+        500,
+        'V2_ADMIN_SHIPPING_BATCH_PDF_RENDER_FAILED',
+      );
+    }
   }
 
   async saveShippingBatchPackages(input: {
@@ -3587,6 +3686,243 @@ export class V2AdminBatchService {
     }
 
     return values.join(' ');
+  }
+
+  private async renderShippingBatchPdfBuffer(input: {
+    batchNo: string;
+    batchTitle: string;
+    batchStatus: string;
+    generatedAt: Date;
+    rows: ShippingPdfOrderRow[];
+  }): Promise<Buffer> {
+    return await new Promise<Buffer>((resolve, reject) => {
+      const doc = new PDFDocument({
+        size: 'A4',
+        margin: 36,
+      });
+      const chunks: Buffer[] = [];
+
+      doc.on('data', (chunk: Buffer) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      doc.on('error', (error) => reject(error));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+
+      const preferredFontPath = this.resolveShippingPdfFontPath();
+      if (preferredFontPath) {
+        doc.font(preferredFontPath);
+      }
+
+      const totalQuantity = input.rows.reduce(
+        (sum, row) => sum + row.quantityTotal,
+        0,
+      );
+
+      doc.fontSize(18).fillColor('#111111').text('배송 리스트');
+      doc.moveDown(0.3);
+      doc.fontSize(10).fillColor('#4B5563');
+      doc.text(`작성 일시: ${this.formatShippingPdfDate(input.generatedAt)}`);
+      doc.text(`배치 번호: ${input.batchNo}`);
+      doc.text(`배치명: ${input.batchTitle}`);
+      doc.text(`배치 상태: ${input.batchStatus}`);
+      doc.text(`주문 건수: ${input.rows.length}건`);
+      doc.text(`상품 수량합: ${totalQuantity.toLocaleString()}개`);
+      doc.moveDown(0.6);
+
+      for (const row of input.rows) {
+        const estimatedHeight = 96 + Math.max(row.items.length, 1) * 14;
+        this.ensureShippingPdfPageSpace(doc, estimatedHeight);
+
+        doc
+          .fontSize(11)
+          .fillColor('#111111')
+          .text(`${row.sequence}. 주문번호 ${row.orderNo}`);
+        doc
+          .fontSize(9)
+          .fillColor('#374151')
+          .text(
+            `수취인 / 연락처: ${row.recipientName} / ${row.recipientPhone}`,
+          );
+        doc.text(`주소: ${row.address}`);
+        doc.text(`운송장: ${row.trackingDisplay}`);
+        doc.text(`수량합: ${row.quantityTotal.toLocaleString()}`);
+
+        if (row.items.length === 0) {
+          doc.text('- 배송 대상 상품이 없습니다.');
+        } else {
+          doc.text('배송 대상 상품:');
+          for (const item of row.items) {
+            doc.text(`- ${item.label} x ${item.quantity.toLocaleString()}`);
+          }
+        }
+
+        doc.moveDown(0.35);
+        const lineY = doc.y;
+        doc
+          .lineWidth(0.5)
+          .strokeColor('#E5E7EB')
+          .moveTo(doc.page.margins.left, lineY)
+          .lineTo(doc.page.width - doc.page.margins.right, lineY)
+          .stroke();
+        doc.moveDown(0.5);
+      }
+
+      doc.end();
+    });
+  }
+
+  private ensureShippingPdfPageSpace(
+    doc: PDFKit.PDFDocument,
+    requiredHeight: number,
+  ): void {
+    const maxY = doc.page.height - doc.page.margins.bottom;
+    if (doc.y + requiredHeight <= maxY) {
+      return;
+    }
+    doc.addPage();
+    const preferredFontPath = this.resolveShippingPdfFontPath();
+    if (preferredFontPath) {
+      doc.font(preferredFontPath);
+    }
+  }
+
+  private resolveShippingPdfFontPath(): string | null {
+    const candidates = [
+      '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
+      '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+      '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+      '/System/Library/Fonts/AppleSDGothicNeo.ttc',
+    ];
+
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  private formatShippingPdfDate(value: Date): string {
+    return value.toLocaleString('ko-KR', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  private extractShippingPdfLineItems(
+    lineItemsSnapshot: unknown,
+  ): ShippingPdfLineItemRow[] {
+    if (!Array.isArray(lineItemsSnapshot)) {
+      return [];
+    }
+
+    const rows: ShippingPdfLineItemRow[] = [];
+    for (const item of lineItemsSnapshot) {
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+
+      const lineItem = item as Record<string, unknown>;
+      if (this.isShippingPdfCanceledLineItem(lineItem)) {
+        continue;
+      }
+      if (!this.isShippingPdfPhysicalLineItem(lineItem)) {
+        continue;
+      }
+
+      const quantity = this.normalizeShippingPdfQuantity(
+        lineItem.quantity ?? lineItem.qty ?? lineItem.item_quantity,
+      );
+      if (quantity <= 0) {
+        continue;
+      }
+
+      const productName =
+        this.readFirstSnapshotText(lineItem, [
+          'product_name_snapshot',
+          'product_name',
+          'product_title',
+        ]) || '이름 없는 상품';
+      const variantName = this.readFirstSnapshotText(lineItem, [
+        'variant_name_snapshot',
+        'variant_name',
+        'variant_title',
+      ]);
+
+      rows.push({
+        label: variantName ? `${productName} (${variantName})` : productName,
+        quantity,
+      });
+    }
+    return rows;
+  }
+
+  private isShippingPdfCanceledLineItem(
+    lineItem: Record<string, unknown>,
+  ): boolean {
+    const status =
+      this.normalizeOptionalText(
+        lineItem.line_status || lineItem.status,
+      )?.toUpperCase() || '';
+    return status === 'CANCELED' || status === 'REFUNDED';
+  }
+
+  private isShippingPdfPhysicalLineItem(
+    lineItem: Record<string, unknown>,
+  ): boolean {
+    const lineType =
+      this.normalizeOptionalText(lineItem.line_type)?.toUpperCase() || '';
+    if (lineType === 'BUNDLE_PARENT') {
+      return false;
+    }
+
+    const fulfillmentType =
+      this.normalizeOptionalText(
+        lineItem.fulfillment_type_snapshot || lineItem.fulfillment_type,
+      )?.toUpperCase() || '';
+    if (fulfillmentType === 'DIGITAL') {
+      return false;
+    }
+    if (fulfillmentType === 'PHYSICAL') {
+      return true;
+    }
+
+    if (
+      lineItem.requires_shipping_snapshot === true ||
+      lineItem.requires_shipping === true
+    ) {
+      return true;
+    }
+
+    return (
+      String(
+        lineItem.requires_shipping_snapshot ?? lineItem.requires_shipping ?? '',
+      ).toLowerCase() === 'true'
+    );
+  }
+
+  private normalizeShippingPdfQuantity(raw: unknown): number {
+    const quantity = Number(raw);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      return 0;
+    }
+    return Math.floor(quantity);
+  }
+
+  private readFirstSnapshotText(
+    snapshot: Record<string, unknown> | null,
+    keys: string[],
+  ): string | null {
+    for (const key of keys) {
+      const value = this.readSnapshotText(snapshot, key);
+      if (value) {
+        return value;
+      }
+    }
+    return null;
   }
 
   private readSnapshotText(

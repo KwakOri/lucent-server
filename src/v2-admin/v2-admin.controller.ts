@@ -8,7 +8,9 @@ import {
   Patch,
   Post,
   Query,
+  Res,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { AuthSessionService } from '../auth/auth-session.service';
 import { successResponse } from '../common/api-response';
 import { ApiException } from '../common/errors/api.exception';
@@ -989,6 +991,25 @@ export class V2AdminController {
     const result =
       await this.v2AdminBatchService.getShippingBatchDetail(batchId);
     return successResponse(result);
+  }
+
+  @Get('ops/shipping/batches/:batchId/print-pdf')
+  async downloadShippingBatchPrintPdf(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('batchId') batchId: string,
+    @Res() response: Response,
+  ) {
+    await this.requireAdmin(authorization);
+    const result =
+      await this.v2AdminBatchService.generateShippingBatchPrintPdf(batchId);
+
+    response.setHeader('Content-Type', 'application/pdf');
+    response.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${result.fileName}"`,
+    );
+    response.setHeader('Cache-Control', 'no-store');
+    return response.status(200).send(result.buffer);
   }
 
   @Post('ops/shipping/batches/:batchId/activate')
