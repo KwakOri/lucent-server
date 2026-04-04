@@ -10410,12 +10410,22 @@ export class V2CatalogService {
 
   private isBasePriceItemCandidate(params: {
     item: any;
+    campaignId: string | null;
     evaluatedAt: string;
     channel: string | null;
   }): boolean {
     const priceList = params.item?.price_list;
     if (!priceList || priceList.scope_type !== 'BASE') {
       return false;
+    }
+
+    if (params.campaignId) {
+      if (
+        !priceList.campaign_id ||
+        priceList.campaign_id !== params.campaignId
+      ) {
+        return false;
+      }
     }
 
     // 상점 노출 기준은 "상시 운영(ALWAYS_ON) 캠페인에 연결된 BASE"만 허용한다.
@@ -10542,6 +10552,7 @@ export class V2CatalogService {
       params.candidates.filter((item) =>
         this.isBasePriceItemCandidate({
           item,
+          campaignId: params.campaignId,
           evaluatedAt: params.evaluatedAt,
           channel: params.channel,
         }),

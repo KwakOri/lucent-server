@@ -152,6 +152,83 @@ describe('V2CatalogService', () => {
     });
   });
 
+  describe('buildShopPriceSelectionFromCandidates', () => {
+    it('does not fall back to another campaign BASE when campaignId is provided', () => {
+      const result = (service as any).buildShopPriceSelectionFromCandidates({
+        candidates: [
+          {
+            id: 'base-item-1',
+            price_list_id: 'base-list-1',
+            unit_amount: 12000,
+            starts_at: null,
+            ends_at: null,
+            channel_scope_json: [],
+            price_list: {
+              campaign_id: 'always-on-campaign',
+              scope_type: 'BASE',
+              status: 'PUBLISHED',
+              channel_scope_json: [],
+              deleted_at: null,
+              campaign: {
+                id: 'always-on-campaign',
+                campaign_type: 'ALWAYS_ON',
+                status: 'ACTIVE',
+                starts_at: null,
+                ends_at: null,
+                channel_scope_json: [],
+                deleted_at: null,
+              },
+            },
+          },
+        ],
+        campaignId: 'popup-campaign',
+        evaluatedAt: '2026-03-22T00:00:00.000Z',
+        channel: 'WEB',
+      });
+
+      expect(result.base).toBeNull();
+      expect(result.override).toBeNull();
+      expect(result.selected).toBeNull();
+    });
+
+    it('keeps BASE selection for matching ALWAYS_ON campaignId', () => {
+      const result = (service as any).buildShopPriceSelectionFromCandidates({
+        candidates: [
+          {
+            id: 'base-item-1',
+            price_list_id: 'base-list-1',
+            unit_amount: 12000,
+            starts_at: null,
+            ends_at: null,
+            channel_scope_json: [],
+            price_list: {
+              campaign_id: 'always-on-campaign',
+              scope_type: 'BASE',
+              status: 'PUBLISHED',
+              channel_scope_json: [],
+              deleted_at: null,
+              campaign: {
+                id: 'always-on-campaign',
+                campaign_type: 'ALWAYS_ON',
+                status: 'ACTIVE',
+                starts_at: null,
+                ends_at: null,
+                channel_scope_json: [],
+                deleted_at: null,
+              },
+            },
+          },
+        ],
+        campaignId: 'always-on-campaign',
+        evaluatedAt: '2026-03-22T00:00:00.000Z',
+        channel: 'WEB',
+      });
+
+      expect(result.base?.id).toBe('base-item-1');
+      expect(result.selected?.id).toBe('base-item-1');
+    });
+  });
+
   describe('updateCampaign', () => {
     const currentCampaign = {
       id: 'campaign-1',
