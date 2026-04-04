@@ -997,19 +997,23 @@ export class V2AdminController {
   async downloadShippingBatchPrintPdf(
     @Headers('authorization') authorization: string | undefined,
     @Param('batchId') batchId: string,
-    @Res({ passthrough: true }) response: Response,
+    @Res() response: Response,
   ) {
     await this.requireAdmin(authorization);
     const result =
       await this.v2AdminBatchService.generateShippingBatchPrintPdf(batchId);
 
+    // NOTE: Use express `send` directly for binary payloads.
+    // Returning Buffer from Nest handler can be JSON-serialized (`{ type, data }`),
+    // which corrupts downloadable files.
     response.setHeader('Content-Type', 'application/pdf');
     response.setHeader(
       'Content-Disposition',
       `attachment; filename="${result.fileName}"`,
     );
     response.setHeader('Cache-Control', 'no-store');
-    return result.buffer;
+    response.setHeader('Content-Length', result.buffer.length.toString());
+    response.status(200).send(result.buffer);
   }
 
   @Post('ops/shipping/batches/:batchId/activate')
