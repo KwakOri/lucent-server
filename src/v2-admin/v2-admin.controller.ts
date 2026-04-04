@@ -872,6 +872,26 @@ export class V2AdminController {
     return successResponse(result);
   }
 
+  @Get('ops/production/batches/:batchId/print-pdf')
+  async downloadProductionBatchPrintPdf(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('batchId') batchId: string,
+    @Res() response: Response,
+  ) {
+    await this.requireAdmin(authorization);
+    const result =
+      await this.v2AdminBatchService.generateProductionBatchPrintPdf(batchId);
+
+    response.setHeader('Content-Type', 'application/pdf');
+    response.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${result.fileName}"`,
+    );
+    response.setHeader('Cache-Control', 'no-store');
+    response.setHeader('Content-Length', result.buffer.length.toString());
+    response.status(200).send(result.buffer);
+  }
+
   @Post('ops/production/batches/:batchId/activate')
   async activateProductionBatch(
     @Headers('authorization') authorization: string | undefined,

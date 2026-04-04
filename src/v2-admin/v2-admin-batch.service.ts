@@ -93,6 +93,20 @@ interface ShippingPdfOrderRow {
   items: ShippingPdfLineItemRow[];
 }
 
+interface ProductionPdfAggregateRow {
+  productName: string;
+  variantName: string;
+  quantityTotal: number;
+  orderCount: number;
+}
+
+interface ProductionPdfOrderRow {
+  sequence: number;
+  orderNo: string;
+  statusLabel: string;
+  quantityTotal: number;
+}
+
 const BATCH_EXCLUDED_ORDER_MESSAGE = '배치 제외 주문입니다.';
 const PAYMENT_EXCLUDED_STATUSES = new Set(['CANCELED', 'REFUNDED']);
 const OPEN_BATCH_STATUSES_FOR_CANDIDATES = ['DRAFT', 'ACTIVE'];
@@ -735,6 +749,77 @@ export class V2AdminBatchService {
       aggregates: aggResult.data || [],
       items,
     };
+  }
+
+  async generateProductionBatchPrintPdf(batchId: string): Promise<{
+    buffer: Buffer;
+    fileName: string;
+  }> {
+    const detail = await this.getProductionBatchDetail(batchId);
+    const batchNo =
+      this.normalizeOptionalText(detail?.batch?.batch_no) || 'production_batch';
+    const batchTitle = this.normalizeOptionalText(detail?.batch?.title) || '-';
+    const batchStatus =
+      this.normalizeOptionalText(detail?.batch?.status) || '-';
+    const safeBatchNo = batchNo.replace(/[^A-Za-z0-9_-]/g, '_');
+    const fileName = `${safeBatchNo || 'production_batch'}_production_request.pdf`;
+
+    const aggregateRows: ProductionPdfAggregateRow[] = (detail?.aggregates || []).map(
+      (row: any) => ({
+        productName:
+          this.normalizeOptionalText(row?.product_name) || '이름 없는 상품',
+        variantName: this.normalizeOptionalText(row?.variant_name) || '-',
+        quantityTotal: Math.max(0, Number(row?.quantity_total || 0)),
+        orderCount: Math.max(0, Number(row?.order_count || 0)),
+      }),
+    );
+
+    const orderRows: ProductionPdfOrderRow[] = (detail?.orders || []).map(
+      (row: any, index: number) => {
+        const lineItems = this.extractShippingPdfLineItems(
+          row?.line_items_snapshot,
+        );
+        return {
+          sequence: index + 1,
+          orderNo: this.normalizeOptionalText(row?.order_no) || '-',
+          statusLabel: this.resolveProductionOrderStatusLabelForPdf(row),
+          quantityTotal: lineItems.reduce(
+            (sum, lineItem) => sum + lineItem.quantity,
+            0,
+          ),
+        };
+      },
+    );
+
+    try {
+      const html = this.buildProductionBatchPdfHtml({
+        batchNo,
+        batchTitle,
+        batchStatus,
+        generatedAt: new Date(),
+        aggregateRows,
+        orderRows,
+      });
+      const buffer = await this.renderPdfBufferFromHtml(html);
+      return {
+        buffer,
+        fileName,
+      };
+    } catch (error) {
+      const causeMessage = this.summarizeUnexpectedError(error);
+      this.logger.error(
+        `제작 의뢰서 PDF 생성 실패 (batchId=${batchId}): ${causeMessage}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+
+      throw new ApiException(
+        process.env.NODE_ENV === 'production'
+          ? '제작 의뢰서 PDF 생성 실패'
+          : `제작 의뢰서 PDF 생성 실패: ${causeMessage}`,
+        500,
+        'V2_ADMIN_PRODUCTION_BATCH_PDF_RENDER_FAILED',
+      );
+    }
   }
 
   async activateProductionBatch(input: {
@@ -3866,6 +3951,32 @@ export class V2AdminBatchService {
     }
   }
 
+  private async renderPdfBufferFromHtml(html: string): Promise<Buffer> {
+    const playwright = await import('playwright');
+    const browser = await this.launchShippingPdfBrowser(playwright);
+
+    try {
+      const page = await browser.newPage({
+        deviceScaleFactor: 2,
+      });
+      await page.setContent(html, { waitUntil: 'networkidle' });
+
+      const pdfBuffer = await page.pdf({
+        format: 'A4',
+        printBackground: true,
+        margin: {
+          top: '12mm',
+          right: '12mm',
+          bottom: '12mm',
+          left: '12mm',
+        },
+      });
+      return Buffer.from(pdfBuffer);
+    } finally {
+      await browser.close();
+    }
+  }
+
   private async launchShippingPdfBrowser(
     playwright: typeof import('playwright'),
   ) {
@@ -4164,6 +4275,250 @@ export class V2AdminBatchService {
         </body>
       </html>
     `;
+  }
+
+  private buildProductionBatchPdfHtml(input: {
+    batchNo: string;
+    batchTitle: string;
+    batchStatus: string;
+    generatedAt: Date;
+    aggregateRows: ProductionPdfAggregateRow[];
+    orderRows: ProductionPdfOrderRow[];
+  }): string {
+    const printedAt = this.formatShippingPdfDate(input.generatedAt);
+    const statusLabel = this.resolveProductionBatchStatusLabelForPdf(
+      input.batchStatus,
+    );
+    const totalQuantity = input.aggregateRows.reduce(
+      (sum, row) => sum + row.quantityTotal,
+      0,
+    );
+
+    const aggregateRowsHtml =
+      input.aggregateRows.length === 0
+        ? `
+          <tr>
+            <td colspan="4" class="empty-cell">집계된 제작 대상 상품이 없습니다.</td>
+          </tr>
+        `
+        : input.aggregateRows
+            .map(
+              (row) => `
+          <tr>
+            <td>${this.escapeHtml(row.productName)}</td>
+            <td>${this.escapeHtml(row.variantName)}</td>
+            <td class="num">${row.quantityTotal.toLocaleString()}</td>
+            <td class="num">${row.orderCount.toLocaleString()}</td>
+          </tr>
+        `,
+            )
+            .join('');
+
+    const orderRowsHtml =
+      input.orderRows.length === 0
+        ? `
+          <tr>
+            <td colspan="4" class="empty-cell">배치 주문이 없습니다.</td>
+          </tr>
+        `
+        : input.orderRows
+            .map(
+              (row) => `
+          <tr>
+            <td>${row.sequence}</td>
+            <td>${this.escapeHtml(row.orderNo)}</td>
+            <td>${this.escapeHtml(row.statusLabel)}</td>
+            <td class="num">${row.quantityTotal.toLocaleString()}</td>
+          </tr>
+        `,
+            )
+            .join('');
+
+    return `
+      <!doctype html>
+      <html lang="ko">
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width,initial-scale=1" />
+          <title>제작 의뢰서</title>
+          <style>
+            :root {
+              color-scheme: light;
+            }
+            * {
+              box-sizing: border-box;
+            }
+            body {
+              margin: 0;
+              font-family: "Apple SD Gothic Neo", "Malgun Gothic", "NanumGothic", "Noto Sans KR", sans-serif;
+              color: #111827;
+              background: #ffffff;
+              line-height: 1.45;
+            }
+            .sheet {
+              width: 100%;
+              padding: 0 1.5mm;
+            }
+            .header {
+              padding: 4mm 0 3mm 0;
+              border-bottom: 1px solid #d1d5db;
+            }
+            .title {
+              margin: 0;
+              font-size: 20px;
+              font-weight: 700;
+            }
+            .subtitle {
+              margin: 4px 0 0 0;
+              font-size: 12px;
+              color: #4b5563;
+            }
+            .meta-grid {
+              margin-top: 4mm;
+              display: grid;
+              grid-template-columns: 1fr 1fr;
+              gap: 4px 12px;
+              font-size: 12px;
+              color: #374151;
+            }
+            .meta-grid strong {
+              color: #111827;
+            }
+            .section {
+              margin-top: 6mm;
+            }
+            .section h2 {
+              margin: 0 0 6px 0;
+              font-size: 14px;
+              font-weight: 700;
+              color: #111827;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              font-size: 12px;
+            }
+            th,
+            td {
+              border: 1px solid #d1d5db;
+              padding: 6px 8px;
+              vertical-align: middle;
+              text-align: left;
+            }
+            th {
+              background: #f9fafb;
+              color: #374151;
+              font-weight: 600;
+            }
+            .num {
+              text-align: right;
+              white-space: nowrap;
+            }
+            .empty-cell {
+              text-align: center;
+              color: #6b7280;
+              padding: 10px 8px;
+            }
+          </style>
+        </head>
+        <body>
+          <main class="sheet">
+            <header class="header">
+              <h1 class="title">제작 의뢰서</h1>
+              <p class="subtitle">제작 배치 기준 수량/주문 정보를 정리한 출력 문서입니다.</p>
+            </header>
+
+            <section class="meta-grid">
+              <p><strong>작성 일시</strong>: ${this.escapeHtml(printedAt)}</p>
+              <p><strong>배치 번호</strong>: ${this.escapeHtml(input.batchNo)}</p>
+              <p><strong>배치명</strong>: ${this.escapeHtml(input.batchTitle)}</p>
+              <p><strong>배치 상태</strong>: ${this.escapeHtml(statusLabel)}</p>
+              <p><strong>주문 건수</strong>: ${input.orderRows.length}건</p>
+              <p><strong>상품 수량합</strong>: ${totalQuantity.toLocaleString()}개</p>
+              <p><strong>출력 기준</strong>: A4 세로</p>
+            </section>
+
+            <section class="section">
+              <h2>상품 집계</h2>
+              <table>
+                <thead>
+                  <tr>
+                    <th>상품</th>
+                    <th>옵션</th>
+                    <th class="num">수량</th>
+                    <th class="num">주문수</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${aggregateRowsHtml}
+                </tbody>
+              </table>
+            </section>
+
+            <section class="section">
+              <h2>배치 주문</h2>
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width: 52px;">No</th>
+                    <th>주문번호</th>
+                    <th style="width: 120px;">상태</th>
+                    <th class="num" style="width: 90px;">품목수량</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${orderRowsHtml}
+                </tbody>
+              </table>
+            </section>
+          </main>
+        </body>
+      </html>
+    `;
+  }
+
+  private resolveProductionBatchStatusLabelForPdf(status: string): string {
+    const normalized = String(status || '').toUpperCase();
+    if (normalized === 'DRAFT') {
+      return '준비중';
+    }
+    if (normalized === 'ACTIVE') {
+      return '제작중';
+    }
+    if (normalized === 'COMPLETED') {
+      return '제작 완료';
+    }
+    if (normalized === 'CANCELED') {
+      return '취소됨';
+    }
+    return status || '-';
+  }
+
+  private resolveProductionOrderStatusLabelForPdf(orderRow: any): string {
+    if (orderRow?.is_excluded === true) {
+      return '배치 제외';
+    }
+
+    const activateStatus =
+      this.normalizeOptionalText(orderRow?.transition_activate_status)?.toUpperCase() ||
+      'PENDING';
+    const completeStatus =
+      this.normalizeOptionalText(orderRow?.transition_complete_status)?.toUpperCase() ||
+      'PENDING';
+
+    if (completeStatus === 'FAILED') {
+      return '제작 완료 실패';
+    }
+    if (activateStatus === 'FAILED') {
+      return '제작 시작 실패';
+    }
+    if (completeStatus === 'SUCCEEDED' || completeStatus === 'SKIPPED') {
+      return '제작 완료';
+    }
+    if (activateStatus === 'SUCCEEDED' || activateStatus === 'SKIPPED') {
+      return '제작중';
+    }
+    return '제작 대기';
   }
 
   private resolveShippingBatchStatusLabelForPdf(status: string): string {
