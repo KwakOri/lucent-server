@@ -1158,6 +1158,9 @@ export class V2AdminBatchService {
       const shippingSnapshot = this.normalizeOptionalJsonObject(
         order?.shipping_address_snapshot,
       );
+      const customerSnapshot = this.normalizeOptionalJsonObject(
+        order?.customer_snapshot,
+      );
       const items = shippingItemsMap.get(orderId) || [];
 
       validOrderIds.push(orderId);
@@ -1165,19 +1168,17 @@ export class V2AdminBatchService {
         order_id: orderId,
         order_no: row.order_no,
         recipient_name:
-          this.readSnapshotText(shippingSnapshot, 'name') ||
+          this.readSnapshotText(shippingSnapshot, 'recipient_name') ||
           this.readSnapshotText(shippingSnapshot, 'receiver_name') ||
-          this.readSnapshotText(
-            this.normalizeOptionalJsonObject(order?.customer_snapshot),
-            'name',
-          ),
+          this.readSnapshotText(shippingSnapshot, 'name') ||
+          this.readSnapshotText(customerSnapshot, 'recipient_name') ||
+          this.readSnapshotText(customerSnapshot, 'name'),
         recipient_phone:
-          this.readSnapshotText(shippingSnapshot, 'phone') ||
+          this.readSnapshotText(shippingSnapshot, 'recipient_phone') ||
           this.readSnapshotText(shippingSnapshot, 'receiver_phone') ||
-          this.readSnapshotText(
-            this.normalizeOptionalJsonObject(order?.customer_snapshot),
-            'phone',
-          ),
+          this.readSnapshotText(shippingSnapshot, 'phone') ||
+          this.readSnapshotText(customerSnapshot, 'recipient_phone') ||
+          this.readSnapshotText(customerSnapshot, 'phone'),
         address_summary: this.buildAddressSummary(shippingSnapshot),
         item_count: items.reduce(
           (sum: number, item: any) => sum + Number(item.quantity || 0),
@@ -1266,6 +1267,9 @@ export class V2AdminBatchService {
       const shippingSnapshot = this.normalizeOptionalJsonObject(
         order?.shipping_address_snapshot,
       );
+      const customerSnapshot = this.normalizeOptionalJsonObject(
+        order?.customer_snapshot,
+      );
       const items = shippingItemsMap.get(orderId) || [];
 
       return {
@@ -1274,12 +1278,18 @@ export class V2AdminBatchService {
         order_no: queue?.order_no || order?.order_no || orderId,
         stage_at_snapshot: this.resolveStageFromQueueRow(queue || {}),
         recipient_name:
-          this.readSnapshotText(shippingSnapshot, 'name') ||
+          this.readSnapshotText(shippingSnapshot, 'recipient_name') ||
           this.readSnapshotText(shippingSnapshot, 'receiver_name') ||
+          this.readSnapshotText(shippingSnapshot, 'name') ||
+          this.readSnapshotText(customerSnapshot, 'recipient_name') ||
+          this.readSnapshotText(customerSnapshot, 'name') ||
           null,
         recipient_phone:
-          this.readSnapshotText(shippingSnapshot, 'phone') ||
+          this.readSnapshotText(shippingSnapshot, 'recipient_phone') ||
           this.readSnapshotText(shippingSnapshot, 'receiver_phone') ||
+          this.readSnapshotText(shippingSnapshot, 'phone') ||
+          this.readSnapshotText(customerSnapshot, 'recipient_phone') ||
+          this.readSnapshotText(customerSnapshot, 'phone') ||
           null,
         shipping_address_snapshot: shippingSnapshot || null,
         line_items_snapshot: items,
