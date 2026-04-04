@@ -1103,7 +1103,9 @@ export class V2AdminBatchService {
     const orderIds = this.normalizeOrderIds(input.orderIds);
     const queueMap = await this.fetchQueueMapByOrderIds(orderIds);
     const ordersMap = await this.fetchOrdersMapByIds(orderIds);
-    const itemsMap = await this.fetchOrderItemsMapByOrderIds(orderIds);
+    const orderItemsMap = await this.fetchOrderItemsMapByOrderIds(orderIds);
+    const shippingItemsMap =
+      this.filterPhysicalOrderItemsByOrderId(orderItemsMap);
 
     const blockedRows: Array<{
       order_id: string;
@@ -1138,7 +1140,7 @@ export class V2AdminBatchService {
       const shippingSnapshot = this.normalizeOptionalJsonObject(
         order?.shipping_address_snapshot,
       );
-      const items = itemsMap.get(orderId) || [];
+      const items = shippingItemsMap.get(orderId) || [];
 
       validOrderIds.push(orderId);
       packingRows.push({
@@ -1236,6 +1238,9 @@ export class V2AdminBatchService {
     }
 
     const ordersSnapshot = await this.fetchOrdersSnapshot(validOrderIds);
+    const shippingItemsMap = this.filterPhysicalOrderItemsByOrderId(
+      ordersSnapshot.itemsMap,
+    );
 
     const orderInsertRows = validOrderIds.map((orderId) => {
       const queue = ordersSnapshot.queueMap.get(orderId);
@@ -1243,7 +1248,7 @@ export class V2AdminBatchService {
       const shippingSnapshot = this.normalizeOptionalJsonObject(
         order?.shipping_address_snapshot,
       );
-      const items = ordersSnapshot.itemsMap.get(orderId) || [];
+      const items = shippingItemsMap.get(orderId) || [];
 
       return {
         batch_id: batch.id,
@@ -1279,7 +1284,7 @@ export class V2AdminBatchService {
     await this.insertShippingBatchItems(
       batch.id,
       orderInsertRows,
-      ordersSnapshot.itemsMap,
+      shippingItemsMap,
     );
 
     return this.getShippingBatchDetail(batch.id);
@@ -3171,6 +3176,19 @@ export class V2AdminBatchService {
       map.set(orderId, list);
     }
 
+    return map;
+  }
+
+  private filterPhysicalOrderItemsByOrderId(
+    itemsMap: Map<string, any[]>,
+  ): Map<string, any[]> {
+    const map = new Map<string, any[]>();
+    for (const [orderId, items] of itemsMap.entries()) {
+      const physicalItems = (items || []).filter((item: any) =>
+        this.isPhysicalProductionOrderItemRow(item),
+      );
+      map.set(orderId, physicalItems);
+    }
     return map;
   }
 
