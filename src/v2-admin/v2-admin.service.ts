@@ -2814,8 +2814,21 @@ export class V2AdminService {
     const { salesItems, financialAllocations, storageMode } =
       await this.loadSalesStatsFacts(dateRange, filters);
 
-    const activeSalesItems = (salesItems || []).filter(
+    const reconciledSalesItems = await this.reconcileBundleParentSalesItems(
+      salesItems || [],
+    );
+
+    const activeSalesItems = reconciledSalesItems.filter(
       (row: any) => row?.order_status !== 'CANCELED',
+    );
+    const orderGrossByOrderId = await this.fetchSalesOrderGrossByOrderIds(
+      Array.from(
+        new Set(
+          activeSalesItems
+            .map((row: any) => this.normalizeOptionalText(row.order_id))
+            .filter((value: string | null): value is string => Boolean(value)),
+        ),
+      ),
     );
 
     const summary = {
@@ -2828,8 +2841,8 @@ export class V2AdminService {
         (sum: number, row: any) => sum + Number(row?.quantity || 0),
         0,
       ),
-      order_gross_amount: activeSalesItems.reduce(
-        (sum: number, row: any) => sum + Number(row?.final_line_total || 0),
+      order_gross_amount: Array.from(orderGrossByOrderId.values()).reduce(
+        (sum: number, row) => sum + Number(row.grossAmount || 0),
         0,
       ),
       captured_amount: financialAllocations
@@ -3018,7 +3031,6 @@ export class V2AdminService {
       }
       const daily = dailyMap.get(date)!;
       daily.units_sold += Number(row.quantity || 0);
-      daily.order_gross_amount += Number(row.final_line_total || 0);
 
       const orderId = this.normalizeOptionalText(row.order_id);
       if (orderId) {
@@ -3028,6 +3040,14 @@ export class V2AdminService {
           daily.orders_count += 1;
         }
       }
+    }
+
+    for (const row of orderGrossByOrderId.values()) {
+      if (!row.placedDate || !dailyMap.has(row.placedDate)) {
+        continue;
+      }
+      const daily = dailyMap.get(row.placedDate)!;
+      daily.order_gross_amount += Number(row.grossAmount || 0);
     }
 
     for (const row of financialAllocations) {
@@ -3092,8 +3112,157 @@ export class V2AdminService {
         capture_policy_version: this.captureAllocationPolicyVersion,
         refund_policy_version: this.refundAllocationPolicyVersion,
         stats_storage_mode: storageMode,
+        item_amount_reconcile:
+          'BUNDLE_PARENT_ZERO_FINAL_LINE_TOTAL_FROM_COMPONENTS',
       },
     };
+  }
+
+  private async reconcileBundleParentSalesItems(rows: any[]): Promise<any[]> {
+    const salesRows = Array.isArray(rows) ? rows : [];
+    if (salesRows.length === 0) {
+      return [];
+    }
+
+    const parentOrderItemIds = Array.from(
+      new Set(
+        salesRows
+          .filter(
+            (row) =>
+              this.normalizeOptionalText(row?.line_type)?.toUpperCase() ===
+                'BUNDLE_PARENT' && Number(row?.final_line_total || 0) <= 0,
+          )
+          .map((row) =>
+            this.normalizeOptionalUuid(
+              row?.order_item_id as string | null | undefined,
+            ),
+          )
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+
+    if (parentOrderItemIds.length === 0) {
+      return salesRows;
+    }
+
+    const componentAmountByParentId =
+      await this.fetchBundleComponentFinalLineTotals(parentOrderItemIds);
+
+    return salesRows.map((row) => {
+      const lineType = this.normalizeOptionalText(
+        row?.line_type,
+      )?.toUpperCase();
+      if (lineType !== 'BUNDLE_PARENT') {
+        return row;
+      }
+      if (Number(row?.final_line_total || 0) > 0) {
+        return row;
+      }
+
+      const orderItemId = this.normalizeOptionalUuid(
+        row?.order_item_id as string | null | undefined,
+      );
+      if (!orderItemId) {
+        return row;
+      }
+
+      const componentAmount = Number(
+        componentAmountByParentId.get(orderItemId) || 0,
+      );
+      if (componentAmount <= 0) {
+        return row;
+      }
+
+      return {
+        ...row,
+        final_line_total: componentAmount,
+      };
+    });
+  }
+
+  private async fetchBundleComponentFinalLineTotals(
+    parentOrderItemIds: string[],
+  ): Promise<Map<string, number>> {
+    const totalsByParentId = new Map<string, number>();
+    const chunks = this.chunkArray(parentOrderItemIds, 200);
+
+    for (const chunk of chunks) {
+      const { data, error } = await this.supabase
+        .from('v2_order_items')
+        .select('parent_order_item_id, final_line_total')
+        .eq('line_type', 'BUNDLE_COMPONENT')
+        .in('parent_order_item_id', chunk);
+
+      if (error) {
+        throw new ApiException(
+          'bundle component 매출 보정 조회 실패',
+          500,
+          'V2_ADMIN_SALES_ITEM_BUNDLE_COMPONENT_RECONCILE_FAILED',
+        );
+      }
+
+      for (const row of data || []) {
+        const parentOrderItemId = this.normalizeOptionalUuid(
+          row?.parent_order_item_id as string | null | undefined,
+        );
+        if (!parentOrderItemId) {
+          continue;
+        }
+        const current = Number(totalsByParentId.get(parentOrderItemId) || 0);
+        totalsByParentId.set(
+          parentOrderItemId,
+          current + Number(row?.final_line_total || 0),
+        );
+      }
+    }
+
+    return totalsByParentId;
+  }
+
+  private async fetchSalesOrderGrossByOrderIds(
+    orderIds: string[],
+  ): Promise<Map<string, { grossAmount: number; placedDate: string | null }>> {
+    const orderGrossByOrderId = new Map<
+      string,
+      { grossAmount: number; placedDate: string | null }
+    >();
+    if (!Array.isArray(orderIds) || orderIds.length === 0) {
+      return orderGrossByOrderId;
+    }
+
+    const chunks = this.chunkArray(orderIds, 200);
+    for (const chunk of chunks) {
+      const { data, error } = await this.supabase
+        .from('v2_orders')
+        .select('id, grand_total, placed_at')
+        .in('id', chunk);
+
+      if (error) {
+        throw new ApiException(
+          'sales order gross 조회 실패',
+          500,
+          'V2_ADMIN_SALES_ORDER_GROSS_FETCH_FAILED',
+        );
+      }
+
+      for (const row of data || []) {
+        const orderId = this.normalizeOptionalUuid(
+          row?.id as string | null | undefined,
+        );
+        if (!orderId) {
+          continue;
+        }
+        const placedAtIso = this.normalizeOptionalIsoDateTime(
+          row?.placed_at as string | null | undefined,
+        );
+        orderGrossByOrderId.set(orderId, {
+          grossAmount: Number(row?.grand_total || 0),
+          placedDate: placedAtIso ? placedAtIso.slice(0, 10) : null,
+        });
+      }
+    }
+
+    return orderGrossByOrderId;
   }
 
   async getDashboardOverview(params: {
