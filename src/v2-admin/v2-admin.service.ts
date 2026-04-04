@@ -3096,6 +3096,492 @@ export class V2AdminService {
     };
   }
 
+  async getDashboardOverview(params: {
+    from?: string;
+    to?: string;
+    preset?: string;
+    projectId?: string;
+    campaignId?: string;
+    salesChannelId?: string;
+    campaignType?: string;
+    queueLimit?: string;
+    approvalLimit?: string;
+    failedActionLimit?: string;
+    urgentLimit?: string;
+  }): Promise<any> {
+    const queueLimit = this.normalizeDashboardQueueLimit(params.queueLimit);
+    const approvalLimit = this.normalizeDashboardFeedLimit(
+      params.approvalLimit,
+    );
+    const failedActionLimit = this.normalizeDashboardFeedLimit(
+      params.failedActionLimit,
+    );
+    const urgentLimit = this.normalizeDashboardUrgentLimit(params.urgentLimit);
+    const failedActionsSince = new Date(
+      Date.now() - 24 * 60 * 60 * 1000,
+    ).toISOString();
+
+    const [
+      salesStats,
+      orderQueue,
+      inventoryHealth,
+      pendingApprovals,
+      failedActions,
+      cutoverGateChecklist,
+      pendingApprovalCount,
+      failedActions24h,
+      productionBatchStatusCounts,
+      shippingBatchStatusCounts,
+    ] = await Promise.all([
+      this.listSalesStats({
+        from: params.from,
+        to: params.to,
+        preset: params.preset,
+        projectId: params.projectId,
+        campaignId: params.campaignId,
+        salesChannelId: params.salesChannelId,
+        campaignType: params.campaignType,
+      }),
+      this.listOrderQueue({
+        limit: String(queueLimit),
+      }),
+      this.listInventoryHealth({
+        limit: '200',
+      }),
+      this.listApprovals({
+        status: 'PENDING',
+        limit: String(approvalLimit),
+      }),
+      this.listActionLogs({
+        status: 'FAILED',
+        limit: String(failedActionLimit),
+      }),
+      this.getCutoverGateChecklist({}),
+      this.countPendingApprovals(),
+      this.countFailedActionsSince(failedActionsSince),
+      this.getProductionBatchStatusCounts(),
+      this.getShippingBatchStatusCounts(),
+    ]);
+
+    const orderStageCounts = this.buildDashboardOrderStageCounts(
+      orderQueue.items || [],
+    );
+    const paymentPendingCount = Number(orderStageCounts.PAYMENT_PENDING || 0);
+    const readyToShipCount = Number(orderStageCounts.READY_TO_SHIP || 0);
+    const mismatchCount = Number(inventoryHealth.summary?.mismatch_count || 0);
+    const lowStockCount = Number(inventoryHealth.summary?.low_stock_count || 0);
+
+    const capturedAmount = Number(salesStats.summary?.captured_amount || 0);
+    const refundAmount = Number(salesStats.summary?.refund_amount || 0);
+    const refundRate = capturedAmount > 0 ? refundAmount / capturedAmount : 0;
+
+    return {
+      generated_at: new Date().toISOString(),
+      range: salesStats.range,
+      filters: salesStats.filters,
+      kpis: {
+        orders_count: Number(salesStats.summary?.orders_count || 0),
+        order_gross_amount: Number(salesStats.summary?.order_gross_amount || 0),
+        captured_amount: capturedAmount,
+        refund_amount: refundAmount,
+        net_settlement_amount: Number(
+          salesStats.summary?.net_settlement_amount || 0,
+        ),
+        refund_rate: refundRate,
+        payment_pending_count: paymentPendingCount,
+        ready_to_ship_count: readyToShipCount,
+        inventory_risk_count: mismatchCount + lowStockCount,
+        approval_pending_count: pendingApprovalCount,
+      },
+      trends: {
+        daily: salesStats.daily || [],
+      },
+      pipeline: {
+        order_stage_counts: orderStageCounts,
+        production_batch_status_counts: productionBatchStatusCounts,
+        shipping_batch_status_counts: shippingBatchStatusCounts,
+      },
+      risk: {
+        inventory: {
+          mismatch_count: mismatchCount,
+          low_stock_count: lowStockCount,
+        },
+        cutover: {
+          blocked_domains: Number(
+            cutoverGateChecklist?.summary?.blocked_count || 0,
+          ),
+        },
+        audit: {
+          failed_actions_24h: failedActions24h,
+        },
+      },
+      queues: {
+        urgent_orders: this.buildUrgentOrderQueue(orderQueue.items || [], {
+          limit: urgentLimit,
+        }),
+        pending_approvals: pendingApprovals.items || [],
+        failed_actions: failedActions.items || [],
+      },
+      metadata: {
+        currency_code: salesStats.summary?.currency_code || 'KRW',
+        queue_limit: queueLimit,
+        approval_limit: approvalLimit,
+        failed_action_limit: failedActionLimit,
+        urgent_limit: urgentLimit,
+        failed_actions_since: failedActionsSince,
+        sales_stats_storage_mode:
+          salesStats.metadata?.stats_storage_mode || 'UNKNOWN',
+      },
+    };
+  }
+
+  private buildDashboardOrderStageCounts(rows: any[]): Record<string, number> {
+    const counts: Record<string, number> = {
+      PAYMENT_PENDING: 0,
+      PAYMENT_CONFIRMED: 0,
+      PRODUCTION: 0,
+      READY_TO_SHIP: 0,
+      IN_TRANSIT: 0,
+      DELIVERED: 0,
+      CANCELED: 0,
+    };
+
+    for (const row of rows || []) {
+      const stage = this.resolveDashboardOrderStage(row);
+      counts[stage] = Number(counts[stage] || 0) + 1;
+    }
+
+    return counts;
+  }
+
+  private resolveDashboardOrderStage(
+    row: any,
+  ):
+    | 'PAYMENT_PENDING'
+    | 'PAYMENT_CONFIRMED'
+    | 'PRODUCTION'
+    | 'READY_TO_SHIP'
+    | 'IN_TRANSIT'
+    | 'DELIVERED'
+    | 'CANCELED' {
+    const orderStatus = String(row?.order_status || '').toUpperCase();
+    const paymentStatus = String(row?.payment_status || '').toUpperCase();
+    const fulfillmentStatus = String(
+      row?.fulfillment_status || '',
+    ).toUpperCase();
+
+    if (
+      this.isDashboardCanceledStatus(orderStatus) ||
+      this.isDashboardCanceledStatus(paymentStatus) ||
+      this.isDashboardCanceledStatus(fulfillmentStatus)
+    ) {
+      return 'CANCELED';
+    }
+
+    if (paymentStatus === 'AUTHORIZED') {
+      return 'PAYMENT_CONFIRMED';
+    }
+
+    const isPaymentCaptured = [
+      'CAPTURED',
+      'PARTIALLY_REFUNDED',
+      'REFUNDED',
+    ].includes(paymentStatus);
+    if (!isPaymentCaptured) {
+      return 'PAYMENT_PENDING';
+    }
+
+    const hasPhysical = row?.has_physical === true;
+    const hasDigital = row?.has_digital === true;
+
+    if (hasPhysical) {
+      const waiting = Number(row?.waiting_shipment_count || 0);
+      const inTransit = Number(row?.in_transit_shipment_count || 0);
+      const delivered = Number(row?.delivered_shipment_count || 0);
+
+      if (inTransit > 0) {
+        return 'IN_TRANSIT';
+      }
+      if (waiting > 0) {
+        return 'READY_TO_SHIP';
+      }
+      if (delivered > 0 && waiting === 0 && inTransit === 0) {
+        const isOrderOrFulfillmentCompleted =
+          orderStatus === 'COMPLETED' || fulfillmentStatus === 'FULFILLED';
+        if (hasDigital && !isOrderOrFulfillmentCompleted) {
+          return 'IN_TRANSIT';
+        }
+        return 'DELIVERED';
+      }
+      if (orderStatus === 'COMPLETED' || fulfillmentStatus === 'FULFILLED') {
+        return 'DELIVERED';
+      }
+      return 'PRODUCTION';
+    }
+
+    if (hasDigital) {
+      if (orderStatus === 'COMPLETED' || fulfillmentStatus === 'FULFILLED') {
+        return 'DELIVERED';
+      }
+      return 'PRODUCTION';
+    }
+
+    if (orderStatus === 'COMPLETED') {
+      return 'DELIVERED';
+    }
+
+    return 'PRODUCTION';
+  }
+
+  private isDashboardCanceledStatus(status: string): boolean {
+    return String(status || '')
+      .toUpperCase()
+      .includes('CANCEL');
+  }
+
+  private buildUrgentOrderQueue(
+    rows: any[],
+    options: {
+      limit: number;
+    },
+  ): any[] {
+    const nowMs = Date.now();
+    const priorityByStage = new Map<string, number>([
+      ['PAYMENT_PENDING', 0],
+      ['READY_TO_SHIP', 1],
+    ]);
+
+    const urgentRows = (rows || [])
+      .map((row) => {
+        const stage = this.resolveDashboardOrderStage(row);
+        if (!priorityByStage.has(stage)) {
+          return null;
+        }
+        const createdAtMs = this.parseDashboardTimestamp(
+          row?.placed_at || row?.created_at,
+        );
+        const ageHours =
+          createdAtMs === null
+            ? null
+            : Math.max(0, (nowMs - createdAtMs) / 3600000);
+
+        return {
+          order_id: row?.order_id || null,
+          order_no: row?.order_no || null,
+          stage,
+          placed_at: row?.placed_at || null,
+          created_at: row?.created_at || null,
+          order_status: row?.order_status || null,
+          payment_status: row?.payment_status || null,
+          fulfillment_status: row?.fulfillment_status || null,
+          grand_total: Number(row?.grand_total || 0),
+          depositor_name: row?.depositor_name || null,
+          waiting_shipment_count: Number(row?.waiting_shipment_count || 0),
+          in_transit_shipment_count: Number(
+            row?.in_transit_shipment_count || 0,
+          ),
+          age_hours: ageHours === null ? null : Number(ageHours.toFixed(2)),
+          _priority: priorityByStage.get(stage) || 99,
+          _age_sort: ageHours === null ? -1 : ageHours,
+        };
+      })
+      .filter((row): row is any => Boolean(row));
+
+    urgentRows.sort((a, b) => {
+      if (a._priority !== b._priority) {
+        return a._priority - b._priority;
+      }
+      if (a._age_sort !== b._age_sort) {
+        return b._age_sort - a._age_sort;
+      }
+      const aCreated = this.parseDashboardTimestamp(a.created_at) || 0;
+      const bCreated = this.parseDashboardTimestamp(b.created_at) || 0;
+      return aCreated - bCreated;
+    });
+
+    return urgentRows.slice(0, options.limit).map((row) => ({
+      order_id: row.order_id,
+      order_no: row.order_no,
+      stage: row.stage,
+      placed_at: row.placed_at,
+      created_at: row.created_at,
+      order_status: row.order_status,
+      payment_status: row.payment_status,
+      fulfillment_status: row.fulfillment_status,
+      grand_total: row.grand_total,
+      depositor_name: row.depositor_name,
+      waiting_shipment_count: row.waiting_shipment_count,
+      in_transit_shipment_count: row.in_transit_shipment_count,
+      age_hours: row.age_hours,
+    }));
+  }
+
+  private parseDashboardTimestamp(value: unknown): number | null {
+    if (typeof value !== 'string' || value.trim().length === 0) {
+      return null;
+    }
+    const parsed = Date.parse(value);
+    if (Number.isNaN(parsed)) {
+      return null;
+    }
+    return parsed;
+  }
+
+  private async countPendingApprovals(): Promise<number> {
+    const { count, error } = await this.supabase
+      .from('v2_admin_approval_requests')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 'PENDING');
+
+    if (error) {
+      throw new ApiException(
+        'approval pending 건수 조회 실패',
+        500,
+        'V2_ADMIN_APPROVALS_PENDING_COUNT_FAILED',
+      );
+    }
+    return Number(count || 0);
+  }
+
+  private async countFailedActionsSince(sinceIso: string): Promise<number> {
+    const { count, error } = await this.supabase
+      .from('v2_admin_action_logs')
+      .select('*', { count: 'exact', head: true })
+      .eq('action_status', 'FAILED')
+      .gte('created_at', sinceIso);
+
+    if (error) {
+      throw new ApiException(
+        'failed action 건수 조회 실패',
+        500,
+        'V2_ADMIN_FAILED_ACTION_COUNT_FAILED',
+      );
+    }
+    return Number(count || 0);
+  }
+
+  private async getProductionBatchStatusCounts(): Promise<
+    Record<string, number>
+  > {
+    const statuses = ['DRAFT', 'ACTIVE', 'COMPLETED', 'CANCELED'] as const;
+    const statusEntries = await Promise.all(
+      statuses.map(async (status) => {
+        const { count, error } = await this.supabase
+          .from('v2_admin_production_batch_queue_view')
+          .select('*', { count: 'exact', head: true })
+          .eq('status', status);
+        if (error) {
+          throw new ApiException(
+            'production batch 상태 건수 조회 실패',
+            500,
+            'V2_ADMIN_DASHBOARD_PRODUCTION_BATCH_COUNT_FAILED',
+          );
+        }
+        return [status, Number(count || 0)] as const;
+      }),
+    );
+
+    const [
+      { count: failedCount, error: failedError },
+      { count: excludedCount, error: excludedError },
+    ] = await Promise.all([
+      this.supabase
+        .from('v2_admin_production_batch_orders')
+        .select('*', { count: 'exact', head: true })
+        .or(
+          'transition_activate_status.eq.FAILED,transition_complete_status.eq.FAILED',
+        ),
+      this.supabase
+        .from('v2_admin_production_batch_orders')
+        .select('*', { count: 'exact', head: true })
+        .eq('is_excluded', true),
+    ]);
+
+    if (failedError || excludedError) {
+      throw new ApiException(
+        'production batch 실패/제외 건수 조회 실패',
+        500,
+        'V2_ADMIN_DASHBOARD_PRODUCTION_BATCH_FAILURE_COUNT_FAILED',
+      );
+    }
+
+    const counts: Record<string, number> = {};
+    for (const [status, count] of statusEntries) {
+      counts[status] = count;
+    }
+    counts.failed_count = Number(failedCount || 0);
+    counts.excluded_count = Number(excludedCount || 0);
+    counts.total =
+      statuses.reduce((sum, status) => sum + Number(counts[status] || 0), 0) ||
+      0;
+
+    return counts;
+  }
+
+  private async getShippingBatchStatusCounts(): Promise<
+    Record<string, number>
+  > {
+    const statuses = [
+      'DRAFT',
+      'ACTIVE',
+      'DISPATCHED',
+      'COMPLETED',
+      'CANCELED',
+    ] as const;
+    const statusEntries = await Promise.all(
+      statuses.map(async (status) => {
+        const { count, error } = await this.supabase
+          .from('v2_admin_shipping_batch_queue_view')
+          .select('*', { count: 'exact', head: true })
+          .eq('status', status);
+        if (error) {
+          throw new ApiException(
+            'shipping batch 상태 건수 조회 실패',
+            500,
+            'V2_ADMIN_DASHBOARD_SHIPPING_BATCH_COUNT_FAILED',
+          );
+        }
+        return [status, Number(count || 0)] as const;
+      }),
+    );
+
+    const [
+      { count: failedCount, error: failedError },
+      { count: excludedCount, error: excludedError },
+    ] = await Promise.all([
+      this.supabase
+        .from('v2_admin_shipping_batch_orders')
+        .select('*', { count: 'exact', head: true })
+        .or(
+          'dispatch_transition_status.eq.FAILED,delivery_transition_status.eq.FAILED',
+        ),
+      this.supabase
+        .from('v2_admin_shipping_batch_orders')
+        .select('*', { count: 'exact', head: true })
+        .eq('is_excluded', true),
+    ]);
+
+    if (failedError || excludedError) {
+      throw new ApiException(
+        'shipping batch 실패/제외 건수 조회 실패',
+        500,
+        'V2_ADMIN_DASHBOARD_SHIPPING_BATCH_FAILURE_COUNT_FAILED',
+      );
+    }
+
+    const counts: Record<string, number> = {};
+    for (const [status, count] of statusEntries) {
+      counts[status] = count;
+    }
+    counts.failed_count = Number(failedCount || 0);
+    counts.excluded_count = Number(excludedCount || 0);
+    counts.total =
+      statuses.reduce((sum, status) => sum + Number(counts[status] || 0), 0) ||
+      0;
+
+    return counts;
+  }
+
   private async loadSalesStatsFacts(
     dateRange: {
       fromDate: string;
@@ -4209,6 +4695,39 @@ export class V2AdminService {
       return 20;
     }
     return Math.max(1, Math.min(1000, parsed));
+  }
+
+  private normalizeDashboardQueueLimit(raw?: string): number {
+    if (!raw) {
+      return 500;
+    }
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isNaN(parsed)) {
+      return 500;
+    }
+    return Math.max(20, Math.min(1000, parsed));
+  }
+
+  private normalizeDashboardFeedLimit(raw?: string): number {
+    if (!raw) {
+      return 10;
+    }
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isNaN(parsed)) {
+      return 10;
+    }
+    return Math.max(1, Math.min(50, parsed));
+  }
+
+  private normalizeDashboardUrgentLimit(raw?: string): number {
+    if (!raw) {
+      return 10;
+    }
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isNaN(parsed)) {
+      return 10;
+    }
+    return Math.max(1, Math.min(30, parsed));
   }
 
   private normalizeBulkActionMode(raw?: string): 'DRY_RUN' | 'EXECUTE' {
