@@ -3505,9 +3505,14 @@ export class V2AdminBatchService {
     }
 
     const { data, error } = await this.supabase
-      .from('v2_product_media_assets')
-      .select('product_id, public_url, media_role, is_primary, sort_order, created_at')
+      .from('v2_product_media')
+      .select(
+        'product_id, public_url, media_role, is_primary, sort_order, created_at',
+      )
       .in('product_id', normalizedProductIds)
+      .eq('status', 'ACTIVE')
+      .is('deleted_at', null)
+      .order('is_primary', { ascending: false })
       .order('sort_order', { ascending: true })
       .order('created_at', { ascending: true });
 
