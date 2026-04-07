@@ -3419,13 +3419,73 @@ export class V2AdminBatchService {
     if (!normalizedSnapshot) {
       return null;
     }
-    return this.readFirstSnapshotText(normalizedSnapshot, [
+
+    const candidateSnapshots: Record<string, unknown>[] = [normalizedSnapshot];
+    const displaySnapshot = this.normalizeOptionalJsonObject(
+      normalizedSnapshot.display_snapshot,
+    );
+    if (displaySnapshot) {
+      candidateSnapshots.push(displaySnapshot);
+    }
+    const productSnapshot = this.normalizeOptionalJsonObject(
+      normalizedSnapshot.product,
+    );
+    if (productSnapshot) {
+      candidateSnapshots.push(productSnapshot);
+    }
+    const nestedProductSnapshot = this.normalizeOptionalJsonObject(
+      displaySnapshot?.product,
+    );
+    if (nestedProductSnapshot) {
+      candidateSnapshots.push(nestedProductSnapshot);
+    }
+    const mediaSnapshot = this.normalizeOptionalJsonObject(normalizedSnapshot.media);
+    if (mediaSnapshot) {
+      candidateSnapshots.push(mediaSnapshot);
+    }
+
+    const preferredKeys = [
       'thumbnail_url',
       'product_thumbnail_url',
       'image_url',
       'product_image_url',
       'cover_image_url',
-    ]);
+      'public_url',
+      'url',
+      'src',
+    ];
+
+    for (const candidate of candidateSnapshots) {
+      const url = this.readFirstSnapshotText(candidate, preferredKeys);
+      if (url) {
+        return url;
+      }
+    }
+
+    const candidateArrays: unknown[] = [
+      normalizedSnapshot.images,
+      normalizedSnapshot.gallery_images,
+      displaySnapshot?.images,
+      displaySnapshot?.gallery_images,
+      normalizedSnapshot.media_assets,
+    ];
+    for (const candidateArray of candidateArrays) {
+      if (!Array.isArray(candidateArray)) {
+        continue;
+      }
+      for (const item of candidateArray) {
+        const normalizedItem = this.normalizeOptionalJsonObject(item);
+        if (!normalizedItem) {
+          continue;
+        }
+        const url = this.readFirstSnapshotText(normalizedItem, preferredKeys);
+        if (url) {
+          return url;
+        }
+      }
+    }
+
+    return null;
   }
 
   private async fetchProductThumbnailByIdsBestEffort(
@@ -3445,9 +3505,11 @@ export class V2AdminBatchService {
     }
 
     const { data, error } = await this.supabase
-      .from('v2_products')
-      .select('id, thumbnail_url')
-      .in('id', normalizedProductIds);
+      .from('v2_product_media_assets')
+      .select('product_id, public_url, media_role, is_primary, sort_order, created_at')
+      .in('product_id', normalizedProductIds)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true });
 
     if (error) {
       this.logger.warn(
@@ -3456,10 +3518,49 @@ export class V2AdminBatchService {
       return new Map();
     }
 
-    const map = new Map<string, string>();
+    const rowsByProductId = new Map<string, any[]>();
     for (const row of data || []) {
-      const productId = this.normalizeOptionalUuid(row?.id);
-      const thumbnailUrl = this.normalizeOptionalText(row?.thumbnail_url);
+      const productId = this.normalizeOptionalUuid(row?.product_id);
+      if (!productId) {
+        continue;
+      }
+      const rows = rowsByProductId.get(productId) || [];
+      rows.push(row);
+      rowsByProductId.set(productId, rows);
+    }
+
+    const map = new Map<string, string>();
+    for (const productId of normalizedProductIds) {
+      const mediaRows = rowsByProductId.get(productId) || [];
+      if (mediaRows.length === 0) {
+        continue;
+      }
+
+      const primaryByFlag = mediaRows.find(
+        (media) =>
+          media.is_primary &&
+          this.normalizeOptionalText(
+            media.public_url as string | null | undefined,
+          ),
+      );
+      const primaryByRole = mediaRows.find(
+        (media) =>
+          media.media_role === 'PRIMARY' &&
+          this.normalizeOptionalText(
+            media.public_url as string | null | undefined,
+          ),
+      );
+      const fallback = mediaRows.find((media) =>
+        this.normalizeOptionalText(
+          media.public_url as string | null | undefined,
+        ),
+      );
+      const thumbnailUrl = this.normalizeOptionalText(
+        (primaryByFlag || primaryByRole || fallback)?.public_url as
+          | string
+          | null
+          | undefined,
+      );
       if (!productId || !thumbnailUrl) {
         continue;
       }
