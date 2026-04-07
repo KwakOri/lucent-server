@@ -52,6 +52,7 @@ interface PhysicalProductionOrderItem {
   order_id: string;
   product_id: string | null;
   variant_id: string | null;
+  thumbnail_url: string | null;
   product_name: string;
   variant_name: string | null;
   quantity: number;
@@ -96,6 +97,7 @@ interface ShippingPdfOrderRow {
 interface ProductionPdfAggregateRow {
   productName: string;
   variantName: string;
+  thumbnailUrl: string | null;
   quantityTotal: number;
   orderCount: number;
 }
@@ -743,10 +745,16 @@ export class V2AdminBatchService {
       );
     }
 
+    const orders = ordersResult.data || [];
+    const aggregates = await this.enrichProductionAggregateRows({
+      aggregateRows: aggResult.data || [],
+      orderRows: orders,
+    });
+
     return {
       batch,
-      orders: ordersResult.data || [],
-      aggregates: aggResult.data || [],
+      orders,
+      aggregates,
       items,
     };
   }
@@ -764,13 +772,20 @@ export class V2AdminBatchService {
     const safeBatchNo = batchNo.replace(/[^A-Za-z0-9_-]/g, '_');
     const fileName = `${safeBatchNo || 'production_batch'}_production_request.pdf`;
 
-    const aggregateRows: ProductionPdfAggregateRow[] = (detail?.aggregates || []).map(
-      (row: any) => ({
-        productName:
-          this.normalizeOptionalText(row?.product_name) || '이름 없는 상품',
-        variantName: this.normalizeOptionalText(row?.variant_name) || '-',
-        quantityTotal: Math.max(0, Number(row?.quantity_total || 0)),
-        orderCount: Math.max(0, Number(row?.order_count || 0)),
+    const aggregateRows: ProductionPdfAggregateRow[] = this.sortProductionPdfAggregateRowsByName(
+      (detail?.aggregates || []).map((row: any) => {
+        const metadata = this.normalizeOptionalJsonObject(row?.metadata);
+        return {
+          productName:
+            this.normalizeOptionalText(row?.product_name) || '이름 없는 상품',
+          variantName: this.normalizeOptionalText(row?.variant_name) || '-',
+          thumbnailUrl:
+            this.normalizeOptionalText(row?.thumbnail_url) ||
+            this.normalizeOptionalText(metadata?.thumbnail_url) ||
+            null,
+          quantityTotal: Math.max(0, Number(row?.quantity_total || 0)),
+          orderCount: Math.max(0, Number(row?.order_count || 0)),
+        };
       }),
     );
 
@@ -2503,6 +2518,7 @@ export class V2AdminBatchService {
       {
         product_id: string | null;
         variant_id: string | null;
+        thumbnail_url: string | null;
         product_name: string;
         variant_name: string | null;
         quantity_total: number;
@@ -2517,6 +2533,7 @@ export class V2AdminBatchService {
       const existing = aggregateMap.get(key) || {
         product_id: item.product_id,
         variant_id: item.variant_id,
+        thumbnail_url: item.thumbnail_url,
         product_name: item.product_name,
         variant_name: item.variant_name,
         quantity_total: 0,
@@ -2524,6 +2541,9 @@ export class V2AdminBatchService {
       };
 
       existing.quantity_total += Number(item.quantity || 0);
+      if (!existing.thumbnail_url && item.thumbnail_url) {
+        existing.thumbnail_url = item.thumbnail_url;
+      }
       existing.order_id_set.add(item.order_id);
       aggregateMap.set(key, existing);
     }
@@ -2536,7 +2556,7 @@ export class V2AdminBatchService {
       variant_name: row.variant_name,
       quantity_total: row.quantity_total,
       order_count: row.order_id_set.size,
-      metadata: {},
+      metadata: row.thumbnail_url ? { thumbnail_url: row.thumbnail_url } : {},
     }));
   }
 
@@ -2960,12 +2980,18 @@ export class V2AdminBatchService {
       const campaignName =
         this.normalizeOptionalText(row.campaign_name_snapshot) ||
         (campaignId ? campaignNameById.get(campaignId) || null : null);
+      const displaySnapshot = this.normalizeOptionalJsonObject(
+        row.display_snapshot,
+      );
+      const productId = this.normalizeOptionalUuid(row.product_id);
+      const thumbnailUrl = this.extractProductionThumbnailUrl(displaySnapshot);
 
       const item: PhysicalProductionOrderItem = {
         id: itemId,
         order_id: orderId,
-        product_id: this.normalizeOptionalUuid(row.product_id),
+        product_id: productId,
         variant_id: this.normalizeOptionalUuid(row.variant_id),
+        thumbnail_url: thumbnailUrl,
         product_name:
           this.normalizeOptionalText(row.product_name_snapshot) ||
           '이름 없는 상품',
@@ -3095,7 +3121,7 @@ export class V2AdminBatchService {
     const { data, error } = await this.supabase
       .from('v2_order_items')
       .select(
-        'order_id, product_id, variant_id, product_name_snapshot, variant_name_snapshot, quantity, line_type, line_status, fulfillment_type_snapshot, requires_shipping_snapshot',
+        'order_id, product_id, variant_id, product_name_snapshot, variant_name_snapshot, quantity, line_type, line_status, fulfillment_type_snapshot, requires_shipping_snapshot, display_snapshot',
       )
       .in('order_id', orderIds);
 
@@ -3112,6 +3138,7 @@ export class V2AdminBatchService {
       {
         product_id: string | null;
         variant_id: string | null;
+        thumbnail_url: string | null;
         product_name: string;
         variant_name: string | null;
         quantity_total: number;
@@ -3145,6 +3172,7 @@ export class V2AdminBatchService {
       const existing = aggregateMap.get(key) || {
         product_id: productId,
         variant_id: variantId,
+        thumbnail_url: this.extractProductionThumbnailUrl(row?.display_snapshot),
         product_name:
           this.normalizeOptionalText(row.product_name_snapshot) ||
           '이름 없는 상품',
@@ -3153,21 +3181,291 @@ export class V2AdminBatchService {
         order_id_set: new Set<string>(),
       };
 
+      if (!existing.thumbnail_url) {
+        existing.thumbnail_url = this.extractProductionThumbnailUrl(
+          row?.display_snapshot,
+        );
+      }
       existing.quantity_total += Number(row.quantity || 0);
       existing.order_id_set.add(orderId);
       aggregateMap.set(key, existing);
     }
 
-    return Array.from(aggregateMap.values())
-      .map((row) => ({
+    const aggregateRows = Array.from(aggregateMap.values()).map((row) => ({
+      product_id: row.product_id,
+      variant_id: row.variant_id,
+      thumbnail_url: row.thumbnail_url,
+      product_name: row.product_name,
+      variant_name: row.variant_name,
+      quantity_total: row.quantity_total,
+      order_count: row.order_id_set.size,
+    }));
+
+    const productThumbnailById = await this.fetchProductThumbnailByIdsBestEffort(
+      aggregateRows
+        .filter((row) => !row.thumbnail_url)
+        .map((row) => this.normalizeOptionalUuid(row.product_id))
+        .filter((productId: string | null): productId is string =>
+          Boolean(productId),
+        ),
+    );
+
+    return this.sortProductionAggregateRowsByName(
+      aggregateRows.map((row) => ({
         product_id: row.product_id,
         variant_id: row.variant_id,
+        thumbnail_url:
+          row.thumbnail_url ||
+          (row.product_id
+            ? productThumbnailById.get(row.product_id) || null
+            : null),
         product_name: row.product_name,
         variant_name: row.variant_name,
         quantity_total: row.quantity_total,
-        order_count: row.order_id_set.size,
-      }))
-      .sort((a, b) => b.quantity_total - a.quantity_total);
+        order_count: row.order_count,
+      })),
+    );
+  }
+
+  private sortProductionAggregateRowsByName<
+    T extends { product_name?: unknown; variant_name?: unknown },
+  >(rows: T[]): T[] {
+    return [...rows].sort((a, b) => {
+      const productA = this.normalizeOptionalText(a.product_name) || '';
+      const productB = this.normalizeOptionalText(b.product_name) || '';
+      const productCompare = productA.localeCompare(productB, 'ko-KR', {
+        sensitivity: 'base',
+        numeric: true,
+      });
+      if (productCompare !== 0) {
+        return productCompare;
+      }
+
+      const variantA = this.normalizeOptionalText(a.variant_name) || '';
+      const variantB = this.normalizeOptionalText(b.variant_name) || '';
+      return variantA.localeCompare(variantB, 'ko-KR', {
+        sensitivity: 'base',
+        numeric: true,
+      });
+    });
+  }
+
+  private sortProductionPdfAggregateRowsByName(
+    rows: ProductionPdfAggregateRow[],
+  ): ProductionPdfAggregateRow[] {
+    return [...rows].sort((a, b) => {
+      const productCompare = a.productName.localeCompare(b.productName, 'ko-KR', {
+        sensitivity: 'base',
+        numeric: true,
+      });
+      if (productCompare !== 0) {
+        return productCompare;
+      }
+
+      return a.variantName.localeCompare(b.variantName, 'ko-KR', {
+        sensitivity: 'base',
+        numeric: true,
+      });
+    });
+  }
+
+  private buildProductionAggregateNameKey(
+    productName: unknown,
+    variantName: unknown,
+  ): string {
+    const normalizedProduct =
+      this.normalizeOptionalText(productName)?.toLowerCase() || '';
+    const normalizedVariant =
+      this.normalizeOptionalText(variantName)?.toLowerCase() || '';
+    return `${normalizedProduct}::${normalizedVariant}`;
+  }
+
+  private async enrichProductionAggregateRows(input: {
+    aggregateRows: any[];
+    orderRows: any[];
+  }): Promise<any[]> {
+    const aggregateRows = Array.isArray(input.aggregateRows)
+      ? input.aggregateRows
+      : [];
+    if (aggregateRows.length === 0) {
+      return [];
+    }
+
+    const thumbnailMap = this.extractProductionAggregateThumbnailMapFromOrderRows(
+      input.orderRows,
+    );
+    const rows = aggregateRows.map((row) => {
+      const metadata = this.normalizeOptionalJsonObject(row?.metadata);
+      const productId = this.normalizeOptionalUuid(row?.product_id);
+      const variantId = this.normalizeOptionalUuid(row?.variant_id);
+      const productName =
+        this.normalizeOptionalText(row?.product_name) || '이름 없는 상품';
+      const variantName = this.normalizeOptionalText(row?.variant_name);
+      const nameKey = this.buildProductionAggregateNameKey(
+        productName,
+        variantName,
+      );
+      const thumbnailUrl =
+        this.normalizeOptionalText(row?.thumbnail_url) ||
+        this.normalizeOptionalText(metadata?.thumbnail_url) ||
+        (variantId ? thumbnailMap.byVariantId.get(variantId) || null : null) ||
+        (productId ? thumbnailMap.byProductId.get(productId) || null : null) ||
+        thumbnailMap.byName.get(nameKey) ||
+        null;
+
+      return {
+        ...row,
+        product_id: productId,
+        variant_id: variantId,
+        product_name: productName,
+        variant_name: variantName || null,
+        quantity_total: Math.max(0, Number(row?.quantity_total || 0)),
+        order_count: Math.max(0, Number(row?.order_count || 0)),
+        thumbnail_url: thumbnailUrl,
+      };
+    });
+
+    const productThumbnailById = await this.fetchProductThumbnailByIdsBestEffort(
+      rows
+        .filter((row) => !row.thumbnail_url)
+        .map((row) => this.normalizeOptionalUuid(row.product_id))
+        .filter((productId: string | null): productId is string =>
+          Boolean(productId),
+        ),
+    );
+
+    return this.sortProductionAggregateRowsByName(
+      rows.map((row) => ({
+        ...row,
+        thumbnail_url:
+          row.thumbnail_url ||
+          (row.product_id
+            ? productThumbnailById.get(row.product_id) || null
+            : null),
+      })),
+    );
+  }
+
+  private extractProductionAggregateThumbnailMapFromOrderRows(orderRows: any[]): {
+    byVariantId: Map<string, string>;
+    byProductId: Map<string, string>;
+    byName: Map<string, string>;
+  } {
+    const byVariantId = new Map<string, string>();
+    const byProductId = new Map<string, string>();
+    const byName = new Map<string, string>();
+
+    const rows = Array.isArray(orderRows) ? orderRows : [];
+    for (const row of rows) {
+      const lineItems = Array.isArray(row?.line_items_snapshot)
+        ? row.line_items_snapshot
+        : [];
+      for (const item of lineItems) {
+        const lineItem = this.normalizeOptionalJsonObject(item);
+        if (!lineItem) {
+          continue;
+        }
+        if (this.isShippingPdfCanceledLineItem(lineItem)) {
+          continue;
+        }
+        if (!this.isShippingPdfPhysicalLineItem(lineItem)) {
+          continue;
+        }
+
+        const thumbnailUrl = this.extractProductionThumbnailUrl(lineItem);
+        if (!thumbnailUrl) {
+          continue;
+        }
+
+        const variantId = this.normalizeOptionalUuid(lineItem.variant_id);
+        const productId = this.normalizeOptionalUuid(lineItem.product_id);
+        const productName =
+          this.readFirstSnapshotText(lineItem, [
+            'product_name_snapshot',
+            'product_name',
+            'product_title',
+          ]) || '이름 없는 상품';
+        const variantName = this.readFirstSnapshotText(lineItem, [
+          'variant_name_snapshot',
+          'variant_name',
+          'variant_title',
+        ]);
+        const nameKey = this.buildProductionAggregateNameKey(
+          productName,
+          variantName,
+        );
+
+        if (variantId && !byVariantId.has(variantId)) {
+          byVariantId.set(variantId, thumbnailUrl);
+        }
+        if (productId && !byProductId.has(productId)) {
+          byProductId.set(productId, thumbnailUrl);
+        }
+        if (nameKey && !byName.has(nameKey)) {
+          byName.set(nameKey, thumbnailUrl);
+        }
+      }
+    }
+
+    return {
+      byVariantId,
+      byProductId,
+      byName,
+    };
+  }
+
+  private extractProductionThumbnailUrl(snapshot: unknown): string | null {
+    const normalizedSnapshot = this.normalizeOptionalJsonObject(snapshot);
+    if (!normalizedSnapshot) {
+      return null;
+    }
+    return this.readFirstSnapshotText(normalizedSnapshot, [
+      'thumbnail_url',
+      'product_thumbnail_url',
+      'image_url',
+      'product_image_url',
+      'cover_image_url',
+    ]);
+  }
+
+  private async fetchProductThumbnailByIdsBestEffort(
+    productIds: string[],
+  ): Promise<Map<string, string>> {
+    const normalizedProductIds = Array.from(
+      new Set(
+        (productIds || [])
+          .map((productId) => this.normalizeOptionalUuid(productId))
+          .filter((productId: string | null): productId is string =>
+            Boolean(productId),
+          ),
+      ),
+    );
+    if (normalizedProductIds.length === 0) {
+      return new Map();
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_products')
+      .select('id, thumbnail_url')
+      .in('id', normalizedProductIds);
+
+    if (error) {
+      this.logger.warn(
+        `상품 썸네일 조회 실패: ${this.summarizeUnexpectedError(error)}`,
+      );
+      return new Map();
+    }
+
+    const map = new Map<string, string>();
+    for (const row of data || []) {
+      const productId = this.normalizeOptionalUuid(row?.id);
+      const thumbnailUrl = this.normalizeOptionalText(row?.thumbnail_url);
+      if (!productId || !thumbnailUrl) {
+        continue;
+      }
+      map.set(productId, thumbnailUrl);
+    }
+    return map;
   }
 
   private isPhysicalProductionLine(row: {
@@ -4298,13 +4596,18 @@ export class V2AdminBatchService {
       input.aggregateRows.length === 0
         ? `
           <tr>
-            <td colspan="4" class="empty-cell">집계된 제작 대상 상품이 없습니다.</td>
+            <td colspan="5" class="empty-cell">집계된 제작 대상 상품이 없습니다.</td>
           </tr>
         `
         : input.aggregateRows
             .map(
               (row) => `
           <tr>
+            <td class="product-image-cell">${
+              row.thumbnailUrl
+                ? `<img class="product-thumb" src="${this.escapeHtml(row.thumbnailUrl)}" alt="${this.escapeHtml(row.productName)}" />`
+                : '<span class="image-empty">-</span>'
+            }</td>
             <td>${this.escapeHtml(row.productName)}</td>
             <td>${this.escapeHtml(row.variantName)}</td>
             <td class="num">${row.quantityTotal.toLocaleString()}</td>
@@ -4419,6 +4722,24 @@ export class V2AdminBatchService {
               color: #6b7280;
               padding: 10px 8px;
             }
+            .product-image-cell {
+              width: 64px;
+              text-align: center;
+              padding: 4px;
+            }
+            .product-thumb {
+              width: 48px;
+              height: 48px;
+              object-fit: cover;
+              border-radius: 6px;
+              border: 1px solid #e5e7eb;
+            }
+            .image-empty {
+              display: inline-block;
+              width: 48px;
+              text-align: center;
+              color: #9ca3af;
+            }
           </style>
         </head>
         <body>
@@ -4443,6 +4764,7 @@ export class V2AdminBatchService {
               <table>
                 <thead>
                   <tr>
+                    <th style="width: 64px;">이미지</th>
                     <th>상품</th>
                     <th>옵션</th>
                     <th class="num">수량</th>
