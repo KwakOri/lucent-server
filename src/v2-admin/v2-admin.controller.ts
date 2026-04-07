@@ -185,6 +185,20 @@ interface SalesStatsQuery {
   campaign_type?: string;
 }
 
+interface DashboardOverviewQuery {
+  from?: string;
+  to?: string;
+  preset?: string;
+  project_id?: string;
+  campaign_id?: string;
+  sales_channel_id?: string;
+  campaign_type?: string;
+  queue_limit?: string;
+  approval_limit?: string;
+  failed_action_limit?: string;
+  urgent_limit?: string;
+}
+
 interface CutoverPolicyCheckBody {
   action_key?: string;
   requires_approval?: boolean;
@@ -1288,6 +1302,28 @@ export class V2AdminController {
       campaignType: query.campaign_type,
     });
     return successResponse(stats);
+  }
+
+  @Get('ops/dashboard/overview')
+  async getDashboardOverview(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: DashboardOverviewQuery,
+  ) {
+    await this.requireAdmin(authorization);
+    const overview = await this.v2AdminService.getDashboardOverview({
+      from: query.from,
+      to: query.to,
+      preset: query.preset,
+      projectId: query.project_id,
+      campaignId: query.campaign_id,
+      salesChannelId: query.sales_channel_id,
+      campaignType: query.campaign_type,
+      queueLimit: query.queue_limit,
+      approvalLimit: query.approval_limit,
+      failedActionLimit: query.failed_action_limit,
+      urgentLimit: query.urgent_limit,
+    });
+    return successResponse(overview);
   }
 
   private buildActionActor(admin: any) {
