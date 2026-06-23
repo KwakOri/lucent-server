@@ -16,6 +16,7 @@ import { SendonModule } from './sendon/sendon.module';
 import { V2AdminModule } from './v2-admin/v2-admin.module';
 import { V2CatalogModule } from './v2-catalog/v2-catalog.module';
 import { V2CheckoutModule } from './v2-checkout/v2-checkout.module';
+import { V2ContentModule } from './v2-content/v2-content.module';
 import { V2FulfillmentModule } from './v2-fulfillment/v2-fulfillment.module';
 
 @Module({
@@ -35,6 +36,7 @@ import { V2FulfillmentModule } from './v2-fulfillment/v2-fulfillment.module';
     V2AdminModule,
     V2CatalogModule,
     V2CheckoutModule,
+    V2ContentModule,
     V2FulfillmentModule,
   ],
   controllers: [AppController],
