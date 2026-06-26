@@ -100,6 +100,7 @@ interface CampaignTargetEligibilityScope {
   include: CampaignTargetEligibilityBucket;
   exclude: CampaignTargetEligibilityBucket;
   hasIncludeTargets: boolean;
+  campaignType: V2CampaignType | null;
 }
 
 interface CreateV2ProjectInput {
@@ -10145,6 +10146,7 @@ export class V2CatalogService {
       include: this.createEmptyCampaignTargetEligibilityBucket(),
       exclude: this.createEmptyCampaignTargetEligibilityBucket(),
       hasIncludeTargets: false,
+      campaignType: null,
     };
   }
 
@@ -10232,6 +10234,34 @@ export class V2CatalogService {
       );
     });
 
+    const { data: campaignRows, error: campaignsError } = await this.supabase
+      .from('v2_campaigns')
+      .select('id,campaign_type')
+      .in('id', normalizedCampaignIds)
+      .is('deleted_at', null);
+
+    if (campaignsError) {
+      throw new ApiException(
+        'shop pricing campaign 조회 실패',
+        500,
+        'V2_CAMPAIGNS_FETCH_FAILED',
+      );
+    }
+
+    for (const row of campaignRows || []) {
+      const campaignId = this.normalizeOptionalText(
+        row.id as string | null | undefined,
+      );
+      if (!campaignId) {
+        continue;
+      }
+      const scope =
+        eligibilityByCampaignId.get(campaignId) ??
+        this.createEmptyCampaignTargetEligibilityScope();
+      scope.campaignType = (row.campaign_type as V2CampaignType | null) ?? null;
+      eligibilityByCampaignId.set(campaignId, scope);
+    }
+
     const { data, error } = await this.supabase
       .from('v2_campaign_targets')
       .select(
@@ -10303,8 +10333,12 @@ export class V2CatalogService {
     }
 
     const projectId = this.normalizeOptionalText(params.projectId);
+    const allowsProjectIncludeTargets =
+      eligibility.campaignType === 'ALWAYS_ON';
     const includedByProject =
-      !!projectId && eligibility.include.projectIds.has(projectId);
+      allowsProjectIncludeTargets &&
+      !!projectId &&
+      eligibility.include.projectIds.has(projectId);
     const includedByProduct = eligibility.include.productIds.has(
       params.productId,
     );
