@@ -358,6 +358,26 @@ export class V2CatalogController {
     );
   }
 
+  @Patch('projects/:id/archive')
+  async archiveProject(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') projectId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const project = await this.v2CatalogService.archiveProject(projectId);
+    return successResponse(project, '프로젝트가 보관되었습니다');
+  }
+
+  @Patch('projects/:id/restore')
+  async restoreProject(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') projectId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const project = await this.v2CatalogService.restoreProject(projectId);
+    return successResponse(project, '프로젝트가 보관함에서 복귀되었습니다');
+  }
+
   @Delete('projects/:id')
   async deleteProject(
     @Headers('authorization') authorization: string | undefined,
