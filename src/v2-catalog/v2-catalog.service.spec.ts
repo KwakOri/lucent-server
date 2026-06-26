@@ -153,7 +153,7 @@ describe('V2CatalogService', () => {
   });
 
   describe('buildShopPriceSelectionFromCandidates', () => {
-    it('does not fall back to another campaign BASE when campaignId is provided', () => {
+    it('falls back to ALWAYS_ON BASE when a non-base campaignId is provided', () => {
       const result = (service as any).buildShopPriceSelectionFromCandidates({
         candidates: [
           {
@@ -186,9 +186,9 @@ describe('V2CatalogService', () => {
         channel: 'WEB',
       });
 
-      expect(result.base).toBeNull();
+      expect(result.base?.id).toBe('base-item-1');
       expect(result.override).toBeNull();
-      expect(result.selected).toBeNull();
+      expect(result.selected?.id).toBe('base-item-1');
     });
 
     it('keeps BASE selection for matching ALWAYS_ON campaignId', () => {
@@ -226,6 +226,71 @@ describe('V2CatalogService', () => {
 
       expect(result.base?.id).toBe('base-item-1');
       expect(result.selected?.id).toBe('base-item-1');
+    });
+  });
+
+  describe('selectShopPriceItem', () => {
+    it('uses ALWAYS_ON BASE fallback only when the explicit campaign target includes the variant', () => {
+      const productId = 'product-1';
+      const variantId = 'variant-1';
+      const popupCampaignId = 'popup-campaign';
+      const alwaysOnCampaignId = 'always-on-campaign';
+      const priceItems = [
+        {
+          id: 'base-item-1',
+          product_id: productId,
+          variant_id: variantId,
+          unit_amount: 12000,
+          starts_at: null,
+          ends_at: null,
+          channel_scope_json: [],
+          price_list: {
+            campaign_id: alwaysOnCampaignId,
+            scope_type: 'BASE',
+            status: 'PUBLISHED',
+            channel_scope_json: [],
+            deleted_at: null,
+            campaign: {
+              id: alwaysOnCampaignId,
+              campaign_type: 'ALWAYS_ON',
+              status: 'ACTIVE',
+              starts_at: null,
+              ends_at: null,
+              channel_scope_json: [],
+              deleted_at: null,
+            },
+          },
+        },
+      ];
+
+      const targeted = (service as any).selectShopPriceItem({
+        productId,
+        projectId: null,
+        variantId,
+        priceItems,
+        evaluatedAt: '2026-03-22T00:00:00.000Z',
+        campaignId: popupCampaignId,
+        channel: 'WEB',
+        campaignTargetEligibilityByCampaignId: new Map([
+          [alwaysOnCampaignId, createCampaignEligibilityScope(productId)],
+          [popupCampaignId, createCampaignEligibilityScope(productId)],
+        ]),
+      });
+      expect(targeted.selected?.id).toBe('base-item-1');
+
+      const notTargeted = (service as any).selectShopPriceItem({
+        productId,
+        projectId: null,
+        variantId,
+        priceItems,
+        evaluatedAt: '2026-03-22T00:00:00.000Z',
+        campaignId: popupCampaignId,
+        channel: 'WEB',
+        campaignTargetEligibilityByCampaignId: new Map([
+          [alwaysOnCampaignId, createCampaignEligibilityScope(productId)],
+        ]),
+      });
+      expect(notTargeted.selected).toBeNull();
     });
   });
 
