@@ -90,6 +90,11 @@ type V2CouponRedemptionStatus =
   | 'CANCELED'
   | 'EXPIRED';
 
+interface BundleVariantFulfillment {
+  fulfillmentType: V2FulfillmentType;
+  requiresShipping: boolean;
+}
+
 interface CampaignTargetEligibilityBucket {
   projectIds: Set<string>;
   productIds: Set<string>;
@@ -2166,6 +2171,7 @@ export class V2CatalogService {
     );
     const inputFulfillmentType = input.fulfillment_type;
     let fulfillmentType = inputFulfillmentType;
+    let bundleFulfillment: BundleVariantFulfillment | null = null;
     if (product.product_kind === 'STANDARD') {
       const lockedFulfillmentType =
         (product.fulfillment_type as V2FulfillmentType | null) ?? null;
@@ -2202,6 +2208,11 @@ export class V2CatalogService {
           );
         }
       }
+    } else {
+      bundleFulfillment = await this.resolveBundleVariantFulfillment(
+        product.id as string,
+      );
+      fulfillmentType = bundleFulfillment.fulfillmentType;
     }
     if (!fulfillmentType) {
       throw new ApiException(
@@ -2217,7 +2228,9 @@ export class V2CatalogService {
     await this.assertSkuAvailable(sku);
 
     const requiresShipping =
-      input.requires_shipping ?? fulfillmentType === 'PHYSICAL';
+      bundleFulfillment?.requiresShipping ??
+      input.requires_shipping ??
+      fulfillmentType === 'PHYSICAL';
     if (fulfillmentType === 'DIGITAL' && requiresShipping) {
       throw new ApiException(
         'DIGITAL variant는 requires_shipping=true를 가질 수 없습니다',
@@ -2234,8 +2247,14 @@ export class V2CatalogService {
         title,
         fulfillment_type: fulfillmentType,
         requires_shipping: requiresShipping,
-        track_inventory: input.track_inventory ?? false,
-        weight_grams: input.weight_grams ?? null,
+        track_inventory:
+          product.product_kind === 'BUNDLE'
+            ? false
+            : (input.track_inventory ?? false),
+        weight_grams:
+          product.product_kind === 'BUNDLE'
+            ? null
+            : (input.weight_grams ?? null),
         dimension_json: input.dimension_json ?? null,
         option_summary_json: input.option_summary_json ?? null,
         status: input.status ?? 'DRAFT',
@@ -2295,10 +2314,15 @@ export class V2CatalogService {
           );
         }
       }
-    } else if (input.fulfillment_type !== undefined) {
-      this.assertFulfillmentType(input.fulfillment_type);
-      updateData.fulfillment_type = input.fulfillment_type;
-      nextFulfillmentType = input.fulfillment_type;
+    } else {
+      const bundleFulfillment = await this.resolveBundleVariantFulfillment(
+        product.id as string,
+      );
+      nextFulfillmentType = bundleFulfillment.fulfillmentType;
+      updateData.fulfillment_type = bundleFulfillment.fulfillmentType;
+      updateData.requires_shipping = bundleFulfillment.requiresShipping;
+      updateData.track_inventory = false;
+      updateData.weight_grams = null;
     }
     if (input.sku !== undefined) {
       const sku = this.normalizeRequiredText(input.sku, 'sku는 필수입니다');
@@ -2311,7 +2335,7 @@ export class V2CatalogService {
         'variant title은 필수입니다',
       );
     }
-    if (input.weight_grams !== undefined) {
+    if (input.weight_grams !== undefined && product.product_kind !== 'BUNDLE') {
       this.assertWeight(input.weight_grams);
       updateData.weight_grams = input.weight_grams ?? null;
     }
@@ -2321,10 +2345,16 @@ export class V2CatalogService {
     if (input.option_summary_json !== undefined) {
       updateData.option_summary_json = input.option_summary_json ?? null;
     }
-    if (input.track_inventory !== undefined) {
+    if (
+      input.track_inventory !== undefined &&
+      product.product_kind !== 'BUNDLE'
+    ) {
       updateData.track_inventory = input.track_inventory;
     }
-    if (input.requires_shipping !== undefined) {
+    if (
+      input.requires_shipping !== undefined &&
+      product.product_kind !== 'BUNDLE'
+    ) {
       updateData.requires_shipping = input.requires_shipping;
     }
     if (input.status !== undefined) {
@@ -7735,6 +7765,10 @@ export class V2CatalogService {
       );
     }
 
+    await this.syncBundleProductVariantsFulfillment(
+      data.bundle_product_id as string,
+    );
+
     return data;
   }
 
@@ -9219,6 +9253,113 @@ export class V2CatalogService {
     }
 
     return data || [];
+  }
+
+  private async resolveBundleVariantFulfillment(
+    bundleProductId: string,
+  ): Promise<BundleVariantFulfillment> {
+    const { data: activeDefinition, error: definitionError } =
+      await this.supabase
+        .from('v2_bundle_definitions')
+        .select('id')
+        .eq('bundle_product_id', bundleProductId)
+        .eq('status', 'ACTIVE')
+        .is('deleted_at', null)
+        .order('version_no', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+    if (definitionError) {
+      throw new ApiException(
+        'bundle fulfillment 산출용 definition 조회 실패',
+        500,
+        'V2_BUNDLE_DEFINITION_FETCH_FAILED',
+      );
+    }
+
+    if (!activeDefinition?.id) {
+      return {
+        fulfillmentType: 'PHYSICAL',
+        requiresShipping: true,
+      };
+    }
+
+    const components = await this.fetchBundleComponents(
+      activeDefinition.id as string,
+    );
+    const componentVariantIds = Array.from(
+      new Set(
+        components
+          .map((component) => component.component_variant_id as string | null)
+          .filter((variantId): variantId is string => Boolean(variantId)),
+      ),
+    );
+
+    if (componentVariantIds.length === 0) {
+      return {
+        fulfillmentType: 'PHYSICAL',
+        requiresShipping: true,
+      };
+    }
+
+    const { data: componentVariants, error: variantsError } =
+      await this.supabase
+        .from('v2_product_variants')
+        .select('id,fulfillment_type,requires_shipping')
+        .in('id', componentVariantIds)
+        .is('deleted_at', null);
+
+    if (variantsError) {
+      throw new ApiException(
+        'bundle fulfillment 산출용 component variant 조회 실패',
+        500,
+        'V2_VARIANTS_FETCH_FAILED',
+      );
+    }
+
+    if ((componentVariants || []).length !== componentVariantIds.length) {
+      return {
+        fulfillmentType: 'PHYSICAL',
+        requiresShipping: true,
+      };
+    }
+
+    const requiresShipping = ((componentVariants || []) as any[]).some(
+      (variant) =>
+        variant.requires_shipping === true ||
+        variant.fulfillment_type === 'PHYSICAL',
+    );
+
+    return {
+      fulfillmentType: requiresShipping ? 'PHYSICAL' : 'DIGITAL',
+      requiresShipping,
+    };
+  }
+
+  private async syncBundleProductVariantsFulfillment(
+    bundleProductId: string,
+  ): Promise<void> {
+    const fulfillment =
+      await this.resolveBundleVariantFulfillment(bundleProductId);
+
+    const { error } = await this.supabase
+      .from('v2_product_variants')
+      .update({
+        fulfillment_type: fulfillment.fulfillmentType,
+        requires_shipping: fulfillment.requiresShipping,
+        track_inventory: false,
+        weight_grams: null,
+      })
+      .eq('product_id', bundleProductId)
+      .is('deleted_at', null);
+
+    if (error) {
+      throw new ApiException(
+        'bundle parent variant fulfillment 동기화 실패',
+        500,
+        'V2_BUNDLE_VARIANT_FULFILLMENT_SYNC_FAILED',
+      );
+    }
   }
 
   private async getBundleComponentById(componentId: string): Promise<any> {
