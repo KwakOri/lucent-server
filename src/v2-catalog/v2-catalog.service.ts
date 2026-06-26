@@ -766,6 +766,8 @@ export class V2CatalogService {
 
     if (filters.status) {
       query = query.eq('status', filters.status);
+    } else {
+      query = query.neq('status', 'ARCHIVED');
     }
 
     const { data, error } = await query;
@@ -954,6 +956,77 @@ export class V2CatalogService {
         'v2 프로젝트 unpublish 실패',
         500,
         'V2_PROJECT_UNPUBLISH_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async archiveProject(projectId: string): Promise<any> {
+    const current = await this.getProjectById(projectId);
+    if (current.status === 'ARCHIVED') {
+      return current;
+    }
+
+    const now = new Date().toISOString();
+    const metadata = this.normalizeRecordMetadata(current.metadata);
+    const { data, error } = await this.supabase
+      .from('v2_projects')
+      .update({
+        status: 'ARCHIVED',
+        is_active: false,
+        metadata: {
+          ...metadata,
+          archived_at: now,
+          archived_from_status: current.status,
+        },
+      })
+      .eq('id', projectId)
+      .is('deleted_at', null)
+      .select(V2_PROJECT_SELECT_COLUMNS)
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'v2 프로젝트 보관 실패',
+        500,
+        'V2_PROJECT_ARCHIVE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  async restoreProject(projectId: string): Promise<any> {
+    const current = await this.getProjectById(projectId);
+    if (current.status !== 'ARCHIVED') {
+      return current;
+    }
+
+    const metadata = this.normalizeRecordMetadata(current.metadata);
+    delete metadata.archived_at;
+    delete metadata.archived_from_status;
+
+    const { data, error } = await this.supabase
+      .from('v2_projects')
+      .update({
+        status: 'DRAFT',
+        is_active: false,
+        metadata: {
+          ...metadata,
+          restored_from_archive_at: new Date().toISOString(),
+        },
+      })
+      .eq('id', projectId)
+      .is('deleted_at', null)
+      .select(V2_PROJECT_SELECT_COLUMNS)
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'v2 프로젝트 보관 복귀 실패',
+        500,
+        'V2_PROJECT_RESTORE_FAILED',
       );
     }
 
@@ -11928,6 +12001,13 @@ export class V2CatalogService {
         'VALIDATION_ERROR',
       );
     }
+  }
+
+  private normalizeRecordMetadata(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+    return { ...(value as Record<string, unknown>) };
   }
 
   private assertArtistStatus(value: string): void {
