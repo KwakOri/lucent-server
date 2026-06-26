@@ -1137,7 +1137,11 @@ export class V2CheckoutService {
       return this.fetchOrderAggregate(orderId);
     }
 
-    return this.cancelOrderRow(orderId, order, input, 'USER');
+    return this.cancelOrderRow(orderId, order, input, {
+      actorType: 'USER',
+      requirePaymentPending: true,
+      preserveCapturedPaymentStatus: false,
+    });
   }
 
   async cancelOrderFromAdmin(
@@ -1149,14 +1153,22 @@ export class V2CheckoutService {
       return this.fetchOrderAggregate(orderId);
     }
 
-    return this.cancelOrderRow(orderId, order, input, 'ADMIN');
+    return this.cancelOrderRow(orderId, order, input, {
+      actorType: 'ADMIN',
+      requirePaymentPending: false,
+      preserveCapturedPaymentStatus: true,
+    });
   }
 
   private async cancelOrderRow(
     orderId: string,
     order: any,
     input: CancelV2OrderInput,
-    actorType: 'USER' | 'ADMIN',
+    options: {
+      actorType: 'USER' | 'ADMIN';
+      requirePaymentPending: boolean;
+      preserveCapturedPaymentStatus: boolean;
+    },
   ): Promise<any> {
     const currentOrderStatus = this.normalizeOptionalText(
       order.order_status as string | null | undefined,
@@ -1165,9 +1177,10 @@ export class V2CheckoutService {
       order.payment_status as string | null | undefined,
     ) as V2PaymentStatus | null;
     if (
-      currentOrderStatus !== 'PENDING' ||
-      (currentPaymentStatus &&
-        CANCEL_BLOCKED_PAYMENT_STATUSES.has(currentPaymentStatus))
+      options.requirePaymentPending &&
+      (currentOrderStatus !== 'PENDING' ||
+        (currentPaymentStatus &&
+          CANCEL_BLOCKED_PAYMENT_STATUSES.has(currentPaymentStatus)))
     ) {
       throw new ApiException(
         '입금 확인 이후 주문은 취소할 수 없습니다. 환불을 진행해 주세요.',
@@ -1175,12 +1188,25 @@ export class V2CheckoutService {
         'V2_ORDER_CANCEL_NOT_ALLOWED_AFTER_PAYMENT_CONFIRMED',
       );
     }
+    if (!options.requirePaymentPending && currentPaymentStatus === 'REFUNDED') {
+      throw new ApiException(
+        '이미 환불된 주문은 취소할 수 없습니다',
+        409,
+        'V2_ORDER_CANCEL_NOT_ALLOWED_AFTER_REFUND',
+      );
+    }
 
     const now = new Date().toISOString();
     const cancelReason =
       this.normalizeOptionalText(input.reason) || 'USER_REQUESTED';
     const nextPaymentStatus: V2PaymentStatus =
-      currentPaymentStatus === 'REFUNDED' ? 'REFUNDED' : 'CANCELED';
+      options.preserveCapturedPaymentStatus &&
+      currentPaymentStatus &&
+      currentPaymentStatus !== 'PENDING' &&
+      currentPaymentStatus !== 'FAILED' &&
+      currentPaymentStatus !== 'CANCELED'
+        ? currentPaymentStatus
+        : 'CANCELED';
 
     const { error: orderUpdateError } = await this.supabase
       .from('v2_orders')
@@ -1194,7 +1220,7 @@ export class V2CheckoutService {
           ...(order.metadata || {}),
           canceled: {
             at: now,
-            by: actorType,
+            by: options.actorType,
             reason: cancelReason,
           },
         },
