@@ -135,6 +135,11 @@ interface BundleConfigurationSnapshot {
   selected_components: BundleSelectionItem[];
 }
 
+interface ResolvedFulfillmentHint {
+  fulfillmentType: 'DIGITAL' | 'PHYSICAL';
+  requiresShipping: boolean;
+}
+
 const BASE_SHIPPING_FEE = 3500;
 const JEJU_EXTRA_FEE = 3000;
 const ISLAND_EXTRA_FEE = 5000;
@@ -394,7 +399,7 @@ export class V2CheckoutService {
       );
     }
 
-    const checkoutPayload = this.resolveCheckoutPayload(input, cartItems);
+    const checkoutPayload = await this.resolveCheckoutPayload(input, cartItems);
     const { quote } = await this.buildCheckoutQuote(profileId, checkoutPayload);
 
     await this.touchCart(cart.id);
@@ -454,7 +459,7 @@ export class V2CheckoutService {
       );
     }
 
-    const checkoutPayload = this.resolveCheckoutPayload(input, cartItems);
+    const checkoutPayload = await this.resolveCheckoutPayload(input, cartItems);
     const { quote, shippingAmount } = await this.buildCheckoutQuote(
       profileId,
       checkoutPayload,
@@ -2019,6 +2024,8 @@ export class V2CheckoutService {
       };
     }
 
+    await this.annotateBundleCartItemFulfillment(items);
+
     return items;
   }
 
@@ -2104,6 +2111,39 @@ export class V2CheckoutService {
     return thumbnailByProductId;
   }
 
+  private async annotateBundleCartItemFulfillment(items: any[]): Promise<void> {
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      const productKind =
+        this.normalizeOptionalText(item?.product_kind_snapshot) ||
+        this.normalizeOptionalText(item?.variant?.product?.product_kind);
+      if (productKind !== 'BUNDLE') {
+        continue;
+      }
+
+      try {
+        const lineContext = this.buildCheckoutLineContext(item, index);
+        const fulfillment = await this.resolveBundleLineFulfillment(
+          lineContext,
+          item,
+        );
+        if (!fulfillment || !item?.variant) {
+          continue;
+        }
+        item.variant = {
+          ...item.variant,
+          fulfillment_type: fulfillment.fulfillmentType,
+          requires_shipping: fulfillment.requiresShipping,
+          fulfillment_source: 'BUNDLE_COMPONENTS',
+        };
+      } catch (error) {
+        this.logger.warn(
+          `bundle cart item fulfillment 산출 실패: ${this.getErrorMessage(error)}`,
+        );
+      }
+    }
+  }
+
   private async touchCart(cartId: string): Promise<void> {
     const { error } = await this.supabase
       .from('v2_carts')
@@ -2179,48 +2219,54 @@ export class V2CheckoutService {
     };
   }
 
-  private resolveCheckoutPayload(
+  private buildCheckoutLineContext(
+    item: any,
+    index: number,
+  ): CheckoutLineContext {
+    const variantId = this.normalizeOptionalText(item.variant_id);
+    if (!variantId) {
+      throw new ApiException(
+        `cart item(${index}) variant_id가 비어있습니다`,
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const resolvedProductKind =
+      this.normalizeOptionalText(item.product_kind_snapshot) ||
+      this.normalizeOptionalText(item?.variant?.product?.product_kind) ||
+      'STANDARD';
+    const productKind: CheckoutLineContext['productKind'] =
+      resolvedProductKind === 'BUNDLE' ? 'BUNDLE' : 'STANDARD';
+
+    return {
+      cartItemId: this.normalizeOptionalUuid(item.id),
+      variantId,
+      quantity: this.normalizePositiveInteger(
+        item.quantity,
+        `cart item(${index}).quantity`,
+      ),
+      productId: this.normalizeOptionalUuid(
+        item.product_id || item?.variant?.product_id || null,
+      ),
+      productKind,
+      campaignId: this.normalizeOptionalUuid(item.campaign_id),
+      bundleConfigurationSnapshot: this.normalizeOptionalJsonObject(
+        item.bundle_configuration_snapshot,
+      ),
+    };
+  }
+
+  private async resolveCheckoutPayload(
     input: ValidateV2CheckoutInput,
     cartItems: any[],
-  ): CheckoutPayload {
-    const lineContexts: CheckoutLineContext[] = cartItems.map(
-      (item, index): CheckoutLineContext => {
-        const variantId = this.normalizeOptionalText(item.variant_id);
-        if (!variantId) {
-          throw new ApiException(
-            `cart item(${index}) variant_id가 비어있습니다`,
-            400,
-            'VALIDATION_ERROR',
-          );
-        }
-
-        const resolvedProductKind =
-          this.normalizeOptionalText(item.product_kind_snapshot) ||
-          this.normalizeOptionalText(item?.variant?.product?.product_kind) ||
-          'STANDARD';
-        const productKind: CheckoutLineContext['productKind'] =
-          resolvedProductKind === 'BUNDLE' ? 'BUNDLE' : 'STANDARD';
-
-        return {
-          cartItemId: this.normalizeOptionalUuid(item.id),
-          variantId,
-          quantity: this.normalizePositiveInteger(
-            item.quantity,
-            `cart item(${index}).quantity`,
-          ),
-          productId: this.normalizeOptionalUuid(
-            item.product_id || item?.variant?.product_id || null,
-          ),
-          productKind,
-          campaignId: this.normalizeOptionalUuid(item.campaign_id),
-          bundleConfigurationSnapshot: this.normalizeOptionalJsonObject(
-            item.bundle_configuration_snapshot,
-          ),
-        };
-      },
+  ): Promise<CheckoutPayload> {
+    const lineContexts: CheckoutLineContext[] = cartItems.map((item, index) =>
+      this.buildCheckoutLineContext(item, index),
     );
-    const shippingRequired = cartItems.some(
-      (item) => item?.variant?.requires_shipping === true,
+    const shippingRequired = await this.resolveCheckoutShippingRequired(
+      lineContexts,
+      cartItems,
     );
     const lines = lineContexts.map((line) => ({
       variant_id: line.variantId,
@@ -2256,6 +2302,72 @@ export class V2CheckoutService {
             ),
       shippingPostcode: this.normalizeOptionalPostcode(input.shipping_postcode),
       shippingRequired,
+    };
+  }
+
+  private async resolveCheckoutShippingRequired(
+    lineContexts: CheckoutLineContext[],
+    cartItems: any[],
+  ): Promise<boolean> {
+    for (let index = 0; index < lineContexts.length; index += 1) {
+      const lineContext = lineContexts[index];
+      const cartItem = cartItems[index];
+
+      if (lineContext.productKind !== 'BUNDLE') {
+        if (cartItem?.variant?.requires_shipping === true) {
+          return true;
+        }
+        continue;
+      }
+
+      const fulfillment = await this.resolveBundleLineFulfillment(
+        lineContext,
+        cartItem,
+      );
+      if (fulfillment?.requiresShipping) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private async resolveBundleLineFulfillment(
+    lineContext: CheckoutLineContext,
+    sourceLine: any,
+  ): Promise<ResolvedFulfillmentHint | null> {
+    if (lineContext.productKind !== 'BUNDLE') {
+      return null;
+    }
+
+    const bundleConfiguration = this.parseBundleConfigurationSnapshot(
+      lineContext.bundleConfigurationSnapshot,
+    );
+    const bundleDefinitionId = await this.resolveBundleDefinitionId(
+      lineContext,
+      sourceLine,
+      bundleConfiguration,
+    );
+    const resolvedBundle = await this.v2CatalogService.resolveBundle({
+      bundle_definition_id: bundleDefinitionId,
+      parent_variant_id:
+        this.normalizeOptionalUuid(sourceLine?.variant_id) ||
+        lineContext.variantId,
+      parent_quantity: lineContext.quantity,
+      selected_components: bundleConfiguration?.selected_components || [],
+    });
+    const componentLines = Array.isArray(resolvedBundle?.component_lines)
+      ? resolvedBundle.component_lines
+      : [];
+    const requiresShipping = componentLines.some(
+      (line: any) =>
+        line?.requires_shipping === true ||
+        this.normalizeOptionalText(line?.fulfillment_type) === 'PHYSICAL',
+    );
+
+    return {
+      fulfillmentType: requiresShipping ? 'PHYSICAL' : 'DIGITAL',
+      requiresShipping,
     };
   }
 
@@ -4062,6 +4174,13 @@ export class V2CheckoutService {
       throw new ApiException(message, statusCode, errorCode);
     }
     return normalized;
+  }
+
+  private getErrorMessage(error: unknown): string {
+    if (error instanceof Error) {
+      return error.message;
+    }
+    return String(error);
   }
 
   private normalizeOptionalText(value: unknown): string | null {
