@@ -100,6 +100,7 @@ interface CampaignTargetEligibilityScope {
   include: CampaignTargetEligibilityBucket;
   exclude: CampaignTargetEligibilityBucket;
   hasIncludeTargets: boolean;
+  campaignType: V2CampaignType | null;
 }
 
 interface CreateV2ProjectInput {
@@ -1651,6 +1652,7 @@ export class V2CatalogService {
     } = await this.loadShopContext(
       [productId],
       [product.project_id as string | null],
+      campaignId,
     );
     const variants = variantsByProductId.get(productId) || [];
     const media = mediaByProductId.get(productId) || [];
@@ -6402,11 +6404,12 @@ export class V2CatalogService {
 
     const normalizedPriceItems = (priceItems || []) as any[];
     const campaignTargetEligibilityByCampaignId =
-      await this.loadCampaignTargetEligibilityByCampaignIds(
-        normalizedPriceItems.map(
+      await this.loadCampaignTargetEligibilityByCampaignIds([
+        campaignId,
+        ...normalizedPriceItems.map(
           (item) => item?.price_list?.campaign_id as string | null | undefined,
         ),
-      );
+      ]);
 
     const nowIso = evaluatedAt;
     const lineResults: any[] = [];
@@ -6434,11 +6437,15 @@ export class V2CatalogService {
         campaignTargetEligibilityByCampaignId,
       });
 
-      const priceSelection = this.buildShopPriceSelectionFromCandidates({
-        candidates,
-        campaignId,
+      const priceSelection = this.selectShopPriceItem({
+        productId: product.id as string,
+        projectId: product.project_id as string | null,
+        variantId: line.variant_id,
+        priceItems: normalizedPriceItems,
         evaluatedAt: nowIso,
+        campaignId,
         channel,
+        campaignTargetEligibilityByCampaignId,
       });
       const selectedBase = priceSelection.base;
       const selectedOverride = priceSelection.override;
@@ -10139,6 +10146,7 @@ export class V2CatalogService {
       include: this.createEmptyCampaignTargetEligibilityBucket(),
       exclude: this.createEmptyCampaignTargetEligibilityBucket(),
       hasIncludeTargets: false,
+      campaignType: null,
     };
   }
 
@@ -10226,6 +10234,34 @@ export class V2CatalogService {
       );
     });
 
+    const { data: campaignRows, error: campaignsError } = await this.supabase
+      .from('v2_campaigns')
+      .select('id,campaign_type')
+      .in('id', normalizedCampaignIds)
+      .is('deleted_at', null);
+
+    if (campaignsError) {
+      throw new ApiException(
+        'shop pricing campaign 조회 실패',
+        500,
+        'V2_CAMPAIGNS_FETCH_FAILED',
+      );
+    }
+
+    for (const row of campaignRows || []) {
+      const campaignId = this.normalizeOptionalText(
+        row.id as string | null | undefined,
+      );
+      if (!campaignId) {
+        continue;
+      }
+      const scope =
+        eligibilityByCampaignId.get(campaignId) ??
+        this.createEmptyCampaignTargetEligibilityScope();
+      scope.campaignType = (row.campaign_type as V2CampaignType | null) ?? null;
+      eligibilityByCampaignId.set(campaignId, scope);
+    }
+
     const { data, error } = await this.supabase
       .from('v2_campaign_targets')
       .select(
@@ -10297,8 +10333,12 @@ export class V2CatalogService {
     }
 
     const projectId = this.normalizeOptionalText(params.projectId);
+    const allowsProjectIncludeTargets =
+      eligibility.campaignType === 'ALWAYS_ON';
     const includedByProject =
-      !!projectId && eligibility.include.projectIds.has(projectId);
+      allowsProjectIncludeTargets &&
+      !!projectId &&
+      eligibility.include.projectIds.has(projectId);
     const includedByProduct = eligibility.include.productIds.has(
       params.productId,
     );
@@ -10417,15 +10457,6 @@ export class V2CatalogService {
     const priceList = params.item?.price_list;
     if (!priceList || priceList.scope_type !== 'BASE') {
       return false;
-    }
-
-    if (params.campaignId) {
-      if (
-        !priceList.campaign_id ||
-        priceList.campaign_id !== params.campaignId
-      ) {
-        return false;
-      }
     }
 
     // 상점 노출 기준은 "상시 운영(ALWAYS_ON) 캠페인에 연결된 BASE"만 허용한다.
@@ -10600,6 +10631,7 @@ export class V2CatalogService {
     } = await this.loadShopContext(
       productIds,
       products.map((product) => product.project_id as string | null),
+      context.campaignId,
     );
 
     return products.map((product) => {
@@ -10668,6 +10700,7 @@ export class V2CatalogService {
   private async loadShopContext(
     productIds: string[],
     inputProjectIds: Array<string | null> = [],
+    selectedCampaignId: string | null = null,
   ): Promise<{
     variantsByProductId: Map<string, any[]>;
     mediaByProductId: Map<string, any[]>;
@@ -10869,11 +10902,12 @@ export class V2CatalogService {
 
     const normalizedPriceItems = (priceItems || []) as any[];
     const loadedCampaignTargetEligibilityByCampaignId =
-      await this.loadCampaignTargetEligibilityByCampaignIds(
-        normalizedPriceItems.map(
+      await this.loadCampaignTargetEligibilityByCampaignIds([
+        selectedCampaignId,
+        ...normalizedPriceItems.map(
           (item) => item?.price_list?.campaign_id as string | null | undefined,
         ),
-      );
+      ]);
 
     return {
       variantsByProductId,
@@ -10989,6 +11023,20 @@ export class V2CatalogService {
       CampaignTargetEligibilityScope
     >;
   }): { selected: any | null; base: any | null; override: any | null } {
+    if (
+      params.campaignId &&
+      !this.isCampaignTargetEligibleForShopPricing({
+        campaignId: params.campaignId,
+        projectId: params.projectId,
+        productId: params.productId,
+        variantId: params.variantId,
+        campaignTargetEligibilityByCampaignId:
+          params.campaignTargetEligibilityByCampaignId,
+      })
+    ) {
+      return { selected: null, base: null, override: null };
+    }
+
     const candidates = this.filterShopPriceCandidates({
       productId: params.productId,
       projectId: params.projectId,
