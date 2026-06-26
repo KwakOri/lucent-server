@@ -77,6 +77,10 @@ interface RefundOrderBody {
   metadata?: Record<string, unknown> | null;
 }
 
+interface CancelOrderBody {
+  reason?: string | null;
+}
+
 interface ProductionCandidatesQuery {
   limit?: string;
   keyword?: string;
@@ -1246,6 +1250,19 @@ export class V2AdminController {
       execute: () => this.v2CheckoutService.refundOrder(orderId, body),
     });
     return successResponse(execution.result, 'v2 환불이 반영되었습니다');
+  }
+
+  @Post('ops/orders/:orderId/cancel')
+  async cancelOrderFromOps(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('orderId') orderId: string,
+    @Body() body: CancelOrderBody,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2CheckoutService.cancelOrderFromAdmin(orderId, {
+      reason: body.reason || null,
+    });
+    return successResponse(result, 'v2 주문이 취소되었습니다');
   }
 
   @Get('ops/orders/:orderId/detail')

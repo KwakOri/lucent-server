@@ -1137,6 +1137,27 @@ export class V2CheckoutService {
       return this.fetchOrderAggregate(orderId);
     }
 
+    return this.cancelOrderRow(orderId, order, input, 'USER');
+  }
+
+  async cancelOrderFromAdmin(
+    orderId: string,
+    input: CancelV2OrderInput,
+  ): Promise<any> {
+    const order = await this.fetchOrderRow(orderId);
+    if (order.order_status === 'CANCELED') {
+      return this.fetchOrderAggregate(orderId);
+    }
+
+    return this.cancelOrderRow(orderId, order, input, 'ADMIN');
+  }
+
+  private async cancelOrderRow(
+    orderId: string,
+    order: any,
+    input: CancelV2OrderInput,
+    actorType: 'USER' | 'ADMIN',
+  ): Promise<any> {
     const currentOrderStatus = this.normalizeOptionalText(
       order.order_status as string | null | undefined,
     );
@@ -1173,7 +1194,7 @@ export class V2CheckoutService {
           ...(order.metadata || {}),
           canceled: {
             at: now,
-            by: 'USER',
+            by: actorType,
             reason: cancelReason,
           },
         },
@@ -1302,18 +1323,6 @@ export class V2CheckoutService {
       .from('v2_orders')
       .update({
         payment_status: nextPaymentStatus,
-        order_status: isFullRefund
-          ? ('CANCELED' as V2OrderStatus)
-          : (order.order_status as V2OrderStatus),
-        fulfillment_status: isFullRefund
-          ? ('CANCELED' as V2FulfillmentStatus)
-          : (order.fulfillment_status as V2FulfillmentStatus),
-        canceled_at: isFullRefund
-          ? order.canceled_at || now
-          : order.canceled_at,
-        cancel_reason: isFullRefund
-          ? reason || order.cancel_reason
-          : order.cancel_reason,
         metadata: {
           ...(order.metadata || {}),
           last_refund: {
