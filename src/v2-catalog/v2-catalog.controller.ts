@@ -917,6 +917,28 @@ export class V2CatalogController {
     return successResponse(campaigns);
   }
 
+  @Get('campaigns/overview')
+  async getCampaignOverviewMap(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('campaignIds') campaignIds?: string | string[],
+  ) {
+    await this.requireAdmin(authorization);
+    const overview =
+      await this.v2CatalogService.getCampaignOverviewMap(campaignIds);
+    return successResponse(overview);
+  }
+
+  @Get('campaigns/targets-map')
+  async getCampaignTargetsMap(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('campaignIds') campaignIds?: string | string[],
+  ) {
+    await this.requireAdmin(authorization);
+    const targetsMap =
+      await this.v2CatalogService.getCampaignTargetsMap(campaignIds);
+    return successResponse(targetsMap);
+  }
+
   @Get('campaigns/:id')
   async getCampaignById(
     @Headers('authorization') authorization: string | undefined,
