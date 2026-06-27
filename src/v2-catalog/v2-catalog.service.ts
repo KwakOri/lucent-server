@@ -692,6 +692,7 @@ interface RedeemV2CouponRedemptionInput {
 interface PriceQuoteLineInput {
   variant_id?: string;
   quantity?: number;
+  campaign_id?: string | null;
 }
 
 interface BuildV2PriceQuoteInput {
@@ -6855,10 +6856,6 @@ export class V2CatalogService {
       'shipping_amount',
     );
 
-    if (campaignId) {
-      await this.getCampaignById(campaignId);
-    }
-
     const linesInput = Array.isArray(input.lines) ? input.lines : [];
     if (linesInput.length === 0) {
       throw new ApiException(
@@ -6868,6 +6865,22 @@ export class V2CatalogService {
       );
     }
 
+    const lineCampaignIds = Array.from(
+      new Set(
+        linesInput
+          .map((line) => this.normalizeOptionalText(line?.campaign_id))
+          .filter((lineCampaignId): lineCampaignId is string =>
+            Boolean(lineCampaignId),
+          ),
+      ),
+    );
+    const campaignIdsToValidate = Array.from(
+      new Set([campaignId, ...lineCampaignIds].filter(Boolean) as string[]),
+    );
+    for (const campaignIdToValidate of campaignIdsToValidate) {
+      await this.getCampaignById(campaignIdToValidate);
+    }
+
     const normalizedLines = linesInput.map((line, index) => {
       const variantId = this.normalizeRequiredText(
         line.variant_id,
@@ -6875,7 +6888,11 @@ export class V2CatalogService {
       );
       const quantity = line.quantity ?? 1;
       this.assertPositiveInteger(quantity, `lines[${index}].quantity`);
-      return { variant_id: variantId, quantity };
+      return {
+        variant_id: variantId,
+        quantity,
+        campaign_id: this.normalizeOptionalText(line.campaign_id),
+      };
     });
 
     const variantIds = Array.from(
@@ -6974,6 +6991,7 @@ export class V2CatalogService {
     const campaignTargetEligibilityByCampaignId =
       await this.loadCampaignTargetEligibilityByCampaignIds([
         campaignId,
+        ...lineCampaignIds,
         ...normalizedPriceItems.map(
           (item) => item?.price_list?.campaign_id as string | null | undefined,
         ),
@@ -6994,6 +7012,7 @@ export class V2CatalogService {
           'V2_PRODUCT_NOT_FOUND',
         );
       }
+      const lineCampaignId = line.campaign_id || campaignId;
 
       const candidates = this.filterShopPriceCandidates({
         productId: product.id as string,
@@ -7011,7 +7030,7 @@ export class V2CatalogService {
         variantId: line.variant_id,
         priceItems: normalizedPriceItems,
         evaluatedAt: nowIso,
-        campaignId,
+        campaignId: lineCampaignId,
         channel,
         campaignTargetEligibilityByCampaignId,
       });
@@ -7034,6 +7053,7 @@ export class V2CatalogService {
         variant_id: variant.id,
         product_id: product.id,
         project_id: product.project_id,
+        campaign_id: lineCampaignId,
         product_kind: product.product_kind,
         sku: variant.sku,
         title: variant.title,
@@ -7067,6 +7087,7 @@ export class V2CatalogService {
 
       priceCandidates.push({
         variant_id: variant.id,
+        campaign_id: lineCampaignId,
         candidates: candidates.map((item) => ({
           item_id: item.id,
           price_list_id: item.price_list_id,
@@ -7322,6 +7343,9 @@ export class V2CatalogService {
       evaluated_at: evaluatedAt,
       context: {
         campaign_id: campaignId,
+        line_campaign_ids: normalizedLines.map(
+          (line) => line.campaign_id ?? null,
+        ),
         channel,
         coupon_code: couponCode,
         user_id: userId,

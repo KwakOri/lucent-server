@@ -110,7 +110,11 @@ interface CheckoutLineContext {
 }
 
 interface CheckoutPayload {
-  lines: Array<{ variant_id: string; quantity: number }>;
+  lines: Array<{
+    variant_id: string;
+    quantity: number;
+    campaign_id?: string | null;
+  }>;
   lineContexts: CheckoutLineContext[];
   campaignId: string | null;
   couponCode: string | null;
@@ -2271,6 +2275,7 @@ export class V2CheckoutService {
     const lines = lineContexts.map((line) => ({
       variant_id: line.variantId,
       quantity: line.quantity,
+      campaign_id: line.campaignId || null,
     }));
 
     const requestedCampaignId = this.normalizeOptionalUuid(input.campaign_id);
@@ -2980,10 +2985,13 @@ export class V2CheckoutService {
         : null;
 
       const campaignId =
-        campaignFromPriceList?.campaignId || explicitCampaignId || null;
+        explicitCampaignId || campaignFromPriceList?.campaignId || null;
       const campaignName =
-        campaignFromPriceList?.campaignName ||
         explicitCampaignName ||
+        (explicitCampaignId
+          ? campaignNameById.get(explicitCampaignId) || null
+          : null) ||
+        campaignFromPriceList?.campaignName ||
         (campaignId ? campaignNameById.get(campaignId) || null : null);
 
       snapshots.push({
