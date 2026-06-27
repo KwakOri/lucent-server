@@ -11258,31 +11258,16 @@ export class V2CatalogService {
           .filter((projectId): projectId is string => !!projectId),
       ),
     );
-    if (projectIds.length > 0) {
-      const { data: projectRows, error: projectsError } = await this.supabase
-        .from('v2_projects')
-        .select('id,status')
-        .in('id', projectIds)
-        .is('deleted_at', null);
-      if (projectsError) {
-        throw new ApiException(
-          'v2 shop 프로젝트 조회 실패',
-          500,
-          'V2_SHOP_PROJECTS_FETCH_FAILED',
-        );
-      }
 
-      for (const row of projectRows || []) {
-        if (row.id && row.status) {
-          projectStatusById.set(
-            row.id as string,
-            row.status as V2ProjectStatus,
-          );
-        }
-      }
-    }
-
-    const { data: variantRows, error: variantsError } = await this.supabase
+    const projectRowsPromise =
+      projectIds.length > 0
+        ? this.supabase
+            .from('v2_projects')
+            .select('id,status')
+            .in('id', projectIds)
+            .is('deleted_at', null)
+        : Promise.resolve({ data: [], error: null });
+    const variantRowsPromise = this.supabase
       .from('v2_product_variants')
       .select(
         'id,product_id,sku,title,fulfillment_type,requires_shipping,track_inventory,status,created_at',
@@ -11291,22 +11276,7 @@ export class V2CatalogService {
       .eq('status', 'ACTIVE')
       .is('deleted_at', null)
       .order('created_at', { ascending: true });
-    if (variantsError) {
-      throw new ApiException(
-        'v2 shop variant 조회 실패',
-        500,
-        'V2_SHOP_VARIANTS_FETCH_FAILED',
-      );
-    }
-
-    for (const row of variantRows || []) {
-      const productId = row.product_id as string;
-      const list = variantsByProductId.get(productId) || [];
-      list.push(row);
-      variantsByProductId.set(productId, list);
-    }
-
-    const { data: mediaRows, error: mediaError } = await this.supabase
+    const mediaRowsPromise = this.supabase
       .from('v2_product_media')
       .select(
         'id,product_id,media_type,media_role,public_url,alt_text,sort_order,is_primary,status,created_at',
@@ -11317,55 +11287,7 @@ export class V2CatalogService {
       .order('is_primary', { ascending: false })
       .order('sort_order', { ascending: true })
       .order('created_at', { ascending: true });
-    if (mediaError) {
-      throw new ApiException(
-        'v2 shop media 조회 실패',
-        500,
-        'V2_SHOP_MEDIA_FETCH_FAILED',
-      );
-    }
-
-    for (const row of mediaRows || []) {
-      const productId = row.product_id as string;
-      const list = mediaByProductId.get(productId) || [];
-      list.push(row);
-      mediaByProductId.set(productId, list);
-    }
-
-    const variantIds = (variantRows || []).map((row: any) => row.id as string);
-    if (variantIds.length > 0) {
-      const { data: inventoryRows, error: inventoryError } = await this.supabase
-        .from('v2_inventory_levels')
-        .select('variant_id,available_quantity,safety_stock_quantity')
-        .in('variant_id', variantIds);
-      if (inventoryError) {
-        throw new ApiException(
-          'v2 shop inventory 조회 실패',
-          500,
-          'V2_SHOP_INVENTORY_FETCH_FAILED',
-        );
-      }
-
-      for (const row of inventoryRows || []) {
-        const variantId = row.variant_id as string;
-        const availableQuantity = Math.max(
-          0,
-          Number(row.available_quantity ?? 0),
-        );
-        const safetyStockQuantity = Math.max(
-          0,
-          Number(row.safety_stock_quantity ?? 0),
-        );
-        const sellableQuantity = Math.max(
-          availableQuantity - safetyStockQuantity,
-          0,
-        );
-        const current = inventoryByVariantId.get(variantId) ?? 0;
-        inventoryByVariantId.set(variantId, current + sellableQuantity);
-      }
-    }
-
-    const { data: priceItems, error: priceItemsError } = await this.supabase
+    const priceItemsPromise = this.supabase
       .from('v2_price_list_items')
       .select(
         `
@@ -11411,6 +11333,62 @@ export class V2CatalogService {
       .eq('status', 'ACTIVE')
       .is('deleted_at', null);
 
+    const [
+      { data: projectRows, error: projectsError },
+      { data: variantRows, error: variantsError },
+      { data: mediaRows, error: mediaError },
+      { data: priceItems, error: priceItemsError },
+    ] = await Promise.all([
+      projectRowsPromise,
+      variantRowsPromise,
+      mediaRowsPromise,
+      priceItemsPromise,
+    ]);
+
+    if (projectsError) {
+      throw new ApiException(
+        'v2 shop 프로젝트 조회 실패',
+        500,
+        'V2_SHOP_PROJECTS_FETCH_FAILED',
+      );
+    }
+
+    for (const row of projectRows || []) {
+      if (row.id && row.status) {
+        projectStatusById.set(row.id as string, row.status as V2ProjectStatus);
+      }
+    }
+
+    if (variantsError) {
+      throw new ApiException(
+        'v2 shop variant 조회 실패',
+        500,
+        'V2_SHOP_VARIANTS_FETCH_FAILED',
+      );
+    }
+
+    for (const row of variantRows || []) {
+      const productId = row.product_id as string;
+      const list = variantsByProductId.get(productId) || [];
+      list.push(row);
+      variantsByProductId.set(productId, list);
+    }
+
+    if (mediaError) {
+      throw new ApiException(
+        'v2 shop media 조회 실패',
+        500,
+        'V2_SHOP_MEDIA_FETCH_FAILED',
+      );
+    }
+
+    for (const row of mediaRows || []) {
+      const productId = row.product_id as string;
+      const list = mediaByProductId.get(productId) || [];
+      list.push(row);
+      mediaByProductId.set(productId, list);
+    }
+
     if (priceItemsError) {
       throw new ApiException(
         'v2 shop 가격 조회 실패',
@@ -11420,13 +11398,55 @@ export class V2CatalogService {
     }
 
     const normalizedPriceItems = (priceItems || []) as any[];
-    const loadedCampaignTargetEligibilityByCampaignId =
-      await this.loadCampaignTargetEligibilityByCampaignIds([
+    const variantIds = (variantRows || []).map((row: any) => row.id as string);
+    const inventoryRowsPromise =
+      variantIds.length > 0
+        ? this.supabase
+            .from('v2_inventory_levels')
+            .select('variant_id,available_quantity,safety_stock_quantity')
+            .in('variant_id', variantIds)
+        : Promise.resolve({ data: [], error: null });
+    const campaignTargetEligibilityPromise =
+      this.loadCampaignTargetEligibilityByCampaignIds([
         selectedCampaignId,
         ...normalizedPriceItems.map(
           (item) => item?.price_list?.campaign_id as string | null | undefined,
         ),
       ]);
+
+    const [
+      { data: inventoryRows, error: inventoryError },
+      loadedCampaignTargetEligibilityByCampaignId,
+    ] = await Promise.all([
+      inventoryRowsPromise,
+      campaignTargetEligibilityPromise,
+    ]);
+
+    if (inventoryError) {
+      throw new ApiException(
+        'v2 shop inventory 조회 실패',
+        500,
+        'V2_SHOP_INVENTORY_FETCH_FAILED',
+      );
+    }
+
+    for (const row of inventoryRows || []) {
+      const variantId = row.variant_id as string;
+      const availableQuantity = Math.max(
+        0,
+        Number(row.available_quantity ?? 0),
+      );
+      const safetyStockQuantity = Math.max(
+        0,
+        Number(row.safety_stock_quantity ?? 0),
+      );
+      const sellableQuantity = Math.max(
+        availableQuantity - safetyStockQuantity,
+        0,
+      );
+      const current = inventoryByVariantId.get(variantId) ?? 0;
+      inventoryByVariantId.set(variantId, current + sellableQuantity);
+    }
 
     return {
       variantsByProductId,
