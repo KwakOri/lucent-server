@@ -1,8 +1,12 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { Logger } from '@nestjs/common';
 import { Database } from '../types/database';
+
+type SupabaseClientKind = 'admin' | 'anon';
 
 let cachedAdminClient: SupabaseClient<Database> | null = null;
 let cachedAnonClient: SupabaseClient<Database> | null = null;
+const supabaseTimingLogger = new Logger('SupabaseTiming');
 
 export function normalizeEnvValue(value: string): string {
   const trimmed = value.trim();
@@ -63,12 +67,82 @@ function getRequiredEnv(name: string): string {
   return normalized;
 }
 
-function createSupabaseClient(apiKey: string): SupabaseClient<Database> {
+function formatDurationMs(durationMs: number): string {
+  return Math.max(0, durationMs).toFixed(1);
+}
+
+function shouldLogSupabaseTiming(): boolean {
+  return (
+    process.env.NODE_ENV !== 'production' ||
+    process.env.LUCENT_SUPABASE_TIMING_LOG === 'true'
+  );
+}
+
+function resolveFetchUrl(input: Parameters<typeof fetch>[0]): string {
+  const rawUrl =
+    typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url;
+
+  try {
+    const url = new URL(rawUrl);
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return rawUrl;
+  }
+}
+
+function resolveFetchMethod(
+  input: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1],
+): string {
+  if (init?.method) {
+    return init.method.toUpperCase();
+  }
+
+  if (typeof input === 'object' && 'method' in input && input.method) {
+    return input.method.toUpperCase();
+  }
+
+  return 'GET';
+}
+
+function createInstrumentedFetch(kind: SupabaseClientKind): typeof fetch {
+  return async (input, init) => {
+    const startedAt = performance.now();
+    const response = await fetch(input, init);
+    const durationMs = performance.now() - startedAt;
+
+    if (shouldLogSupabaseTiming()) {
+      supabaseTimingLogger.log(
+        [
+          kind,
+          resolveFetchMethod(input, init),
+          resolveFetchUrl(input),
+          `status=${response.status}`,
+          `duration=${formatDurationMs(durationMs)}ms`,
+        ].join(' '),
+      );
+    }
+
+    return response;
+  };
+}
+
+function createSupabaseClient(
+  apiKey: string,
+  kind: SupabaseClientKind,
+): SupabaseClient<Database> {
   const url = getRequiredEnv('SUPABASE_URL');
   return createClient<Database>(url, apiKey, {
     auth: {
       persistSession: false,
       autoRefreshToken: false,
+    },
+    global: {
+      fetch: createInstrumentedFetch(kind),
     },
   });
 }
@@ -79,7 +153,7 @@ export function getSupabaseClient(): SupabaseClient<Database> {
   }
 
   const serviceRoleKey = getRequiredEnv('SUPABASE_SERVICE_ROLE_KEY');
-  cachedAdminClient = createSupabaseClient(serviceRoleKey);
+  cachedAdminClient = createSupabaseClient(serviceRoleKey, 'admin');
 
   return cachedAdminClient;
 }
@@ -101,6 +175,6 @@ export function getSupabaseAnonClient(): SupabaseClient<Database> {
     );
   }
 
-  cachedAnonClient = createSupabaseClient(normalizedAnonKey);
+  cachedAnonClient = createSupabaseClient(normalizedAnonKey, 'anon');
   return cachedAnonClient;
 }
