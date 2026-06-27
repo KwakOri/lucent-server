@@ -939,6 +939,17 @@ export class V2CatalogController {
     return successResponse(targetsMap);
   }
 
+  @Get('campaigns/:id/detail-context')
+  async getCampaignDetailContext(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') campaignId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const context =
+      await this.v2CatalogService.getCampaignDetailContext(campaignId);
+    return successResponse(context);
+  }
+
   @Get('campaigns/:id')
   async getCampaignById(
     @Headers('authorization') authorization: string | undefined,
