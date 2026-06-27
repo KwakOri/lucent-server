@@ -472,6 +472,30 @@ export class V2CatalogController {
     return successResponse(products);
   }
 
+  @Get('products/project-list')
+  async getProjectProductList(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('projectId') projectId?: string,
+    @Query('status') status?: 'DRAFT' | 'ACTIVE' | 'INACTIVE' | 'ARCHIVED',
+  ) {
+    await this.requireAdmin(authorization);
+    const products = await this.v2CatalogService.getProjectProductList({
+      projectId,
+      status,
+    });
+    return successResponse(products);
+  }
+
+  @Patch('products/bulk-status')
+  async bulkUpdateProductStatus(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const products = await this.v2CatalogService.bulkUpdateProductStatus(body);
+    return successResponse(products);
+  }
+
   @Get('products/:id')
   async getProductById(
     @Headers('authorization') authorization: string | undefined,
