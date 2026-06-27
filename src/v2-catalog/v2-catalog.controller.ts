@@ -496,6 +496,28 @@ export class V2CatalogController {
     return successResponse(products);
   }
 
+  @Get('products/variants-map')
+  async getVariantsMap(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('productIds') productIds?: string | string[],
+  ) {
+    await this.requireAdmin(authorization);
+    const variantsMap =
+      await this.v2CatalogService.getVariantsMap(productIds);
+    return successResponse(variantsMap);
+  }
+
+  @Get('products/media-map')
+  async getProductMediaMap(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('productIds') productIds?: string | string[],
+  ) {
+    await this.requireAdmin(authorization);
+    const mediaMap =
+      await this.v2CatalogService.getProductMediaMap(productIds);
+    return successResponse(mediaMap);
+  }
+
   @Get('products/:id')
   async getProductById(
     @Headers('authorization') authorization: string | undefined,
