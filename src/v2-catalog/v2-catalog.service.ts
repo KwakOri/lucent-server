@@ -3847,6 +3847,74 @@ export class V2CatalogService {
     return data;
   }
 
+  async getCampaignDetailContext(campaignId: string): Promise<any> {
+    const campaign = await this.getCampaignById(campaignId);
+    const campaignScopeType =
+      (campaign.campaign_type as V2CampaignType) === 'ALWAYS_ON'
+        ? 'BASE'
+        : 'OVERRIDE';
+
+    const [
+      targets,
+      priceLists,
+      basePriceLists,
+      promotions,
+      projects,
+      products,
+      bundleDefinitions,
+    ] = await Promise.all([
+      this.fetchCampaignTargets(campaignId),
+      this.getPriceLists({ campaignId }),
+      this.getPriceLists({ scopeType: 'BASE', status: 'PUBLISHED' }),
+      this.getPromotions({ campaignId }),
+      this.getProjects({}),
+      this.getProducts({}),
+      this.getBundleDefinitions({}),
+    ]);
+
+    const campaignScopedPriceLists = priceLists.filter(
+      (priceList) => priceList.scope_type === campaignScopeType,
+    );
+    const activeCampaignPriceList =
+      campaignScopedPriceLists.find(
+        (priceList) => priceList.status === 'PUBLISHED',
+      ) || this.pickLatestPriceListByUpdatedAt(campaignScopedPriceLists);
+    const activeBasePriceList =
+      this.pickLatestPriceListByUpdatedAt(basePriceLists);
+    const productIds = products.map((product) => product.id as string);
+
+    const [
+      campaignPriceItems,
+      basePriceItems,
+      variantsByProductId,
+      mediaByProductId,
+    ] = await Promise.all([
+      activeCampaignPriceList
+        ? this.fetchPriceListItems(activeCampaignPriceList.id as string)
+        : Promise.resolve([]),
+      activeBasePriceList
+        ? this.fetchPriceListItems(activeBasePriceList.id as string)
+        : Promise.resolve([]),
+      productIds.length > 0 ? this.getVariantsMap(productIds) : {},
+      productIds.length > 0 ? this.getProductMediaMap(productIds) : {},
+    ]);
+
+    return {
+      campaign,
+      targets,
+      priceLists,
+      basePriceLists,
+      campaignPriceItems,
+      basePriceItems,
+      promotions,
+      projects,
+      products,
+      bundleDefinitions,
+      variantsByProductId,
+      mediaByProductId,
+    };
+  }
+
   async createCampaign(input: CreateV2CampaignInput): Promise<any> {
     const code = this.normalizeRequiredText(
       input.code,
@@ -4198,6 +4266,10 @@ export class V2CatalogService {
 
   async getCampaignTargets(campaignId: string): Promise<any[]> {
     await this.getCampaignById(campaignId);
+    return this.fetchCampaignTargets(campaignId);
+  }
+
+  private async fetchCampaignTargets(campaignId: string): Promise<any[]> {
     const { data, error } = await this.supabase
       .from('v2_campaign_targets')
       .select('*')
@@ -5235,6 +5307,10 @@ export class V2CatalogService {
 
   async getPriceListItems(priceListId: string): Promise<any[]> {
     await this.getPriceListById(priceListId);
+    return this.fetchPriceListItems(priceListId);
+  }
+
+  private async fetchPriceListItems(priceListId: string): Promise<any[]> {
     const { data, error } = await this.supabase
       .from('v2_price_list_items')
       .select(
@@ -12551,6 +12627,19 @@ export class V2CatalogService {
       activeMedia.find((media) => media.is_primary) ||
       activeMedia.find((media) => media.media_role === 'PRIMARY') ||
       null
+    );
+  }
+
+  private pickLatestPriceListByUpdatedAt(priceLists: any[]): any | null {
+    if (priceLists.length === 0) {
+      return null;
+    }
+    return (
+      [...priceLists].sort((left, right) =>
+        String(right.updated_at || '').localeCompare(
+          String(left.updated_at || ''),
+        ),
+      )[0] || null
     );
   }
 
