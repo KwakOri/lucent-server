@@ -768,7 +768,12 @@ interface ReadSwitchRemediationTask {
   samples: any[];
 }
 
-const V2_PROJECT_SELECT_COLUMNS = '*, cover_media_asset:media_assets(*)';
+const V2_PROJECT_SELECT_COLUMNS =
+  '*, cover_media_asset:media_assets(id, asset_kind, status, file_name, public_url)';
+const V2_PRODUCT_MEDIA_SELECT_COLUMNS =
+  'id, product_id, media_type, media_role, media_asset_id, storage_path, public_url, alt_text, sort_order, is_primary, status, metadata, deleted_at, created_at, updated_at';
+const V2_PROJECT_PRODUCT_COVER_MEDIA_SELECT_COLUMNS =
+  'id, product_id, media_type, media_role, media_asset_id, storage_path, public_url, alt_text, sort_order, is_primary, status, created_at, updated_at';
 
 @Injectable()
 export class V2CatalogService {
@@ -1409,8 +1414,10 @@ export class V2CatalogService {
 
     const mediaPromise = this.supabase
       .from('v2_product_media')
-      .select('*, media_asset:media_assets(*)')
+      .select(V2_PROJECT_PRODUCT_COVER_MEDIA_SELECT_COLUMNS)
       .in('product_id', productIds)
+      .eq('status', 'ACTIVE')
+      .or('is_primary.eq.true,media_role.eq.PRIMARY')
       .is('deleted_at', null)
       .order('sort_order', { ascending: true })
       .order('created_at', { ascending: true });
@@ -3280,7 +3287,7 @@ export class V2CatalogService {
     await this.ensureProductExists(productId);
     const { data, error } = await this.supabase
       .from('v2_product_media')
-      .select('*, media_asset:media_assets(*)')
+      .select(V2_PRODUCT_MEDIA_SELECT_COLUMNS)
       .eq('product_id', productId)
       .is('deleted_at', null)
       .order('sort_order', { ascending: true });
@@ -3302,7 +3309,7 @@ export class V2CatalogService {
     const productIds = this.normalizeProductIdList(productIdsInput);
     const { data, error } = await this.supabase
       .from('v2_product_media')
-      .select('*, media_asset:media_assets(*)')
+      .select(V2_PRODUCT_MEDIA_SELECT_COLUMNS)
       .in('product_id', productIds)
       .is('deleted_at', null)
       .order('sort_order', { ascending: true })
@@ -3353,7 +3360,7 @@ export class V2CatalogService {
         status: input.status ?? 'DRAFT',
         metadata: input.metadata ?? {},
       })
-      .select('*')
+      .select(V2_PRODUCT_MEDIA_SELECT_COLUMNS)
       .single();
 
     if (error || !data) {
@@ -3423,7 +3430,7 @@ export class V2CatalogService {
       .from('v2_product_media')
       .update(updateData)
       .eq('id', mediaId)
-      .select('*')
+      .select(V2_PRODUCT_MEDIA_SELECT_COLUMNS)
       .single();
 
     if (error || !data) {
@@ -3446,7 +3453,7 @@ export class V2CatalogService {
         is_primary: false,
       })
       .eq('id', mediaId)
-      .select('*')
+      .select(V2_PRODUCT_MEDIA_SELECT_COLUMNS)
       .single();
 
     if (error || !data) {
@@ -11948,7 +11955,7 @@ export class V2CatalogService {
   private async getMediaById(mediaId: string): Promise<any> {
     const { data, error } = await this.supabase
       .from('v2_product_media')
-      .select('*, media_asset:media_assets(*)')
+      .select(V2_PRODUCT_MEDIA_SELECT_COLUMNS)
       .eq('id', mediaId)
       .is('deleted_at', null)
       .maybeSingle();
