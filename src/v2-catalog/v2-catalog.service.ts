@@ -2290,6 +2290,26 @@ export class V2CatalogService {
     return data || [];
   }
 
+  async getVariantsMap(productIdsInput: unknown): Promise<Record<string, any[]>> {
+    const productIds = this.normalizeProductIdList(productIdsInput);
+    const { data, error } = await this.supabase
+      .from('v2_product_variants')
+      .select('*')
+      .in('product_id', productIds)
+      .is('deleted_at', null)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        'v2 variant bulk 목록 조회 실패',
+        500,
+        'V2_VARIANTS_BULK_FETCH_FAILED',
+      );
+    }
+
+    return this.buildRowsMapForProductIds(productIds, data || []);
+  }
+
   async createVariant(
     productId: string,
     input: CreateV2VariantInput,
@@ -3266,6 +3286,29 @@ export class V2CatalogService {
     }
 
     return data || [];
+  }
+
+  async getProductMediaMap(
+    productIdsInput: unknown,
+  ): Promise<Record<string, any[]>> {
+    const productIds = this.normalizeProductIdList(productIdsInput);
+    const { data, error } = await this.supabase
+      .from('v2_product_media')
+      .select('*, media_asset:media_assets(*)')
+      .in('product_id', productIds)
+      .is('deleted_at', null)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        'v2 상품 media bulk 조회 실패',
+        500,
+        'V2_PRODUCT_MEDIA_BULK_FETCH_FAILED',
+      );
+    }
+
+    return this.buildRowsMapForProductIds(productIds, data || []);
   }
 
   async createProductMedia(
@@ -12290,6 +12333,17 @@ export class V2CatalogService {
     }, {});
   }
 
+  private buildRowsMapForProductIds(
+    productIds: string[],
+    rows: any[],
+  ): Record<string, any[]> {
+    const groupedRows = this.groupRowsByProductId(rows);
+    return productIds.reduce<Record<string, any[]>>((accumulator, productId) => {
+      accumulator[productId] = groupedRows[productId] || [];
+      return accumulator;
+    }, {});
+  }
+
   private buildVariantStatusCounts(
     variants: any[],
   ): Record<V2VariantStatus, number> {
@@ -12942,9 +12996,15 @@ export class V2CatalogService {
   }
 
   private normalizeProductIdList(value: unknown): string[] {
-    if (!Array.isArray(value)) {
+    const rawItems = Array.isArray(value)
+      ? value
+      : typeof value === 'string'
+        ? value.split(',')
+        : null;
+
+    if (!rawItems) {
       throw new ApiException(
-        'productIds는 배열이어야 합니다',
+        'productIds는 배열 또는 쉼표 문자열이어야 합니다',
         400,
         'VALIDATION_ERROR',
       );
@@ -12952,7 +13012,7 @@ export class V2CatalogService {
 
     const normalized = Array.from(
       new Set(
-        value
+        rawItems
           .filter((item): item is string => typeof item === 'string')
           .map((item) => item.trim())
           .filter(Boolean),
