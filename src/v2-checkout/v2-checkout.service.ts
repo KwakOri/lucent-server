@@ -110,7 +110,11 @@ interface CheckoutLineContext {
 }
 
 interface CheckoutPayload {
-  lines: Array<{ variant_id: string; quantity: number }>;
+  lines: Array<{
+    variant_id: string;
+    quantity: number;
+    campaign_id?: string | null;
+  }>;
   lineContexts: CheckoutLineContext[];
   campaignId: string | null;
   couponCode: string | null;
@@ -2271,6 +2275,7 @@ export class V2CheckoutService {
     const lines = lineContexts.map((line) => ({
       variant_id: line.variantId,
       quantity: line.quantity,
+      campaign_id: line.campaignId || null,
     }));
 
     const requestedCampaignId = this.normalizeOptionalUuid(input.campaign_id);
