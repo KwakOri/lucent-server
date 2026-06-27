@@ -186,6 +186,14 @@ interface BulkUpdateV2ProductStatusInput {
   status?: unknown;
 }
 
+export interface V2CampaignOverviewSummary {
+  targetCount: number;
+  excludedTargetCount: number;
+  priceListCount: number;
+  promotionCount: number;
+  hasLinkedPricing: boolean;
+}
+
 interface CreateV2VariantInput {
   sku?: string;
   title?: string;
@@ -4199,6 +4207,128 @@ export class V2CatalogService {
     }
 
     return data || [];
+  }
+
+  async getCampaignTargetsMap(
+    campaignIdsInput: unknown,
+  ): Promise<Record<string, any[]>> {
+    const campaignIds = this.normalizeCampaignIdList(campaignIdsInput);
+    const { data, error } = await this.supabase
+      .from('v2_campaign_targets')
+      .select('*')
+      .in('campaign_id', campaignIds)
+      .is('deleted_at', null)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        'campaign target bulk 목록 조회 실패',
+        500,
+        'V2_CAMPAIGN_TARGETS_BULK_FETCH_FAILED',
+      );
+    }
+
+    return this.buildRowsMapForCampaignIds(campaignIds, data || []);
+  }
+
+  async getCampaignOverviewMap(
+    campaignIdsInput: unknown,
+  ): Promise<Record<string, V2CampaignOverviewSummary>> {
+    const campaignIds = this.normalizeCampaignIdList(campaignIdsInput);
+
+    const [
+      { data: targets, error: targetsError },
+      { data: priceLists, error: priceListsError },
+      { data: promotions, error: promotionsError },
+    ] = await Promise.all([
+      this.supabase
+        .from('v2_campaign_targets')
+        .select('campaign_id,is_excluded')
+        .in('campaign_id', campaignIds)
+        .is('deleted_at', null),
+      this.supabase
+        .from('v2_price_lists')
+        .select('campaign_id')
+        .in('campaign_id', campaignIds)
+        .is('deleted_at', null),
+      this.supabase
+        .from('v2_promotions')
+        .select('campaign_id')
+        .in('campaign_id', campaignIds)
+        .is('deleted_at', null),
+    ]);
+
+    if (targetsError) {
+      throw new ApiException(
+        'campaign overview target 조회 실패',
+        500,
+        'V2_CAMPAIGN_OVERVIEW_TARGETS_FETCH_FAILED',
+      );
+    }
+    if (priceListsError) {
+      throw new ApiException(
+        'campaign overview price list 조회 실패',
+        500,
+        'V2_CAMPAIGN_OVERVIEW_PRICE_LISTS_FETCH_FAILED',
+      );
+    }
+    if (promotionsError) {
+      throw new ApiException(
+        'campaign overview promotion 조회 실패',
+        500,
+        'V2_CAMPAIGN_OVERVIEW_PROMOTIONS_FETCH_FAILED',
+      );
+    }
+
+    const overviewByCampaignId = campaignIds.reduce<
+      Record<string, V2CampaignOverviewSummary>
+    >((accumulator, campaignId) => {
+      accumulator[campaignId] = {
+        targetCount: 0,
+        excludedTargetCount: 0,
+        priceListCount: 0,
+        promotionCount: 0,
+        hasLinkedPricing: false,
+      };
+      return accumulator;
+    }, {});
+
+    (targets || []).forEach((target) => {
+      const campaignId = target.campaign_id as string | undefined;
+      const overview = campaignId ? overviewByCampaignId[campaignId] : null;
+      if (!overview) {
+        return;
+      }
+      if (target.is_excluded) {
+        overview.excludedTargetCount += 1;
+      } else {
+        overview.targetCount += 1;
+      }
+    });
+
+    (priceLists || []).forEach((priceList) => {
+      const campaignId = priceList.campaign_id as string | undefined;
+      const overview = campaignId ? overviewByCampaignId[campaignId] : null;
+      if (overview) {
+        overview.priceListCount += 1;
+      }
+    });
+
+    (promotions || []).forEach((promotion) => {
+      const campaignId = promotion.campaign_id as string | undefined;
+      const overview = campaignId ? overviewByCampaignId[campaignId] : null;
+      if (overview) {
+        overview.promotionCount += 1;
+      }
+    });
+
+    Object.values(overviewByCampaignId).forEach((overview) => {
+      overview.hasLinkedPricing =
+        overview.priceListCount > 0 || overview.promotionCount > 0;
+    });
+
+    return overviewByCampaignId;
   }
 
   private async resolveProjectIdsByCampaignTarget(
@@ -12333,6 +12463,20 @@ export class V2CatalogService {
     }, {});
   }
 
+  private groupRowsByCampaignId(rows: any[]): Record<string, any[]> {
+    return rows.reduce<Record<string, any[]>>((accumulator, row) => {
+      const campaignId = row.campaign_id as string | undefined;
+      if (!campaignId) {
+        return accumulator;
+      }
+      if (!accumulator[campaignId]) {
+        accumulator[campaignId] = [];
+      }
+      accumulator[campaignId].push(row);
+      return accumulator;
+    }, {});
+  }
+
   private buildRowsMapForProductIds(
     productIds: string[],
     rows: any[],
@@ -12340,6 +12484,17 @@ export class V2CatalogService {
     const groupedRows = this.groupRowsByProductId(rows);
     return productIds.reduce<Record<string, any[]>>((accumulator, productId) => {
       accumulator[productId] = groupedRows[productId] || [];
+      return accumulator;
+    }, {});
+  }
+
+  private buildRowsMapForCampaignIds(
+    campaignIds: string[],
+    rows: any[],
+  ): Record<string, any[]> {
+    const groupedRows = this.groupRowsByCampaignId(rows);
+    return campaignIds.reduce<Record<string, any[]>>((accumulator, campaignId) => {
+      accumulator[campaignId] = groupedRows[campaignId] || [];
       return accumulator;
     }, {});
   }
@@ -12996,6 +13151,26 @@ export class V2CatalogService {
   }
 
   private normalizeProductIdList(value: unknown): string[] {
+    return this.normalizeStringIdList(value, {
+      invalidMessage: 'productIds는 배열 또는 쉼표 문자열이어야 합니다',
+      emptyMessage: '변경할 상품을 선택해 주세요',
+    });
+  }
+
+  private normalizeCampaignIdList(value: unknown): string[] {
+    return this.normalizeStringIdList(value, {
+      invalidMessage: 'campaignIds는 배열 또는 쉼표 문자열이어야 합니다',
+      emptyMessage: 'campaign을 선택해 주세요',
+    });
+  }
+
+  private normalizeStringIdList(
+    value: unknown,
+    messages: {
+      invalidMessage: string;
+      emptyMessage: string;
+    },
+  ): string[] {
     const rawItems = Array.isArray(value)
       ? value
       : typeof value === 'string'
@@ -13004,7 +13179,7 @@ export class V2CatalogService {
 
     if (!rawItems) {
       throw new ApiException(
-        'productIds는 배열 또는 쉼표 문자열이어야 합니다',
+        messages.invalidMessage,
         400,
         'VALIDATION_ERROR',
       );
@@ -13021,7 +13196,7 @@ export class V2CatalogService {
 
     if (normalized.length === 0) {
       throw new ApiException(
-        '변경할 상품을 선택해 주세요',
+        messages.emptyMessage,
         400,
         'VALIDATION_ERROR',
       );
