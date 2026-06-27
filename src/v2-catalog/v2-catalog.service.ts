@@ -180,6 +180,12 @@ interface UpdateV2ProductInput {
   metadata?: Record<string, unknown>;
 }
 
+interface BulkUpdateV2ProductStatusInput {
+  productIds?: unknown;
+  product_ids?: unknown;
+  status?: unknown;
+}
+
 interface CreateV2VariantInput {
   sku?: string;
   title?: string;
@@ -1372,6 +1378,71 @@ export class V2CatalogService {
     return data || [];
   }
 
+  async getProjectProductList(filters: {
+    projectId?: string;
+    status?: V2ProductStatus;
+  }): Promise<any[]> {
+    if (!filters.projectId) {
+      throw new ApiException(
+        'projectId는 필수입니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const products = await this.getProducts(filters);
+    if (products.length === 0) {
+      return [];
+    }
+
+    const productIds = products.map((product) => product.id as string);
+    const { data: variants, error: variantsError } = await this.supabase
+      .from('v2_product_variants')
+      .select('product_id,status')
+      .in('product_id', productIds)
+      .is('deleted_at', null)
+      .order('created_at', { ascending: true });
+
+    if (variantsError) {
+      throw new ApiException(
+        'v2 프로젝트 상품 옵션 목록 조회 실패',
+        500,
+        'V2_PROJECT_PRODUCT_VARIANTS_FETCH_FAILED',
+      );
+    }
+
+    const { data: media, error: mediaError } = await this.supabase
+      .from('v2_product_media')
+      .select('*, media_asset:media_assets(*)')
+      .in('product_id', productIds)
+      .is('deleted_at', null)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true });
+
+    if (mediaError) {
+      throw new ApiException(
+        'v2 프로젝트 상품 media 목록 조회 실패',
+        500,
+        'V2_PROJECT_PRODUCT_MEDIA_FETCH_FAILED',
+      );
+    }
+
+    const variantsByProductId = this.groupRowsByProductId(variants || []);
+    const mediaByProductId = this.groupRowsByProductId(media || []);
+
+    return products.map((product) => {
+      const productVariants = variantsByProductId[product.id] || [];
+      const productMedia = mediaByProductId[product.id] || [];
+      return {
+        ...product,
+        variant_count: productVariants.length,
+        variant_status_counts:
+          this.buildVariantStatusCounts(productVariants),
+        cover_media: this.resolveCoverMedia(productMedia),
+      };
+    });
+  }
+
   async getShopProducts(input: GetV2ShopProductsInput = {}): Promise<any> {
     const limit = this.normalizeShopLimit(input.limit);
     const offset = this.normalizeShopOffset(input.cursor);
@@ -2117,6 +2188,67 @@ export class V2CatalogService {
     }
 
     return data;
+  }
+
+  async bulkUpdateProductStatus(
+    input: BulkUpdateV2ProductStatusInput,
+  ): Promise<any[]> {
+    const productIds = this.normalizeProductIdList(
+      input.productIds ?? input.product_ids,
+    );
+    const status = this.normalizeRequiredText(
+      typeof input.status === 'string' ? input.status : undefined,
+      'status는 필수입니다',
+    ) as V2ProductStatus;
+    this.assertProductStatus(status);
+
+    const { data: products, error: fetchError } = await this.supabase
+      .from('v2_products')
+      .select('*')
+      .in('id', productIds)
+      .is('deleted_at', null);
+
+    if (fetchError) {
+      throw new ApiException(
+        'bulk 상품 조회 실패',
+        500,
+        'V2_PRODUCTS_BULK_FETCH_FAILED',
+      );
+    }
+
+    const productRows = products || [];
+    if (productRows.length !== productIds.length) {
+      throw new ApiException(
+        '일부 상품을 찾을 수 없습니다',
+        404,
+        'V2_PRODUCTS_BULK_NOT_FOUND',
+      );
+    }
+
+    productRows.forEach((product) => {
+      this.assertProductStatusTransition(product.status, status);
+    });
+
+    const { data: updatedProducts, error: updateError } = await this.supabase
+      .from('v2_products')
+      .update({ status })
+      .in('id', productIds)
+      .select('*');
+
+    if (updateError) {
+      throw new ApiException(
+        'bulk 상품 상태 변경 실패',
+        500,
+        'V2_PRODUCTS_BULK_STATUS_UPDATE_FAILED',
+      );
+    }
+
+    const updatedById = new Map(
+      (updatedProducts || []).map((product) => [product.id, product]),
+    );
+    return productIds
+      .map((productId) => updatedById.get(productId))
+      .filter(Boolean);
   }
 
   async deleteProduct(productId: string): Promise<void> {
@@ -12144,6 +12276,48 @@ export class V2CatalogService {
     }
   }
 
+  private groupRowsByProductId(rows: any[]): Record<string, any[]> {
+    return rows.reduce<Record<string, any[]>>((accumulator, row) => {
+      const productId = row.product_id as string | undefined;
+      if (!productId) {
+        return accumulator;
+      }
+      if (!accumulator[productId]) {
+        accumulator[productId] = [];
+      }
+      accumulator[productId].push(row);
+      return accumulator;
+    }, {});
+  }
+
+  private buildVariantStatusCounts(
+    variants: any[],
+  ): Record<V2VariantStatus, number> {
+    return variants.reduce<Record<V2VariantStatus, number>>(
+      (accumulator, variant) => {
+        const status = variant.status as V2VariantStatus | undefined;
+        if (status && status in accumulator) {
+          accumulator[status] += 1;
+        }
+        return accumulator;
+      },
+      {
+        DRAFT: 0,
+        ACTIVE: 0,
+        INACTIVE: 0,
+      },
+    );
+  }
+
+  private resolveCoverMedia(mediaList: any[]): any | null {
+    const activeMedia = mediaList.filter((media) => media.status === 'ACTIVE');
+    return (
+      activeMedia.find((media) => media.is_primary) ||
+      activeMedia.find((media) => media.media_role === 'PRIMARY') ||
+      null
+    );
+  }
+
   private normalizeRecordMetadata(value: unknown): Record<string, unknown> {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       return {};
@@ -12764,6 +12938,35 @@ export class V2CatalogService {
     if (!normalized) {
       throw new ApiException(errorMessage, 400, 'VALIDATION_ERROR');
     }
+    return normalized;
+  }
+
+  private normalizeProductIdList(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+      throw new ApiException(
+        'productIds는 배열이어야 합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const normalized = Array.from(
+      new Set(
+        value
+          .filter((item): item is string => typeof item === 'string')
+          .map((item) => item.trim())
+          .filter(Boolean),
+      ),
+    );
+
+    if (normalized.length === 0) {
+      throw new ApiException(
+        '변경할 상품을 선택해 주세요',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
     return normalized;
   }
 
