@@ -3915,6 +3915,62 @@ export class V2CatalogService {
     };
   }
 
+  async getCampaignPricingContext(campaignId: string): Promise<any> {
+    const campaign = await this.getCampaignById(campaignId);
+    const campaignScopeType =
+      (campaign.campaign_type as V2CampaignType) === 'ALWAYS_ON'
+        ? 'BASE'
+        : 'OVERRIDE';
+
+    const [
+      targets,
+      products,
+      stockLocations,
+      campaignPriceLists,
+      basePriceLists,
+    ] = await Promise.all([
+      this.fetchCampaignTargets(campaignId),
+      this.getProducts({}),
+      this.fetchActiveStockLocations(),
+      this.getPriceLists({
+        campaignId,
+        scopeType: campaignScopeType,
+      }),
+      this.getPriceLists({ scopeType: 'BASE', status: 'PUBLISHED' }),
+    ]);
+
+    const activeCampaignPriceList =
+      campaignPriceLists.find(
+        (priceList) => priceList.status === 'PUBLISHED',
+      ) || this.pickLatestPriceListByUpdatedAt(campaignPriceLists);
+    const activeBasePriceList =
+      this.pickLatestPriceListByUpdatedAt(basePriceLists);
+    const productIds = products.map((product) => product.id as string);
+
+    const [campaignPriceItems, basePriceItems, variantsByProductId] =
+      await Promise.all([
+        activeCampaignPriceList
+          ? this.fetchPriceListItems(activeCampaignPriceList.id as string)
+          : Promise.resolve([]),
+        activeBasePriceList
+          ? this.fetchPriceListItems(activeBasePriceList.id as string)
+          : Promise.resolve([]),
+        productIds.length > 0 ? this.getVariantsMap(productIds) : {},
+      ]);
+
+    return {
+      campaign,
+      targets,
+      products,
+      stockLocations,
+      campaignPriceLists,
+      basePriceLists,
+      campaignPriceItems,
+      basePriceItems,
+      variantsByProductId,
+    };
+  }
+
   async createCampaign(input: CreateV2CampaignInput): Promise<any> {
     const code = this.normalizeRequiredText(
       input.code,
@@ -4282,6 +4338,27 @@ export class V2CatalogService {
         'campaign target 목록 조회 실패',
         500,
         'V2_CAMPAIGN_TARGETS_FETCH_FAILED',
+      );
+    }
+
+    return data || [];
+  }
+
+  private async fetchActiveStockLocations(): Promise<any[]> {
+    const { data, error } = await this.supabase
+      .from('v2_stock_locations')
+      .select(
+        'id, code, name, location_type, priority, is_active, country_code, region_code',
+      )
+      .eq('is_active', true)
+      .order('priority', { ascending: true })
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        'stock location 조회 실패',
+        500,
+        'STOCK_LOCATION_FETCH_FAILED',
       );
     }
 

@@ -950,6 +950,17 @@ export class V2CatalogController {
     return successResponse(context);
   }
 
+  @Get('campaigns/:id/pricing-context')
+  async getCampaignPricingContext(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') campaignId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const context =
+      await this.v2CatalogService.getCampaignPricingContext(campaignId);
+    return successResponse(context);
+  }
+
   @Get('campaigns/:id')
   async getCampaignById(
     @Headers('authorization') authorization: string | undefined,
