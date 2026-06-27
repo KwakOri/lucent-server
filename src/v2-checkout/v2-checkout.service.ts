@@ -2980,10 +2980,13 @@ export class V2CheckoutService {
         : null;
 
       const campaignId =
-        campaignFromPriceList?.campaignId || explicitCampaignId || null;
+        explicitCampaignId || campaignFromPriceList?.campaignId || null;
       const campaignName =
-        campaignFromPriceList?.campaignName ||
         explicitCampaignName ||
+        (explicitCampaignId
+          ? campaignNameById.get(explicitCampaignId) || null
+          : null) ||
+        campaignFromPriceList?.campaignName ||
         (campaignId ? campaignNameById.get(campaignId) || null : null);
 
       snapshots.push({
