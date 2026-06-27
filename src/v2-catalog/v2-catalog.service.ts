@@ -180,6 +180,20 @@ interface UpdateV2ProductInput {
   metadata?: Record<string, unknown>;
 }
 
+interface BulkUpdateV2ProductStatusInput {
+  productIds?: unknown;
+  product_ids?: unknown;
+  status?: unknown;
+}
+
+export interface V2CampaignOverviewSummary {
+  targetCount: number;
+  excludedTargetCount: number;
+  priceListCount: number;
+  promotionCount: number;
+  hasLinkedPricing: boolean;
+}
+
 interface CreateV2VariantInput {
   sku?: string;
   title?: string;
@@ -754,7 +768,12 @@ interface ReadSwitchRemediationTask {
   samples: any[];
 }
 
-const V2_PROJECT_SELECT_COLUMNS = '*, cover_media_asset:media_assets(*)';
+const V2_PROJECT_SELECT_COLUMNS =
+  '*, cover_media_asset:media_assets(id, asset_kind, status, file_name, public_url)';
+const V2_PRODUCT_MEDIA_SELECT_COLUMNS =
+  'id, product_id, media_type, media_role, media_asset_id, storage_path, public_url, alt_text, sort_order, is_primary, status, metadata, deleted_at, created_at, updated_at';
+const V2_PROJECT_PRODUCT_COVER_MEDIA_SELECT_COLUMNS =
+  'id, product_id, media_type, media_role, media_asset_id, storage_path, public_url, alt_text, sort_order, is_primary, status, created_at, updated_at';
 
 @Injectable()
 export class V2CatalogService {
@@ -1370,6 +1389,73 @@ export class V2CatalogService {
     }
 
     return data || [];
+  }
+
+  async getProjectProductList(filters: {
+    projectId?: string;
+    status?: V2ProductStatus;
+  }): Promise<any[]> {
+    if (!filters.projectId) {
+      throw new ApiException('projectId는 필수입니다', 400, 'VALIDATION_ERROR');
+    }
+
+    const products = await this.getProducts(filters);
+    if (products.length === 0) {
+      return [];
+    }
+
+    const productIds = products.map((product) => product.id as string);
+    const variantsPromise = this.supabase
+      .from('v2_product_variants')
+      .select('product_id,status')
+      .in('product_id', productIds)
+      .is('deleted_at', null)
+      .order('created_at', { ascending: true });
+
+    const mediaPromise = this.supabase
+      .from('v2_product_media')
+      .select(V2_PROJECT_PRODUCT_COVER_MEDIA_SELECT_COLUMNS)
+      .in('product_id', productIds)
+      .eq('status', 'ACTIVE')
+      .or('is_primary.eq.true,media_role.eq.PRIMARY')
+      .is('deleted_at', null)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true });
+
+    const [
+      { data: variants, error: variantsError },
+      { data: media, error: mediaError },
+    ] = await Promise.all([variantsPromise, mediaPromise]);
+
+    if (variantsError) {
+      throw new ApiException(
+        'v2 프로젝트 상품 옵션 목록 조회 실패',
+        500,
+        'V2_PROJECT_PRODUCT_VARIANTS_FETCH_FAILED',
+      );
+    }
+
+    if (mediaError) {
+      throw new ApiException(
+        'v2 프로젝트 상품 media 목록 조회 실패',
+        500,
+        'V2_PROJECT_PRODUCT_MEDIA_FETCH_FAILED',
+      );
+    }
+
+    const variantsByProductId = this.groupRowsByProductId(variants || []);
+    const mediaByProductId = this.groupRowsByProductId(media || []);
+
+    return products.map((product) => {
+      const productVariants = variantsByProductId[product.id] || [];
+      const productMedia = mediaByProductId[product.id] || [];
+      return {
+        ...product,
+        variant_count: productVariants.length,
+        variant_status_counts: this.buildVariantStatusCounts(productVariants),
+        cover_media: this.resolveCoverMedia(productMedia),
+      };
+    });
   }
 
   async getShopProducts(input: GetV2ShopProductsInput = {}): Promise<any> {
@@ -2119,6 +2205,67 @@ export class V2CatalogService {
     return data;
   }
 
+  async bulkUpdateProductStatus(
+    input: BulkUpdateV2ProductStatusInput,
+  ): Promise<any[]> {
+    const productIds = this.normalizeProductIdList(
+      input.productIds ?? input.product_ids,
+    );
+    const status = this.normalizeRequiredText(
+      typeof input.status === 'string' ? input.status : undefined,
+      'status는 필수입니다',
+    ) as V2ProductStatus;
+    this.assertProductStatus(status);
+
+    const { data: products, error: fetchError } = await this.supabase
+      .from('v2_products')
+      .select('*')
+      .in('id', productIds)
+      .is('deleted_at', null);
+
+    if (fetchError) {
+      throw new ApiException(
+        'bulk 상품 조회 실패',
+        500,
+        'V2_PRODUCTS_BULK_FETCH_FAILED',
+      );
+    }
+
+    const productRows = products || [];
+    if (productRows.length !== productIds.length) {
+      throw new ApiException(
+        '일부 상품을 찾을 수 없습니다',
+        404,
+        'V2_PRODUCTS_BULK_NOT_FOUND',
+      );
+    }
+
+    productRows.forEach((product) => {
+      this.assertProductStatusTransition(product.status, status);
+    });
+
+    const { data: updatedProducts, error: updateError } = await this.supabase
+      .from('v2_products')
+      .update({ status })
+      .in('id', productIds)
+      .select('*');
+
+    if (updateError) {
+      throw new ApiException(
+        'bulk 상품 상태 변경 실패',
+        500,
+        'V2_PRODUCTS_BULK_STATUS_UPDATE_FAILED',
+      );
+    }
+
+    const updatedById = new Map(
+      (updatedProducts || []).map((product) => [product.id, product]),
+    );
+    return productIds
+      .map((productId) => updatedById.get(productId))
+      .filter(Boolean);
+  }
+
   async deleteProduct(productId: string): Promise<void> {
     await this.getProductById(productId);
     const { error } = await this.supabase
@@ -2156,6 +2303,26 @@ export class V2CatalogService {
     }
 
     return data || [];
+  }
+
+  async getVariantsMap(productIdsInput: unknown): Promise<Record<string, any[]>> {
+    const productIds = this.normalizeProductIdList(productIdsInput);
+    const { data, error } = await this.supabase
+      .from('v2_product_variants')
+      .select('*')
+      .in('product_id', productIds)
+      .is('deleted_at', null)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        'v2 variant bulk 목록 조회 실패',
+        500,
+        'V2_VARIANTS_BULK_FETCH_FAILED',
+      );
+    }
+
+    return this.buildRowsMapForProductIds(productIds, data || []);
   }
 
   async createVariant(
@@ -3120,7 +3287,7 @@ export class V2CatalogService {
     await this.ensureProductExists(productId);
     const { data, error } = await this.supabase
       .from('v2_product_media')
-      .select('*, media_asset:media_assets(*)')
+      .select(V2_PRODUCT_MEDIA_SELECT_COLUMNS)
       .eq('product_id', productId)
       .is('deleted_at', null)
       .order('sort_order', { ascending: true });
@@ -3134,6 +3301,29 @@ export class V2CatalogService {
     }
 
     return data || [];
+  }
+
+  async getProductMediaMap(
+    productIdsInput: unknown,
+  ): Promise<Record<string, any[]>> {
+    const productIds = this.normalizeProductIdList(productIdsInput);
+    const { data, error } = await this.supabase
+      .from('v2_product_media')
+      .select(V2_PRODUCT_MEDIA_SELECT_COLUMNS)
+      .in('product_id', productIds)
+      .is('deleted_at', null)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        'v2 상품 media bulk 조회 실패',
+        500,
+        'V2_PRODUCT_MEDIA_BULK_FETCH_FAILED',
+      );
+    }
+
+    return this.buildRowsMapForProductIds(productIds, data || []);
   }
 
   async createProductMedia(
@@ -3170,7 +3360,7 @@ export class V2CatalogService {
         status: input.status ?? 'DRAFT',
         metadata: input.metadata ?? {},
       })
-      .select('*')
+      .select(V2_PRODUCT_MEDIA_SELECT_COLUMNS)
       .single();
 
     if (error || !data) {
@@ -3240,7 +3430,7 @@ export class V2CatalogService {
       .from('v2_product_media')
       .update(updateData)
       .eq('id', mediaId)
-      .select('*')
+      .select(V2_PRODUCT_MEDIA_SELECT_COLUMNS)
       .single();
 
     if (error || !data) {
@@ -3263,7 +3453,7 @@ export class V2CatalogService {
         is_primary: false,
       })
       .eq('id', mediaId)
-      .select('*')
+      .select(V2_PRODUCT_MEDIA_SELECT_COLUMNS)
       .single();
 
     if (error || !data) {
@@ -3657,6 +3847,130 @@ export class V2CatalogService {
     return data;
   }
 
+  async getCampaignDetailContext(campaignId: string): Promise<any> {
+    const campaign = await this.getCampaignById(campaignId);
+    const campaignScopeType =
+      (campaign.campaign_type as V2CampaignType) === 'ALWAYS_ON'
+        ? 'BASE'
+        : 'OVERRIDE';
+
+    const [
+      targets,
+      priceLists,
+      basePriceLists,
+      promotions,
+      projects,
+      products,
+      bundleDefinitions,
+    ] = await Promise.all([
+      this.fetchCampaignTargets(campaignId),
+      this.getPriceLists({ campaignId }),
+      this.getPriceLists({ scopeType: 'BASE', status: 'PUBLISHED' }),
+      this.getPromotions({ campaignId }),
+      this.getProjects({}),
+      this.getProducts({}),
+      this.getBundleDefinitions({}),
+    ]);
+
+    const campaignScopedPriceLists = priceLists.filter(
+      (priceList) => priceList.scope_type === campaignScopeType,
+    );
+    const activeCampaignPriceList =
+      campaignScopedPriceLists.find(
+        (priceList) => priceList.status === 'PUBLISHED',
+      ) || this.pickLatestPriceListByUpdatedAt(campaignScopedPriceLists);
+    const activeBasePriceList =
+      this.pickLatestPriceListByUpdatedAt(basePriceLists);
+    const productIds = products.map((product) => product.id as string);
+
+    const [
+      campaignPriceItems,
+      basePriceItems,
+      variantsByProductId,
+      mediaByProductId,
+    ] = await Promise.all([
+      activeCampaignPriceList
+        ? this.fetchPriceListItems(activeCampaignPriceList.id as string)
+        : Promise.resolve([]),
+      activeBasePriceList
+        ? this.fetchPriceListItems(activeBasePriceList.id as string)
+        : Promise.resolve([]),
+      productIds.length > 0 ? this.getVariantsMap(productIds) : {},
+      productIds.length > 0 ? this.getProductMediaMap(productIds) : {},
+    ]);
+
+    return {
+      campaign,
+      targets,
+      priceLists,
+      basePriceLists,
+      campaignPriceItems,
+      basePriceItems,
+      promotions,
+      projects,
+      products,
+      bundleDefinitions,
+      variantsByProductId,
+      mediaByProductId,
+    };
+  }
+
+  async getCampaignPricingContext(campaignId: string): Promise<any> {
+    const campaign = await this.getCampaignById(campaignId);
+    const campaignScopeType =
+      (campaign.campaign_type as V2CampaignType) === 'ALWAYS_ON'
+        ? 'BASE'
+        : 'OVERRIDE';
+
+    const [
+      targets,
+      products,
+      stockLocations,
+      campaignPriceLists,
+      basePriceLists,
+    ] = await Promise.all([
+      this.fetchCampaignTargets(campaignId),
+      this.getProducts({}),
+      this.fetchActiveStockLocations(),
+      this.getPriceLists({
+        campaignId,
+        scopeType: campaignScopeType,
+      }),
+      this.getPriceLists({ scopeType: 'BASE', status: 'PUBLISHED' }),
+    ]);
+
+    const activeCampaignPriceList =
+      campaignPriceLists.find(
+        (priceList) => priceList.status === 'PUBLISHED',
+      ) || this.pickLatestPriceListByUpdatedAt(campaignPriceLists);
+    const activeBasePriceList =
+      this.pickLatestPriceListByUpdatedAt(basePriceLists);
+    const productIds = products.map((product) => product.id as string);
+
+    const [campaignPriceItems, basePriceItems, variantsByProductId] =
+      await Promise.all([
+        activeCampaignPriceList
+          ? this.fetchPriceListItems(activeCampaignPriceList.id as string)
+          : Promise.resolve([]),
+        activeBasePriceList
+          ? this.fetchPriceListItems(activeBasePriceList.id as string)
+          : Promise.resolve([]),
+        productIds.length > 0 ? this.getVariantsMap(productIds) : {},
+      ]);
+
+    return {
+      campaign,
+      targets,
+      products,
+      stockLocations,
+      campaignPriceLists,
+      basePriceLists,
+      campaignPriceItems,
+      basePriceItems,
+      variantsByProductId,
+    };
+  }
+
   async createCampaign(input: CreateV2CampaignInput): Promise<any> {
     const code = this.normalizeRequiredText(
       input.code,
@@ -4008,6 +4322,10 @@ export class V2CatalogService {
 
   async getCampaignTargets(campaignId: string): Promise<any[]> {
     await this.getCampaignById(campaignId);
+    return this.fetchCampaignTargets(campaignId);
+  }
+
+  private async fetchCampaignTargets(campaignId: string): Promise<any[]> {
     const { data, error } = await this.supabase
       .from('v2_campaign_targets')
       .select('*')
@@ -4024,6 +4342,149 @@ export class V2CatalogService {
     }
 
     return data || [];
+  }
+
+  private async fetchActiveStockLocations(): Promise<any[]> {
+    const { data, error } = await this.supabase
+      .from('v2_stock_locations')
+      .select(
+        'id, code, name, location_type, priority, is_active, country_code, region_code',
+      )
+      .eq('is_active', true)
+      .order('priority', { ascending: true })
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        'stock location 조회 실패',
+        500,
+        'STOCK_LOCATION_FETCH_FAILED',
+      );
+    }
+
+    return data || [];
+  }
+
+  async getCampaignTargetsMap(
+    campaignIdsInput: unknown,
+  ): Promise<Record<string, any[]>> {
+    const campaignIds = this.normalizeCampaignIdList(campaignIdsInput);
+    const { data, error } = await this.supabase
+      .from('v2_campaign_targets')
+      .select('*')
+      .in('campaign_id', campaignIds)
+      .is('deleted_at', null)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        'campaign target bulk 목록 조회 실패',
+        500,
+        'V2_CAMPAIGN_TARGETS_BULK_FETCH_FAILED',
+      );
+    }
+
+    return this.buildRowsMapForCampaignIds(campaignIds, data || []);
+  }
+
+  async getCampaignOverviewMap(
+    campaignIdsInput: unknown,
+  ): Promise<Record<string, V2CampaignOverviewSummary>> {
+    const campaignIds = this.normalizeCampaignIdList(campaignIdsInput);
+
+    const [
+      { data: targets, error: targetsError },
+      { data: priceLists, error: priceListsError },
+      { data: promotions, error: promotionsError },
+    ] = await Promise.all([
+      this.supabase
+        .from('v2_campaign_targets')
+        .select('campaign_id,is_excluded')
+        .in('campaign_id', campaignIds)
+        .is('deleted_at', null),
+      this.supabase
+        .from('v2_price_lists')
+        .select('campaign_id')
+        .in('campaign_id', campaignIds)
+        .is('deleted_at', null),
+      this.supabase
+        .from('v2_promotions')
+        .select('campaign_id')
+        .in('campaign_id', campaignIds)
+        .is('deleted_at', null),
+    ]);
+
+    if (targetsError) {
+      throw new ApiException(
+        'campaign overview target 조회 실패',
+        500,
+        'V2_CAMPAIGN_OVERVIEW_TARGETS_FETCH_FAILED',
+      );
+    }
+    if (priceListsError) {
+      throw new ApiException(
+        'campaign overview price list 조회 실패',
+        500,
+        'V2_CAMPAIGN_OVERVIEW_PRICE_LISTS_FETCH_FAILED',
+      );
+    }
+    if (promotionsError) {
+      throw new ApiException(
+        'campaign overview promotion 조회 실패',
+        500,
+        'V2_CAMPAIGN_OVERVIEW_PROMOTIONS_FETCH_FAILED',
+      );
+    }
+
+    const overviewByCampaignId = campaignIds.reduce<
+      Record<string, V2CampaignOverviewSummary>
+    >((accumulator, campaignId) => {
+      accumulator[campaignId] = {
+        targetCount: 0,
+        excludedTargetCount: 0,
+        priceListCount: 0,
+        promotionCount: 0,
+        hasLinkedPricing: false,
+      };
+      return accumulator;
+    }, {});
+
+    (targets || []).forEach((target) => {
+      const campaignId = target.campaign_id as string | undefined;
+      const overview = campaignId ? overviewByCampaignId[campaignId] : null;
+      if (!overview) {
+        return;
+      }
+      if (target.is_excluded) {
+        overview.excludedTargetCount += 1;
+      } else {
+        overview.targetCount += 1;
+      }
+    });
+
+    (priceLists || []).forEach((priceList) => {
+      const campaignId = priceList.campaign_id as string | undefined;
+      const overview = campaignId ? overviewByCampaignId[campaignId] : null;
+      if (overview) {
+        overview.priceListCount += 1;
+      }
+    });
+
+    (promotions || []).forEach((promotion) => {
+      const campaignId = promotion.campaign_id as string | undefined;
+      const overview = campaignId ? overviewByCampaignId[campaignId] : null;
+      if (overview) {
+        overview.promotionCount += 1;
+      }
+    });
+
+    Object.values(overviewByCampaignId).forEach((overview) => {
+      overview.hasLinkedPricing =
+        overview.priceListCount > 0 || overview.promotionCount > 0;
+    });
+
+    return overviewByCampaignId;
   }
 
   private async resolveProjectIdsByCampaignTarget(
@@ -4923,6 +5384,10 @@ export class V2CatalogService {
 
   async getPriceListItems(priceListId: string): Promise<any[]> {
     await this.getPriceListById(priceListId);
+    return this.fetchPriceListItems(priceListId);
+  }
+
+  private async fetchPriceListItems(priceListId: string): Promise<any[]> {
     const { data, error } = await this.supabase
       .from('v2_price_list_items')
       .select(
@@ -10953,31 +11418,16 @@ export class V2CatalogService {
           .filter((projectId): projectId is string => !!projectId),
       ),
     );
-    if (projectIds.length > 0) {
-      const { data: projectRows, error: projectsError } = await this.supabase
-        .from('v2_projects')
-        .select('id,status')
-        .in('id', projectIds)
-        .is('deleted_at', null);
-      if (projectsError) {
-        throw new ApiException(
-          'v2 shop 프로젝트 조회 실패',
-          500,
-          'V2_SHOP_PROJECTS_FETCH_FAILED',
-        );
-      }
 
-      for (const row of projectRows || []) {
-        if (row.id && row.status) {
-          projectStatusById.set(
-            row.id as string,
-            row.status as V2ProjectStatus,
-          );
-        }
-      }
-    }
-
-    const { data: variantRows, error: variantsError } = await this.supabase
+    const projectRowsPromise =
+      projectIds.length > 0
+        ? this.supabase
+            .from('v2_projects')
+            .select('id,status')
+            .in('id', projectIds)
+            .is('deleted_at', null)
+        : Promise.resolve({ data: [], error: null });
+    const variantRowsPromise = this.supabase
       .from('v2_product_variants')
       .select(
         'id,product_id,sku,title,fulfillment_type,requires_shipping,track_inventory,status,created_at',
@@ -10986,22 +11436,7 @@ export class V2CatalogService {
       .eq('status', 'ACTIVE')
       .is('deleted_at', null)
       .order('created_at', { ascending: true });
-    if (variantsError) {
-      throw new ApiException(
-        'v2 shop variant 조회 실패',
-        500,
-        'V2_SHOP_VARIANTS_FETCH_FAILED',
-      );
-    }
-
-    for (const row of variantRows || []) {
-      const productId = row.product_id as string;
-      const list = variantsByProductId.get(productId) || [];
-      list.push(row);
-      variantsByProductId.set(productId, list);
-    }
-
-    const { data: mediaRows, error: mediaError } = await this.supabase
+    const mediaRowsPromise = this.supabase
       .from('v2_product_media')
       .select(
         'id,product_id,media_type,media_role,public_url,alt_text,sort_order,is_primary,status,created_at',
@@ -11012,55 +11447,7 @@ export class V2CatalogService {
       .order('is_primary', { ascending: false })
       .order('sort_order', { ascending: true })
       .order('created_at', { ascending: true });
-    if (mediaError) {
-      throw new ApiException(
-        'v2 shop media 조회 실패',
-        500,
-        'V2_SHOP_MEDIA_FETCH_FAILED',
-      );
-    }
-
-    for (const row of mediaRows || []) {
-      const productId = row.product_id as string;
-      const list = mediaByProductId.get(productId) || [];
-      list.push(row);
-      mediaByProductId.set(productId, list);
-    }
-
-    const variantIds = (variantRows || []).map((row: any) => row.id as string);
-    if (variantIds.length > 0) {
-      const { data: inventoryRows, error: inventoryError } = await this.supabase
-        .from('v2_inventory_levels')
-        .select('variant_id,available_quantity,safety_stock_quantity')
-        .in('variant_id', variantIds);
-      if (inventoryError) {
-        throw new ApiException(
-          'v2 shop inventory 조회 실패',
-          500,
-          'V2_SHOP_INVENTORY_FETCH_FAILED',
-        );
-      }
-
-      for (const row of inventoryRows || []) {
-        const variantId = row.variant_id as string;
-        const availableQuantity = Math.max(
-          0,
-          Number(row.available_quantity ?? 0),
-        );
-        const safetyStockQuantity = Math.max(
-          0,
-          Number(row.safety_stock_quantity ?? 0),
-        );
-        const sellableQuantity = Math.max(
-          availableQuantity - safetyStockQuantity,
-          0,
-        );
-        const current = inventoryByVariantId.get(variantId) ?? 0;
-        inventoryByVariantId.set(variantId, current + sellableQuantity);
-      }
-    }
-
-    const { data: priceItems, error: priceItemsError } = await this.supabase
+    const priceItemsPromise = this.supabase
       .from('v2_price_list_items')
       .select(
         `
@@ -11106,6 +11493,62 @@ export class V2CatalogService {
       .eq('status', 'ACTIVE')
       .is('deleted_at', null);
 
+    const [
+      { data: projectRows, error: projectsError },
+      { data: variantRows, error: variantsError },
+      { data: mediaRows, error: mediaError },
+      { data: priceItems, error: priceItemsError },
+    ] = await Promise.all([
+      projectRowsPromise,
+      variantRowsPromise,
+      mediaRowsPromise,
+      priceItemsPromise,
+    ]);
+
+    if (projectsError) {
+      throw new ApiException(
+        'v2 shop 프로젝트 조회 실패',
+        500,
+        'V2_SHOP_PROJECTS_FETCH_FAILED',
+      );
+    }
+
+    for (const row of projectRows || []) {
+      if (row.id && row.status) {
+        projectStatusById.set(row.id as string, row.status as V2ProjectStatus);
+      }
+    }
+
+    if (variantsError) {
+      throw new ApiException(
+        'v2 shop variant 조회 실패',
+        500,
+        'V2_SHOP_VARIANTS_FETCH_FAILED',
+      );
+    }
+
+    for (const row of variantRows || []) {
+      const productId = row.product_id as string;
+      const list = variantsByProductId.get(productId) || [];
+      list.push(row);
+      variantsByProductId.set(productId, list);
+    }
+
+    if (mediaError) {
+      throw new ApiException(
+        'v2 shop media 조회 실패',
+        500,
+        'V2_SHOP_MEDIA_FETCH_FAILED',
+      );
+    }
+
+    for (const row of mediaRows || []) {
+      const productId = row.product_id as string;
+      const list = mediaByProductId.get(productId) || [];
+      list.push(row);
+      mediaByProductId.set(productId, list);
+    }
+
     if (priceItemsError) {
       throw new ApiException(
         'v2 shop 가격 조회 실패',
@@ -11115,13 +11558,55 @@ export class V2CatalogService {
     }
 
     const normalizedPriceItems = (priceItems || []) as any[];
-    const loadedCampaignTargetEligibilityByCampaignId =
-      await this.loadCampaignTargetEligibilityByCampaignIds([
+    const variantIds = (variantRows || []).map((row: any) => row.id as string);
+    const inventoryRowsPromise =
+      variantIds.length > 0
+        ? this.supabase
+            .from('v2_inventory_levels')
+            .select('variant_id,available_quantity,safety_stock_quantity')
+            .in('variant_id', variantIds)
+        : Promise.resolve({ data: [], error: null });
+    const campaignTargetEligibilityPromise =
+      this.loadCampaignTargetEligibilityByCampaignIds([
         selectedCampaignId,
         ...normalizedPriceItems.map(
           (item) => item?.price_list?.campaign_id as string | null | undefined,
         ),
       ]);
+
+    const [
+      { data: inventoryRows, error: inventoryError },
+      loadedCampaignTargetEligibilityByCampaignId,
+    ] = await Promise.all([
+      inventoryRowsPromise,
+      campaignTargetEligibilityPromise,
+    ]);
+
+    if (inventoryError) {
+      throw new ApiException(
+        'v2 shop inventory 조회 실패',
+        500,
+        'V2_SHOP_INVENTORY_FETCH_FAILED',
+      );
+    }
+
+    for (const row of inventoryRows || []) {
+      const variantId = row.variant_id as string;
+      const availableQuantity = Math.max(
+        0,
+        Number(row.available_quantity ?? 0),
+      );
+      const safetyStockQuantity = Math.max(
+        0,
+        Number(row.safety_stock_quantity ?? 0),
+      );
+      const sellableQuantity = Math.max(
+        availableQuantity - safetyStockQuantity,
+        0,
+      );
+      const current = inventoryByVariantId.get(variantId) ?? 0;
+      inventoryByVariantId.set(variantId, current + sellableQuantity);
+    }
 
     return {
       variantsByProductId,
@@ -11623,7 +12108,7 @@ export class V2CatalogService {
   private async getMediaById(mediaId: string): Promise<any> {
     const { data, error } = await this.supabase
       .from('v2_product_media')
-      .select('*, media_asset:media_assets(*)')
+      .select(V2_PRODUCT_MEDIA_SELECT_COLUMNS)
       .eq('id', mediaId)
       .is('deleted_at', null)
       .maybeSingle();
@@ -12142,6 +12627,97 @@ export class V2CatalogService {
         'VALIDATION_ERROR',
       );
     }
+  }
+
+  private groupRowsByProductId(rows: any[]): Record<string, any[]> {
+    return rows.reduce<Record<string, any[]>>((accumulator, row) => {
+      const productId = row.product_id as string | undefined;
+      if (!productId) {
+        return accumulator;
+      }
+      if (!accumulator[productId]) {
+        accumulator[productId] = [];
+      }
+      accumulator[productId].push(row);
+      return accumulator;
+    }, {});
+  }
+
+  private groupRowsByCampaignId(rows: any[]): Record<string, any[]> {
+    return rows.reduce<Record<string, any[]>>((accumulator, row) => {
+      const campaignId = row.campaign_id as string | undefined;
+      if (!campaignId) {
+        return accumulator;
+      }
+      if (!accumulator[campaignId]) {
+        accumulator[campaignId] = [];
+      }
+      accumulator[campaignId].push(row);
+      return accumulator;
+    }, {});
+  }
+
+  private buildRowsMapForProductIds(
+    productIds: string[],
+    rows: any[],
+  ): Record<string, any[]> {
+    const groupedRows = this.groupRowsByProductId(rows);
+    return productIds.reduce<Record<string, any[]>>((accumulator, productId) => {
+      accumulator[productId] = groupedRows[productId] || [];
+      return accumulator;
+    }, {});
+  }
+
+  private buildRowsMapForCampaignIds(
+    campaignIds: string[],
+    rows: any[],
+  ): Record<string, any[]> {
+    const groupedRows = this.groupRowsByCampaignId(rows);
+    return campaignIds.reduce<Record<string, any[]>>((accumulator, campaignId) => {
+      accumulator[campaignId] = groupedRows[campaignId] || [];
+      return accumulator;
+    }, {});
+  }
+
+  private buildVariantStatusCounts(
+    variants: any[],
+  ): Record<V2VariantStatus, number> {
+    return variants.reduce<Record<V2VariantStatus, number>>(
+      (accumulator, variant) => {
+        const status = variant.status as V2VariantStatus | undefined;
+        if (status && status in accumulator) {
+          accumulator[status] += 1;
+        }
+        return accumulator;
+      },
+      {
+        DRAFT: 0,
+        ACTIVE: 0,
+        INACTIVE: 0,
+      },
+    );
+  }
+
+  private resolveCoverMedia(mediaList: any[]): any | null {
+    const activeMedia = mediaList.filter((media) => media.status === 'ACTIVE');
+    return (
+      activeMedia.find((media) => media.is_primary) ||
+      activeMedia.find((media) => media.media_role === 'PRIMARY') ||
+      null
+    );
+  }
+
+  private pickLatestPriceListByUpdatedAt(priceLists: any[]): any | null {
+    if (priceLists.length === 0) {
+      return null;
+    }
+    return (
+      [...priceLists].sort((left, right) =>
+        String(right.updated_at || '').localeCompare(
+          String(left.updated_at || ''),
+        ),
+      )[0] || null
+    );
   }
 
   private normalizeRecordMetadata(value: unknown): Record<string, unknown> {
@@ -12764,6 +13340,61 @@ export class V2CatalogService {
     if (!normalized) {
       throw new ApiException(errorMessage, 400, 'VALIDATION_ERROR');
     }
+    return normalized;
+  }
+
+  private normalizeProductIdList(value: unknown): string[] {
+    return this.normalizeStringIdList(value, {
+      invalidMessage: 'productIds는 배열 또는 쉼표 문자열이어야 합니다',
+      emptyMessage: '변경할 상품을 선택해 주세요',
+    });
+  }
+
+  private normalizeCampaignIdList(value: unknown): string[] {
+    return this.normalizeStringIdList(value, {
+      invalidMessage: 'campaignIds는 배열 또는 쉼표 문자열이어야 합니다',
+      emptyMessage: 'campaign을 선택해 주세요',
+    });
+  }
+
+  private normalizeStringIdList(
+    value: unknown,
+    messages: {
+      invalidMessage: string;
+      emptyMessage: string;
+    },
+  ): string[] {
+    const rawItems = Array.isArray(value)
+      ? value
+      : typeof value === 'string'
+        ? value.split(',')
+        : null;
+
+    if (!rawItems) {
+      throw new ApiException(
+        messages.invalidMessage,
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const normalized = Array.from(
+      new Set(
+        rawItems
+          .filter((item): item is string => typeof item === 'string')
+          .map((item) => item.trim())
+          .filter(Boolean),
+      ),
+    );
+
+    if (normalized.length === 0) {
+      throw new ApiException(
+        messages.emptyMessage,
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
     return normalized;
   }
 

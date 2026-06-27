@@ -472,6 +472,52 @@ export class V2CatalogController {
     return successResponse(products);
   }
 
+  @Get('products/project-list')
+  async getProjectProductList(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('projectId') projectId?: string,
+    @Query('status') status?: 'DRAFT' | 'ACTIVE' | 'INACTIVE' | 'ARCHIVED',
+  ) {
+    await this.requireAdmin(authorization);
+    const products = await this.v2CatalogService.getProjectProductList({
+      projectId,
+      status,
+    });
+    return successResponse(products);
+  }
+
+  @Patch('products/bulk-status')
+  async bulkUpdateProductStatus(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const products = await this.v2CatalogService.bulkUpdateProductStatus(body);
+    return successResponse(products);
+  }
+
+  @Get('products/variants-map')
+  async getVariantsMap(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('productIds') productIds?: string | string[],
+  ) {
+    await this.requireAdmin(authorization);
+    const variantsMap =
+      await this.v2CatalogService.getVariantsMap(productIds);
+    return successResponse(variantsMap);
+  }
+
+  @Get('products/media-map')
+  async getProductMediaMap(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('productIds') productIds?: string | string[],
+  ) {
+    await this.requireAdmin(authorization);
+    const mediaMap =
+      await this.v2CatalogService.getProductMediaMap(productIds);
+    return successResponse(mediaMap);
+  }
+
   @Get('products/:id')
   async getProductById(
     @Headers('authorization') authorization: string | undefined,
@@ -869,6 +915,50 @@ export class V2CatalogController {
       campaignType,
     });
     return successResponse(campaigns);
+  }
+
+  @Get('campaigns/overview')
+  async getCampaignOverviewMap(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('campaignIds') campaignIds?: string | string[],
+  ) {
+    await this.requireAdmin(authorization);
+    const overview =
+      await this.v2CatalogService.getCampaignOverviewMap(campaignIds);
+    return successResponse(overview);
+  }
+
+  @Get('campaigns/targets-map')
+  async getCampaignTargetsMap(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('campaignIds') campaignIds?: string | string[],
+  ) {
+    await this.requireAdmin(authorization);
+    const targetsMap =
+      await this.v2CatalogService.getCampaignTargetsMap(campaignIds);
+    return successResponse(targetsMap);
+  }
+
+  @Get('campaigns/:id/detail-context')
+  async getCampaignDetailContext(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') campaignId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const context =
+      await this.v2CatalogService.getCampaignDetailContext(campaignId);
+    return successResponse(context);
+  }
+
+  @Get('campaigns/:id/pricing-context')
+  async getCampaignPricingContext(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') campaignId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    const context =
+      await this.v2CatalogService.getCampaignPricingContext(campaignId);
+    return successResponse(context);
   }
 
   @Get('campaigns/:id')

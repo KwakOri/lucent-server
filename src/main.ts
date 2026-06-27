@@ -3,11 +3,13 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { AppConfigService } from './config/app-config.service';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { requestTimingMiddleware } from './common/middleware/request-timing.middleware';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const configService = app.get(AppConfigService);
 
+  app.use(requestTimingMiddleware);
   app.setGlobalPrefix('api');
   app.useGlobalFilters(new HttpExceptionFilter());
 
