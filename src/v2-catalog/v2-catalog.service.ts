@@ -1391,11 +1391,7 @@ export class V2CatalogService {
     status?: V2ProductStatus;
   }): Promise<any[]> {
     if (!filters.projectId) {
-      throw new ApiException(
-        'projectId는 필수입니다',
-        400,
-        'VALIDATION_ERROR',
-      );
+      throw new ApiException('projectId는 필수입니다', 400, 'VALIDATION_ERROR');
     }
 
     const products = await this.getProducts(filters);
@@ -1404,12 +1400,25 @@ export class V2CatalogService {
     }
 
     const productIds = products.map((product) => product.id as string);
-    const { data: variants, error: variantsError } = await this.supabase
+    const variantsPromise = this.supabase
       .from('v2_product_variants')
       .select('product_id,status')
       .in('product_id', productIds)
       .is('deleted_at', null)
       .order('created_at', { ascending: true });
+
+    const mediaPromise = this.supabase
+      .from('v2_product_media')
+      .select('*, media_asset:media_assets(*)')
+      .in('product_id', productIds)
+      .is('deleted_at', null)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true });
+
+    const [
+      { data: variants, error: variantsError },
+      { data: media, error: mediaError },
+    ] = await Promise.all([variantsPromise, mediaPromise]);
 
     if (variantsError) {
       throw new ApiException(
@@ -1418,14 +1427,6 @@ export class V2CatalogService {
         'V2_PROJECT_PRODUCT_VARIANTS_FETCH_FAILED',
       );
     }
-
-    const { data: media, error: mediaError } = await this.supabase
-      .from('v2_product_media')
-      .select('*, media_asset:media_assets(*)')
-      .in('product_id', productIds)
-      .is('deleted_at', null)
-      .order('sort_order', { ascending: true })
-      .order('created_at', { ascending: true });
 
     if (mediaError) {
       throw new ApiException(
@@ -1444,8 +1445,7 @@ export class V2CatalogService {
       return {
         ...product,
         variant_count: productVariants.length,
-        variant_status_counts:
-          this.buildVariantStatusCounts(productVariants),
+        variant_status_counts: this.buildVariantStatusCounts(productVariants),
         cover_media: this.resolveCoverMedia(productMedia),
       };
     });
