@@ -3927,6 +3927,27 @@ export class V2AdminService {
       campaignType: string | null;
     },
   ): Promise<any[]> {
+    let campaignTypeById = new Map<string, string | null>();
+    let campaignIdsForType: string[] | null = null;
+
+    if (filters.campaignType) {
+      const campaignRows = await this.fetchCampaignTypesByIds([], {
+        campaignType: filters.campaignType,
+      });
+      campaignTypeById = campaignRows;
+      campaignIdsForType = Array.from(campaignRows.keys());
+
+      if (campaignIdsForType.length === 0) {
+        return [];
+      }
+      if (
+        filters.campaignId &&
+        !campaignIdsForType.includes(filters.campaignId)
+      ) {
+        return [];
+      }
+    }
+
     let query = this.supabase
       .from('v2_order_items')
       .select(
@@ -3948,9 +3969,6 @@ export class V2AdminService {
           payment_status,
           currency_code,
           placed_at
-        ),
-        campaign:v2_campaigns(
-          campaign_type
         )
       `,
       )
@@ -3968,8 +3986,8 @@ export class V2AdminService {
     if (filters.salesChannelId) {
       query = query.eq('order.sales_channel_id', filters.salesChannelId);
     }
-    if (filters.campaignType) {
-      query = query.eq('campaign.campaign_type', filters.campaignType);
+    if (campaignIdsForType) {
+      query = query.in('campaign_id_snapshot', campaignIdsForType);
     }
 
     const { data, error } = await query;
@@ -3978,6 +3996,22 @@ export class V2AdminService {
         'sales item facts fallback 조회 실패',
         500,
         'V2_ADMIN_SALES_ITEM_FACTS_FALLBACK_FETCH_FAILED',
+      );
+    }
+
+    if (!filters.campaignType) {
+      campaignTypeById = await this.fetchCampaignTypesByIds(
+        Array.from(
+          new Set(
+            (data || [])
+              .map((row: any) =>
+                this.normalizeOptionalUuid(row.campaign_id_snapshot),
+              )
+              .filter((value: string | null): value is string =>
+                Boolean(value),
+              ),
+          ),
+        ),
       );
     }
 
@@ -4000,8 +4034,69 @@ export class V2AdminService {
       project_name_snapshot: row.project_name_snapshot || null,
       campaign_id_snapshot: row.campaign_id_snapshot || null,
       campaign_name_snapshot: row.campaign_name_snapshot || null,
-      campaign_type: row.campaign?.campaign_type || null,
+      campaign_type:
+        campaignTypeById.get(row.campaign_id_snapshot as string) || null,
     }));
+  }
+
+  private async fetchCampaignTypesByIds(
+    campaignIds: string[],
+    options: { campaignType?: string | null } = {},
+  ): Promise<Map<string, string | null>> {
+    const normalizedIds = Array.from(
+      new Set(
+        campaignIds
+          .map((campaignId) => this.normalizeOptionalUuid(campaignId))
+          .filter((value: string | null): value is string => Boolean(value)),
+      ),
+    );
+    const normalizedCampaignType =
+      this.normalizeOptionalText(options.campaignType)?.toUpperCase() || null;
+
+    if (normalizedIds.length === 0 && !normalizedCampaignType) {
+      return new Map();
+    }
+
+    let query = this.supabase
+      .from('v2_campaigns')
+      .select('id, campaign_type');
+
+    if (normalizedIds.length > 0) {
+      query = query.in('id', normalizedIds);
+    }
+    if (normalizedCampaignType) {
+      query = query.eq('campaign_type', normalizedCampaignType);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw new ApiException(
+        'campaign type 조회 실패',
+        500,
+        'V2_ADMIN_CAMPAIGN_TYPES_FETCH_FAILED',
+      );
+    }
+
+    return new Map(
+      (data || [])
+        .map((row: any) => {
+          const campaignId = this.normalizeOptionalUuid(row.id);
+          if (!campaignId) {
+            return null;
+          }
+          return [
+            campaignId,
+            this.normalizeOptionalText(row.campaign_type)?.toUpperCase() ||
+              null,
+          ] as const;
+        })
+        .filter(
+          (entry: readonly [string, string | null] | null): entry is readonly [
+            string,
+            string | null,
+          ] => Boolean(entry),
+        ),
+    );
   }
 
   private async fetchPaymentsByOrderIds(orderIds: string[]): Promise<any[]> {
