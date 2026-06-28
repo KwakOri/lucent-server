@@ -683,6 +683,43 @@ export class V2CatalogController {
     return successResponse(asset);
   }
 
+  @Post('media-assets/external-link')
+  async createExternalMediaAsset(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const asset = await this.v2CatalogService.createExternalMediaAsset({
+      url: typeof body.url === 'string' ? body.url : undefined,
+      file_name:
+        typeof body.file_name === 'string'
+          ? (body.file_name as string)
+          : undefined,
+      mime_type:
+        typeof body.mime_type === 'string'
+          ? (body.mime_type as string)
+          : undefined,
+      file_size:
+        body.file_size === undefined ||
+        body.file_size === null ||
+        body.file_size === ''
+          ? undefined
+          : this.parsePositiveInteger(body.file_size, 'file_size'),
+      asset_kind:
+        typeof body.asset_kind === 'string'
+          ? (body.asset_kind as string)
+          : undefined,
+      storage_provider:
+        typeof body.storage_provider === 'string'
+          ? (body.storage_provider as string)
+          : undefined,
+      status:
+        typeof body.status === 'string' ? (body.status as string) : undefined,
+      metadata: this.parseMetadata(body.metadata),
+    });
+    return successResponse(asset);
+  }
+
   @Post('media-assets/multipart/init')
   async initiateMultipartMediaAssetUpload(
     @Headers('authorization') authorization: string | undefined,

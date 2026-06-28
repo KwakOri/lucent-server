@@ -744,6 +744,7 @@ export class V2CheckoutService {
         digital_asset:v2_digital_assets (
           id,
           variant_id,
+          media_asset_id,
           file_name,
           file_size,
           mime_type,
@@ -751,7 +752,13 @@ export class V2CheckoutService {
           storage_path,
           version_no,
           metadata,
-          deleted_at
+          deleted_at,
+          media_asset:media_assets (
+            id,
+            storage_provider,
+            storage_path,
+            public_url
+          )
         )
       `,
       )
@@ -910,11 +917,14 @@ export class V2CheckoutService {
           fallbackByVariantId: fallbackAssetByVariantId,
         });
 
+        const hasDigitalAssetDownloadTarget = Boolean(
+          this.resolveDigitalAssetDirectDownloadUrl(digitalAsset) ||
+            this.resolveDigitalAssetR2StoragePath(digitalAsset),
+        );
         const availability = this.evaluateEntitlementAvailability({
           entitlement: row,
           hasReadyAsset: Boolean(
-            legacyDownloadUrl ||
-            this.normalizeOptionalText(digitalAsset?.storage_path),
+            hasDigitalAssetDownloadTarget || legacyDownloadUrl,
           ),
         });
 
@@ -1059,8 +1069,12 @@ export class V2CheckoutService {
       fallbackByVariantId,
     });
 
-    const storagePath = this.normalizeOptionalText(digitalAsset?.storage_path);
-    if (!storagePath && !legacyDownloadUrl) {
+    const directDownloadUrl =
+      this.resolveDigitalAssetDirectDownloadUrl(digitalAsset);
+    const storagePath = this.resolveDigitalAssetR2StoragePath(digitalAsset);
+    const fallbackLegacyDownloadUrl =
+      directDownloadUrl || storagePath ? null : legacyDownloadUrl;
+    if (!directDownloadUrl && !storagePath && !fallbackLegacyDownloadUrl) {
       throw new ApiException(
         '다운로드 가능한 디지털 파일을 찾을 수 없습니다',
         404,
@@ -1070,7 +1084,9 @@ export class V2CheckoutService {
 
     const availability = this.evaluateEntitlementAvailability({
       entitlement,
-      hasReadyAsset: Boolean(legacyDownloadUrl || storagePath),
+      hasReadyAsset: Boolean(
+        directDownloadUrl || storagePath || fallbackLegacyDownloadUrl,
+      ),
     });
     if (!availability.can_download) {
       throw new ApiException(
@@ -1083,8 +1099,8 @@ export class V2CheckoutService {
     let downloadUrl: string;
     let expiresAt: string;
     let expiresInSeconds: number;
-    if (legacyDownloadUrl) {
-      downloadUrl = legacyDownloadUrl;
+    if (directDownloadUrl) {
+      downloadUrl = directDownloadUrl;
       expiresInSeconds = 0;
       expiresAt = new Date().toISOString();
     } else if (storagePath) {
@@ -1097,6 +1113,10 @@ export class V2CheckoutService {
       downloadUrl = signedDownload.downloadUrl;
       expiresInSeconds = signedDownload.expiresInSeconds;
       expiresAt = signedDownload.expiresAt;
+    } else if (fallbackLegacyDownloadUrl) {
+      downloadUrl = fallbackLegacyDownloadUrl;
+      expiresInSeconds = 0;
+      expiresAt = new Date().toISOString();
     } else {
       throw new ApiException(
         '다운로드 URL 생성에 실패했습니다',
@@ -3749,6 +3769,7 @@ export class V2CheckoutService {
         digital_asset:v2_digital_assets (
           id,
           variant_id,
+          media_asset_id,
           file_name,
           file_size,
           mime_type,
@@ -3756,7 +3777,13 @@ export class V2CheckoutService {
           storage_path,
           version_no,
           metadata,
-          deleted_at
+          deleted_at,
+          media_asset:media_assets (
+            id,
+            storage_provider,
+            storage_path,
+            public_url
+          )
         )
       `,
       )
@@ -3834,7 +3861,26 @@ export class V2CheckoutService {
     const { data, error } = await this.supabase
       .from('v2_digital_assets')
       .select(
-        'id,variant_id,file_name,file_size,mime_type,status,storage_path,version_no,metadata,deleted_at,created_at',
+        `
+        id,
+        variant_id,
+        media_asset_id,
+        file_name,
+        file_size,
+        mime_type,
+        status,
+        storage_path,
+        version_no,
+        metadata,
+        deleted_at,
+        created_at,
+        media_asset:media_assets (
+          id,
+          storage_provider,
+          storage_path,
+          public_url
+        )
+      `,
       )
       .in('variant_id', variantIds)
       .eq('status', 'READY')
@@ -3965,6 +4011,61 @@ export class V2CheckoutService {
       return null;
     }
     return input.fallbackByVariantId.get(input.variantId) || null;
+  }
+
+  private resolveDigitalAssetDirectDownloadUrl(asset: unknown): string | null {
+    if (!asset || typeof asset !== 'object' || Array.isArray(asset)) {
+      return null;
+    }
+
+    const row = asset as Record<string, unknown>;
+    const storagePathUrl = this.normalizeOptionalHttpUrl(row.storage_path);
+    const mediaAsset =
+      row.media_asset &&
+      typeof row.media_asset === 'object' &&
+      !Array.isArray(row.media_asset)
+        ? (row.media_asset as Record<string, unknown>)
+        : null;
+    const storageProvider = this.normalizeOptionalText(
+      mediaAsset?.storage_provider,
+    )?.toUpperCase();
+
+    if (storageProvider && storageProvider !== 'R2') {
+      return (
+        this.normalizeOptionalHttpUrl(mediaAsset?.public_url) ||
+        this.normalizeOptionalHttpUrl(mediaAsset?.storage_path) ||
+        storagePathUrl
+      );
+    }
+
+    return storagePathUrl;
+  }
+
+  private resolveDigitalAssetR2StoragePath(asset: unknown): string | null {
+    if (!asset || typeof asset !== 'object' || Array.isArray(asset)) {
+      return null;
+    }
+
+    const row = asset as Record<string, unknown>;
+    const storagePath = this.normalizeOptionalText(row.storage_path);
+    if (!storagePath || this.normalizeOptionalHttpUrl(storagePath)) {
+      return null;
+    }
+
+    const mediaAsset =
+      row.media_asset &&
+      typeof row.media_asset === 'object' &&
+      !Array.isArray(row.media_asset)
+        ? (row.media_asset as Record<string, unknown>)
+        : null;
+    const storageProvider = this.normalizeOptionalText(
+      mediaAsset?.storage_provider,
+    )?.toUpperCase();
+    if (storageProvider && storageProvider !== 'R2') {
+      return null;
+    }
+
+    return storagePath;
   }
 
   private evaluateEntitlementAvailability(input: {
