@@ -341,6 +341,17 @@ interface CreateMediaAssetInput {
   metadata?: Record<string, unknown>;
 }
 
+interface CreateExternalMediaAssetInput {
+  url?: string;
+  file_name?: string;
+  mime_type?: string | null;
+  file_size?: number | null;
+  asset_kind?: string;
+  storage_provider?: string;
+  status?: string;
+  metadata?: Record<string, unknown>;
+}
+
 interface UpdateMediaAssetInput {
   asset_kind?: V2MediaAssetKind;
   storage_bucket?: string | null;
@@ -2643,6 +2654,54 @@ export class V2CatalogService {
         is_orphan: true,
       },
     }));
+  }
+
+  async createExternalMediaAsset(
+    input: CreateExternalMediaAssetInput,
+  ): Promise<any> {
+    const url = this.normalizeRequiredHttpUrl(
+      input.url,
+      '다운로드 링크는 http(s) URL이어야 합니다',
+    );
+    const inferencePath = this.getExternalUrlPathForInference(url);
+    const mimeType =
+      this.normalizeOptionalText(input.mime_type) ||
+      this.inferMimeTypeFromPath(inferencePath);
+    const assetKind =
+      (input.asset_kind as V2MediaAssetKind | undefined) ??
+      this.inferMediaAssetKind(mimeType, inferencePath);
+    this.assertMediaAssetKind(assetKind);
+    const status = (input.status as V2MediaAssetStatus | undefined) ?? 'ACTIVE';
+    this.assertMediaAssetStatus(status);
+
+    if (input.file_size !== undefined && input.file_size !== null) {
+      this.assertPositiveInteger(input.file_size, 'file_size');
+    }
+
+    return this.createMediaAsset({
+      asset_kind: assetKind,
+      storage_provider: this.resolveExternalStorageProvider(
+        url,
+        input.storage_provider,
+      ),
+      storage_bucket: null,
+      storage_path: url,
+      public_url: url,
+      file_name:
+        this.normalizeOptionalText(input.file_name) ||
+        this.extractFileNameFromExternalUrl(url),
+      mime_type: mimeType,
+      file_size: input.file_size ?? null,
+      checksum: null,
+      status,
+      metadata: {
+        ...(input.metadata ?? {}),
+        source:
+          this.normalizeOptionalText(
+            input.metadata?.source as string | null | undefined,
+          ) || 'v2-external-digital-asset-link',
+      },
+    });
   }
 
   async prepareMediaAssetUpload(
@@ -13054,6 +13113,63 @@ export class V2CatalogService {
     return 'application/octet-stream';
   }
 
+  private getExternalUrlPathForInference(url: string): string {
+    try {
+      const parsed = new URL(url);
+      return decodeURIComponent(parsed.pathname || url);
+    } catch {
+      return url;
+    }
+  }
+
+  private extractFileNameFromExternalUrl(url: string): string {
+    try {
+      const parsed = new URL(url);
+      const hostname = parsed.hostname.toLowerCase();
+      if (hostname === 'drive.google.com' || hostname.endsWith('.google.com')) {
+        return 'Google Drive file';
+      }
+
+      const segments = parsed.pathname.split('/').filter(Boolean);
+      const candidate = segments[segments.length - 1];
+      if (candidate) {
+        return decodeURIComponent(candidate);
+      }
+      return parsed.hostname || 'external-file';
+    } catch {
+      return this.extractFileNameFromStoragePath(url) || 'external-file';
+    }
+  }
+
+  private resolveExternalStorageProvider(
+    url: string,
+    requestedProvider?: string,
+  ): string {
+    const normalizedRequested = this.normalizeOptionalText(requestedProvider)
+      ?.toUpperCase()
+      .replace(/[^A-Z0-9_-]/g, '_')
+      .slice(0, 50);
+    if (normalizedRequested) {
+      return normalizedRequested;
+    }
+
+    try {
+      const hostname = new URL(url).hostname.toLowerCase();
+      if (
+        hostname === 'drive.google.com' ||
+        hostname === 'docs.google.com' ||
+        hostname.endsWith('.drive.google.com') ||
+        hostname.endsWith('.docs.google.com')
+      ) {
+        return 'GOOGLE_DRIVE';
+      }
+    } catch {
+      return 'EXTERNAL_URL';
+    }
+
+    return 'EXTERNAL_URL';
+  }
+
   private getMultipartUploadPartSize(fileSize: number): number {
     const defaultPartSize = 16 * 1024 * 1024;
     const minimumPartSize = 5 * 1024 * 1024;
@@ -13362,6 +13478,22 @@ export class V2CatalogService {
   ): string {
     const normalized = value?.trim();
     if (!normalized) {
+      throw new ApiException(errorMessage, 400, 'VALIDATION_ERROR');
+    }
+    return normalized;
+  }
+
+  private normalizeRequiredHttpUrl(
+    value: string | undefined,
+    errorMessage: string,
+  ): string {
+    const normalized = this.normalizeRequiredText(value, errorMessage);
+    if (!/^https?:\/\//i.test(normalized)) {
+      throw new ApiException(errorMessage, 400, 'VALIDATION_ERROR');
+    }
+    try {
+      new URL(normalized);
+    } catch {
       throw new ApiException(errorMessage, 400, 'VALIDATION_ERROR');
     }
     return normalized;

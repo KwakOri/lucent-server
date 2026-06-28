@@ -744,6 +744,7 @@ export class V2CheckoutService {
         digital_asset:v2_digital_assets (
           id,
           variant_id,
+          media_asset_id,
           file_name,
           file_size,
           mime_type,
@@ -751,7 +752,13 @@ export class V2CheckoutService {
           storage_path,
           version_no,
           metadata,
-          deleted_at
+          deleted_at,
+          media_asset:media_assets (
+            id,
+            storage_provider,
+            storage_path,
+            public_url
+          )
         )
       `,
       )
@@ -817,8 +824,6 @@ export class V2CheckoutService {
     );
     const thumbnailByProductId =
       await this.loadPrimaryProductThumbnailByProductIds(productIds);
-    const legacyDownloadUrlByV2ProductId =
-      await this.loadLegacyDownloadUrlByV2ProductIds(productIds);
 
     const fallbackVariantIds = Array.from(
       new Set(
@@ -900,9 +905,6 @@ export class V2CheckoutService {
           this.normalizeOptionalText(
             displaySnapshot.thumbnail_url as string | null | undefined,
           );
-        const legacyDownloadUrl =
-          (productId ? legacyDownloadUrlByV2ProductId.get(productId) : null) ||
-          null;
 
         const digitalAsset = this.resolveReadyDigitalAsset({
           explicitAsset: row?.digital_asset,
@@ -910,12 +912,13 @@ export class V2CheckoutService {
           fallbackByVariantId: fallbackAssetByVariantId,
         });
 
+        const hasDigitalAssetDownloadTarget = Boolean(
+          this.resolveDigitalAssetDirectDownloadUrl(digitalAsset) ||
+            this.resolveDigitalAssetR2StoragePath(digitalAsset),
+        );
         const availability = this.evaluateEntitlementAvailability({
           entitlement: row,
-          hasReadyAsset: Boolean(
-            legacyDownloadUrl ||
-            this.normalizeOptionalText(digitalAsset?.storage_path),
-          ),
+          hasReadyAsset: hasDigitalAssetDownloadTarget,
         });
 
         return {
@@ -1026,28 +1029,6 @@ export class V2CheckoutService {
     const entitlementVariantId = this.normalizeOptionalUuid(
       entitlementOrderItem?.variant_id as string | null | undefined,
     );
-    let entitlementProductId = this.normalizeOptionalUuid(
-      entitlementOrderItem?.product_id as string | null | undefined,
-    );
-    if (!entitlementProductId && entitlementVariantId) {
-      const variantSnapshotById = await this.fetchVariantSnapshotsByIds([
-        entitlementVariantId,
-      ]);
-      entitlementProductId = this.normalizeOptionalUuid(
-        variantSnapshotById.get(entitlementVariantId)?.product_id as
-          | string
-          | null
-          | undefined,
-      );
-    }
-    const legacyDownloadUrlByV2ProductId =
-      await this.loadLegacyDownloadUrlByV2ProductIds(
-        entitlementProductId ? [entitlementProductId] : [],
-      );
-    const legacyDownloadUrl =
-      (entitlementProductId
-        ? legacyDownloadUrlByV2ProductId.get(entitlementProductId)
-        : null) || null;
 
     const fallbackByVariantId =
       await this.loadLatestReadyDigitalAssetByVariantIds(
@@ -1059,8 +1040,10 @@ export class V2CheckoutService {
       fallbackByVariantId,
     });
 
-    const storagePath = this.normalizeOptionalText(digitalAsset?.storage_path);
-    if (!storagePath && !legacyDownloadUrl) {
+    const directDownloadUrl =
+      this.resolveDigitalAssetDirectDownloadUrl(digitalAsset);
+    const storagePath = this.resolveDigitalAssetR2StoragePath(digitalAsset);
+    if (!directDownloadUrl && !storagePath) {
       throw new ApiException(
         '다운로드 가능한 디지털 파일을 찾을 수 없습니다',
         404,
@@ -1070,7 +1053,7 @@ export class V2CheckoutService {
 
     const availability = this.evaluateEntitlementAvailability({
       entitlement,
-      hasReadyAsset: Boolean(legacyDownloadUrl || storagePath),
+      hasReadyAsset: Boolean(directDownloadUrl || storagePath),
     });
     if (!availability.can_download) {
       throw new ApiException(
@@ -1083,8 +1066,8 @@ export class V2CheckoutService {
     let downloadUrl: string;
     let expiresAt: string;
     let expiresInSeconds: number;
-    if (legacyDownloadUrl) {
-      downloadUrl = legacyDownloadUrl;
+    if (directDownloadUrl) {
+      downloadUrl = directDownloadUrl;
       expiresInSeconds = 0;
       expiresAt = new Date().toISOString();
     } else if (storagePath) {
@@ -3749,6 +3732,7 @@ export class V2CheckoutService {
         digital_asset:v2_digital_assets (
           id,
           variant_id,
+          media_asset_id,
           file_name,
           file_size,
           mime_type,
@@ -3756,7 +3740,13 @@ export class V2CheckoutService {
           storage_path,
           version_no,
           metadata,
-          deleted_at
+          deleted_at,
+          media_asset:media_assets (
+            id,
+            storage_provider,
+            storage_path,
+            public_url
+          )
         )
       `,
       )
@@ -3834,7 +3824,26 @@ export class V2CheckoutService {
     const { data, error } = await this.supabase
       .from('v2_digital_assets')
       .select(
-        'id,variant_id,file_name,file_size,mime_type,status,storage_path,version_no,metadata,deleted_at,created_at',
+        `
+        id,
+        variant_id,
+        media_asset_id,
+        file_name,
+        file_size,
+        mime_type,
+        status,
+        storage_path,
+        version_no,
+        metadata,
+        deleted_at,
+        created_at,
+        media_asset:media_assets (
+          id,
+          storage_provider,
+          storage_path,
+          public_url
+        )
+      `,
       )
       .in('variant_id', variantIds)
       .eq('status', 'READY')
@@ -3863,85 +3872,6 @@ export class V2CheckoutService {
     return mapped;
   }
 
-  private async loadLegacyDownloadUrlByV2ProductIds(
-    v2ProductIds: string[],
-  ): Promise<Map<string, string>> {
-    if (v2ProductIds.length === 0) {
-      return new Map();
-    }
-
-    const { data: v2Products, error: v2ProductsError } = await this.supabase
-      .from('v2_products')
-      .select('id,legacy_product_id')
-      .in('id', v2ProductIds)
-      .is('deleted_at', null);
-
-    if (v2ProductsError) {
-      throw new ApiException(
-        'legacy 매핑용 v2 product 조회 실패',
-        500,
-        'V2_PRODUCT_LEGACY_MAPPING_FETCH_FAILED',
-      );
-    }
-
-    const legacyProductIdByV2ProductId = new Map<string, string>();
-    for (const v2Product of (v2Products || []) as any[]) {
-      const v2ProductId = this.normalizeOptionalUuid(v2Product?.id);
-      const legacyProductId = this.normalizeOptionalUuid(
-        v2Product?.legacy_product_id,
-      );
-      if (!v2ProductId || !legacyProductId) {
-        continue;
-      }
-      legacyProductIdByV2ProductId.set(v2ProductId, legacyProductId);
-    }
-
-    const legacyProductIds = Array.from(
-      new Set(legacyProductIdByV2ProductId.values()),
-    );
-    if (legacyProductIds.length === 0) {
-      return new Map();
-    }
-
-    const { data: legacyProducts, error: legacyProductsError } =
-      await this.supabase
-        .from('products')
-        .select('id,digital_file_url')
-        .in('id', legacyProductIds)
-        .eq('is_active', true);
-
-    if (legacyProductsError) {
-      throw new ApiException(
-        'legacy digital_file_url 조회 실패',
-        500,
-        'LEGACY_PRODUCT_DOWNLOAD_URL_FETCH_FAILED',
-      );
-    }
-
-    const downloadUrlByLegacyProductId = new Map<string, string>();
-    for (const legacyProduct of (legacyProducts || []) as any[]) {
-      const legacyProductId = this.normalizeOptionalUuid(legacyProduct?.id);
-      const downloadUrl = this.normalizeOptionalHttpUrl(
-        legacyProduct?.digital_file_url,
-      );
-      if (!legacyProductId || !downloadUrl) {
-        continue;
-      }
-      downloadUrlByLegacyProductId.set(legacyProductId, downloadUrl);
-    }
-
-    const downloadUrlByV2ProductId = new Map<string, string>();
-    for (const [v2ProductId, legacyProductId] of legacyProductIdByV2ProductId) {
-      const downloadUrl = downloadUrlByLegacyProductId.get(legacyProductId);
-      if (!downloadUrl) {
-        continue;
-      }
-      downloadUrlByV2ProductId.set(v2ProductId, downloadUrl);
-    }
-
-    return downloadUrlByV2ProductId;
-  }
-
   private isReadyDigitalAsset(asset: unknown): boolean {
     if (!asset || typeof asset !== 'object' || Array.isArray(asset)) {
       return false;
@@ -3965,6 +3895,61 @@ export class V2CheckoutService {
       return null;
     }
     return input.fallbackByVariantId.get(input.variantId) || null;
+  }
+
+  private resolveDigitalAssetDirectDownloadUrl(asset: unknown): string | null {
+    if (!asset || typeof asset !== 'object' || Array.isArray(asset)) {
+      return null;
+    }
+
+    const row = asset as Record<string, unknown>;
+    const storagePathUrl = this.normalizeOptionalHttpUrl(row.storage_path);
+    const mediaAsset =
+      row.media_asset &&
+      typeof row.media_asset === 'object' &&
+      !Array.isArray(row.media_asset)
+        ? (row.media_asset as Record<string, unknown>)
+        : null;
+    const storageProvider = this.normalizeOptionalText(
+      mediaAsset?.storage_provider,
+    )?.toUpperCase();
+
+    if (storageProvider && storageProvider !== 'R2') {
+      return (
+        this.normalizeOptionalHttpUrl(mediaAsset?.public_url) ||
+        this.normalizeOptionalHttpUrl(mediaAsset?.storage_path) ||
+        storagePathUrl
+      );
+    }
+
+    return storagePathUrl;
+  }
+
+  private resolveDigitalAssetR2StoragePath(asset: unknown): string | null {
+    if (!asset || typeof asset !== 'object' || Array.isArray(asset)) {
+      return null;
+    }
+
+    const row = asset as Record<string, unknown>;
+    const storagePath = this.normalizeOptionalText(row.storage_path);
+    if (!storagePath || this.normalizeOptionalHttpUrl(storagePath)) {
+      return null;
+    }
+
+    const mediaAsset =
+      row.media_asset &&
+      typeof row.media_asset === 'object' &&
+      !Array.isArray(row.media_asset)
+        ? (row.media_asset as Record<string, unknown>)
+        : null;
+    const storageProvider = this.normalizeOptionalText(
+      mediaAsset?.storage_provider,
+    )?.toUpperCase();
+    if (storageProvider && storageProvider !== 'R2') {
+      return null;
+    }
+
+    return storagePath;
   }
 
   private evaluateEntitlementAvailability(input: {
