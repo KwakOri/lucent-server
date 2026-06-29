@@ -243,7 +243,6 @@ export class V2CheckoutService {
       input.quantity ?? 1,
       'quantity',
     );
-    const campaignId = this.normalizeOptionalUuid(input.campaign_id);
     const metadata = this.normalizeOptionalJsonObject(input.metadata);
     const bundleConfiguration = this.normalizeOptionalJsonObject(
       input.bundle_configuration_snapshot,
@@ -251,6 +250,10 @@ export class V2CheckoutService {
     const displayPriceSnapshot = this.normalizeOptionalJsonObject(
       input.display_price_snapshot,
     );
+    const campaignId =
+      this.normalizeOptionalUuid(input.campaign_id) ||
+      this.normalizeOptionalUuid(displayPriceSnapshot?.selling_campaign_id) ||
+      this.normalizeOptionalUuid(displayPriceSnapshot?.campaign_id);
     const addedVia =
       this.normalizeOptionalText(input.added_via) || 'STOREFRONT';
 

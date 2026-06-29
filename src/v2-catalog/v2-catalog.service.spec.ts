@@ -207,6 +207,102 @@ describe('V2CatalogService', () => {
       expect(result.selected?.id).toBe('base-item-1');
     });
 
+    it('does not expose product option BASE without a selling campaign context', () => {
+      const result = (service as any).buildShopPriceSelectionFromCandidates({
+        candidates: [
+          {
+            id: 'legacy-always-on-base-item',
+            price_list_id: 'legacy-always-on-base-list',
+            unit_amount: 35000,
+            starts_at: null,
+            ends_at: null,
+            channel_scope_json: [],
+            price_list: {
+              campaign_id: 'always-on-campaign',
+              scope_type: 'BASE',
+              status: 'PUBLISHED',
+              priority: 0,
+              published_at: '2026-03-23T00:00:00.000Z',
+              channel_scope_json: [],
+              deleted_at: null,
+              campaign: {
+                id: 'always-on-campaign',
+                campaign_type: 'ALWAYS_ON',
+                status: 'ACTIVE',
+                starts_at: null,
+                ends_at: null,
+                channel_scope_json: [],
+                deleted_at: null,
+              },
+            },
+          },
+          {
+            id: 'product-option-base-item',
+            price_list_id: 'product-option-base-list',
+            unit_amount: 350000,
+            starts_at: null,
+            ends_at: null,
+            channel_scope_json: [],
+            price_list: {
+              campaign_id: null,
+              scope_type: 'BASE',
+              status: 'PUBLISHED',
+              priority: 100,
+              published_at: '2026-06-29T00:00:00.000Z',
+              channel_scope_json: [],
+              deleted_at: null,
+              campaign: null,
+            },
+          },
+        ],
+        campaignId: null,
+        evaluatedAt: '2026-06-29T03:00:00.000Z',
+        channel: 'WEB',
+      });
+
+      expect(result.base?.id).toBe('legacy-always-on-base-item');
+      expect(result.selected?.unit_amount).toBe(35000);
+    });
+
+    it('does not use another campaign-linked BASE for an explicit campaign', () => {
+      const result = (service as any).buildShopPriceSelectionFromCandidates({
+        candidates: [
+          {
+            id: 'always-on-base-item',
+            price_list_id: 'always-on-base-list',
+            unit_amount: 35000,
+            starts_at: null,
+            ends_at: null,
+            channel_scope_json: [],
+            price_list: {
+              campaign_id: 'always-on-campaign',
+              scope_type: 'BASE',
+              status: 'PUBLISHED',
+              priority: 0,
+              published_at: '2026-03-23T00:00:00.000Z',
+              channel_scope_json: [],
+              deleted_at: null,
+              campaign: {
+                id: 'always-on-campaign',
+                campaign_type: 'ALWAYS_ON',
+                status: 'ACTIVE',
+                starts_at: null,
+                ends_at: null,
+                channel_scope_json: [],
+                deleted_at: null,
+              },
+            },
+          },
+        ],
+        campaignId: 'popup-campaign',
+        evaluatedAt: '2026-06-29T03:00:00.000Z',
+        channel: 'WEB',
+      });
+
+      expect(result.base).toBeNull();
+      expect(result.selected).toBeNull();
+    });
+
     it('keeps BASE selection for matching ALWAYS_ON campaignId', () => {
       const result = (service as any).buildShopPriceSelectionFromCandidates({
         candidates: [
@@ -242,6 +338,28 @@ describe('V2CatalogService', () => {
 
       expect(result.base?.id).toBe('base-item-1');
       expect(result.selected?.id).toBe('base-item-1');
+    });
+
+    it('keeps the explicit selling campaign context for product option BASE display prices', () => {
+      const displayPrice = (service as any).buildShopDisplayPrice(
+        {
+          id: 'base-item-1',
+          price_list_id: 'base-list-1',
+          unit_amount: 12000,
+          compare_at_amount: null,
+          price_list: {
+            campaign_id: null,
+            scope_type: 'BASE',
+            currency_code: 'KRW',
+          },
+        },
+        'popup-campaign',
+      );
+
+      expect(displayPrice.source).toBe('BASE');
+      expect(displayPrice.campaign_id).toBeNull();
+      expect(displayPrice.selling_campaign_id).toBe('popup-campaign');
+      expect(displayPrice.price_list_item_id).toBe('base-item-1');
     });
 
     it('uses updated_at as a tie-breaker for same-priority BASE items', () => {

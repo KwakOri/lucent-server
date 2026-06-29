@@ -1897,18 +1897,10 @@ export class V2CatalogService {
         status: variant.status,
         is_primary: index === 0,
         availability,
-        display_price: priceSelection.selected
-          ? {
-              amount: priceSelection.selected.unit_amount,
-              compare_at_amount: priceSelection.selected.compare_at_amount,
-              currency_code:
-                priceSelection.selected.price_list?.currency_code ?? 'KRW',
-              source:
-                priceSelection.selected.price_list?.scope_type === 'OVERRIDE'
-                  ? 'OVERRIDE'
-                  : 'BASE',
-            }
-          : null,
+        display_price: this.buildShopDisplayPrice(
+          priceSelection.selected,
+          campaignId,
+        ),
         purchase_constraints: {
           min_quantity: priceSelection.selected?.min_purchase_quantity ?? 1,
           max_quantity: priceSelection.selected?.max_purchase_quantity ?? null,
@@ -11643,12 +11635,19 @@ export class V2CatalogService {
       return false;
     }
 
-    if (!priceList.campaign_id) {
+    const linkedCampaignId = this.normalizeOptionalText(
+      priceList.campaign_id as string | null | undefined,
+    );
+    if (!linkedCampaignId) {
       return Boolean(params.campaignId);
     }
 
     const linkedCampaign = priceList.campaign;
     if (!linkedCampaign || typeof linkedCampaign !== 'object') {
+      return false;
+    }
+
+    if (params.campaignId && linkedCampaignId !== params.campaignId) {
       return false;
     }
 
@@ -11861,21 +11860,38 @@ export class V2CatalogService {
         primary_variant_id: primaryVariant?.id ?? null,
         primary_variant_title: primaryVariant?.title ?? null,
         fulfillment_type: primaryVariant?.fulfillment_type ?? null,
-        display_price: priceSelection.selected
-          ? {
-              amount: priceSelection.selected.unit_amount,
-              compare_at_amount: priceSelection.selected.compare_at_amount,
-              currency_code:
-                priceSelection.selected.price_list?.currency_code ?? 'KRW',
-              source:
-                priceSelection.selected.price_list?.scope_type === 'OVERRIDE'
-                  ? 'OVERRIDE'
-                  : 'BASE',
-            }
-          : null,
+        display_price: this.buildShopDisplayPrice(
+          priceSelection.selected,
+          context.campaignId,
+        ),
         availability,
       };
     });
+  }
+
+  private buildShopDisplayPrice(
+    priceItem: any | null,
+    sellingCampaignId: string | null = null,
+  ): any | null {
+    if (!priceItem) {
+      return null;
+    }
+    const priceList = priceItem.price_list || {};
+    const priceListCampaignId = this.normalizeOptionalText(
+      priceList.campaign_id,
+    );
+
+    return {
+      amount: priceItem.unit_amount,
+      compare_at_amount: priceItem.compare_at_amount,
+      currency_code: priceList.currency_code ?? 'KRW',
+      source: priceList.scope_type === 'OVERRIDE' ? 'OVERRIDE' : 'BASE',
+      campaign_id: priceListCampaignId,
+      selling_campaign_id:
+        this.normalizeOptionalText(sellingCampaignId) ?? priceListCampaignId,
+      price_list_id: this.normalizeOptionalText(priceItem.price_list_id),
+      price_list_item_id: this.normalizeOptionalText(priceItem.id),
+    };
   }
 
   private async loadShopContext(
