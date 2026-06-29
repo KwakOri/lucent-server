@@ -4788,19 +4788,27 @@ export class V2CatalogService {
       'target_id는 필수입니다',
     );
     await this.ensureCampaignTargetEntityExists(targetType, targetId);
+    const existingTarget = await this.findCampaignTargetByKey({
+      campaignId,
+      targetType,
+      targetId,
+    });
 
     let alwaysOnProjectIds: string[] = [];
     if (campaign.campaign_type === 'ALWAYS_ON') {
       const currentTargetRows =
         await this.fetchCampaignTargetScopeRows(campaignId);
-      const nextTargetRows: CampaignTargetScopeRow[] = [
-        ...currentTargetRows,
-        {
-          target_type: targetType,
-          target_id: targetId,
-          is_excluded: input.is_excluded ?? false,
-        },
-      ];
+      const nextTargetRow = {
+        target_type: targetType,
+        target_id: targetId,
+        is_excluded: input.is_excluded ?? false,
+      };
+      const nextTargetRows: CampaignTargetScopeRow[] =
+        existingTarget && !existingTarget.deleted_at
+          ? currentTargetRows.map((row) =>
+              row.id === existingTarget.id ? { ...row, ...nextTargetRow } : row,
+            )
+          : [...currentTargetRows, nextTargetRow];
       alwaysOnProjectIds = await this.resolveCampaignIncludedProjectIds(
         campaignId,
         nextTargetRows,
@@ -4821,21 +4829,50 @@ export class V2CatalogService {
       this.assertSortOrder(input.sort_order);
     }
 
+    const targetData = {
+      campaign_id: campaignId,
+      target_type: targetType,
+      target_id: targetId,
+      sort_order: input.sort_order ?? 0,
+      is_excluded: input.is_excluded ?? false,
+      source_type: this.normalizeOptionalText(input.source_type),
+      source_id: this.normalizeOptionalText(input.source_id),
+      source_snapshot_json: this.normalizeOptionalObjectJson(
+        input.source_snapshot_json,
+      ),
+      metadata: input.metadata ?? {},
+      deleted_at: null,
+    };
+
+    if (existingTarget) {
+      const { data: restored, error: restoreError } = await this.supabase
+        .from('v2_campaign_targets')
+        .update(targetData)
+        .eq('id', existingTarget.id)
+        .select('*')
+        .single();
+
+      if (restoreError || !restored) {
+        throw new ApiException(
+          'campaign target 생성 실패',
+          500,
+          'V2_CAMPAIGN_TARGET_CREATE_FAILED',
+        );
+      }
+
+      if (campaign.campaign_type === 'ALWAYS_ON') {
+        await this.updateCampaignProjectScope(
+          campaignId,
+          alwaysOnProjectIds[0] ?? null,
+        );
+      }
+
+      return restored;
+    }
+
     const { data, error } = await this.supabase
       .from('v2_campaign_targets')
-      .insert({
-        campaign_id: campaignId,
-        target_type: targetType,
-        target_id: targetId,
-        sort_order: input.sort_order ?? 0,
-        is_excluded: input.is_excluded ?? false,
-        source_type: this.normalizeOptionalText(input.source_type),
-        source_id: this.normalizeOptionalText(input.source_id),
-        source_snapshot_json: this.normalizeOptionalObjectJson(
-          input.source_snapshot_json,
-        ),
-        metadata: input.metadata ?? {},
-      })
+      .insert(targetData)
       .select('*')
       .single();
 
@@ -5249,7 +5286,7 @@ export class V2CatalogService {
       updateData.metadata = input.metadata ?? {};
     }
 
-    let nextScopeType =
+    const nextScopeType =
       requestedScopeType ?? (current.scope_type as V2PriceListScope);
     if (nextScopeType === 'OVERRIDE' && !nextCampaignId) {
       throw new ApiException(
@@ -10372,6 +10409,30 @@ export class V2CatalogService {
     }
 
     return data;
+  }
+
+  private async findCampaignTargetByKey(params: {
+    campaignId: string;
+    targetType: V2CampaignTargetType;
+    targetId: string;
+  }): Promise<any | null> {
+    const { data, error } = await this.supabase
+      .from('v2_campaign_targets')
+      .select('*')
+      .eq('campaign_id', params.campaignId)
+      .eq('target_type', params.targetType)
+      .eq('target_id', params.targetId)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'campaign target 조회 실패',
+        500,
+        'V2_CAMPAIGN_TARGET_FETCH_FAILED',
+      );
+    }
+
+    return data || null;
   }
 
   private async findPriceListItemByKey(params: {
