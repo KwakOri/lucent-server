@@ -516,6 +516,117 @@ describe('V2CatalogService', () => {
   });
 
   describe('selectShopPriceItem', () => {
+    it('uses inferred selling campaign context so the shop default follows product option BASE over legacy ALWAYS_ON BASE', () => {
+      const projectId = 'project-1';
+      const productId = 'product-1';
+      const variantId = 'variant-1';
+      const popupCampaignId = 'popup-campaign';
+      const alwaysOnCampaignId = 'always-on-campaign';
+      const evaluatedAt = '2026-06-29T03:00:00.000Z';
+      const campaignTargetEligibilityByCampaignId = new Map([
+        [
+          popupCampaignId,
+          createProjectCampaignEligibilityScope(projectId, 'POPUP'),
+        ],
+        [
+          alwaysOnCampaignId,
+          createProjectCampaignEligibilityScope(projectId, 'ALWAYS_ON'),
+        ],
+      ]);
+
+      const sellingCampaignId = (service as any).resolveShopSellingCampaignId({
+        explicitCampaignId: null,
+        projectId,
+        productId,
+        variantId,
+        campaigns: [
+          {
+            id: alwaysOnCampaignId,
+            campaign_type: 'ALWAYS_ON',
+            status: 'ACTIVE',
+            starts_at: '2026-03-23T00:00:00.000Z',
+            ends_at: null,
+            channel_scope_json: [],
+            deleted_at: null,
+          },
+          {
+            id: popupCampaignId,
+            campaign_type: 'POPUP',
+            status: 'ACTIVE',
+            starts_at: '2026-06-27T00:00:00.000Z',
+            ends_at: null,
+            channel_scope_json: [],
+            deleted_at: null,
+          },
+        ],
+        evaluatedAt,
+        channel: 'WEB',
+        campaignTargetEligibilityByCampaignId,
+      });
+      expect(sellingCampaignId).toBe(popupCampaignId);
+
+      const result = (service as any).selectShopPriceItem({
+        productId,
+        projectId,
+        variantId,
+        priceItems: [
+          {
+            id: 'legacy-always-on-base-item',
+            product_id: productId,
+            variant_id: variantId,
+            unit_amount: 35000,
+            starts_at: null,
+            ends_at: null,
+            channel_scope_json: [],
+            price_list: {
+              campaign_id: alwaysOnCampaignId,
+              scope_type: 'BASE',
+              status: 'PUBLISHED',
+              priority: 0,
+              published_at: '2026-03-23T00:00:00.000Z',
+              channel_scope_json: [],
+              deleted_at: null,
+              campaign: {
+                id: alwaysOnCampaignId,
+                campaign_type: 'ALWAYS_ON',
+                status: 'ACTIVE',
+                starts_at: '2026-03-23T00:00:00.000Z',
+                ends_at: null,
+                channel_scope_json: [],
+                deleted_at: null,
+              },
+            },
+          },
+          {
+            id: 'product-option-base-item',
+            product_id: productId,
+            variant_id: variantId,
+            unit_amount: 350000,
+            starts_at: null,
+            ends_at: null,
+            channel_scope_json: [],
+            price_list: {
+              campaign_id: null,
+              scope_type: 'BASE',
+              status: 'PUBLISHED',
+              priority: 100,
+              published_at: '2026-06-29T00:00:00.000Z',
+              channel_scope_json: [],
+              deleted_at: null,
+              campaign: null,
+            },
+          },
+        ],
+        evaluatedAt,
+        campaignId: sellingCampaignId,
+        channel: 'WEB',
+        campaignTargetEligibilityByCampaignId,
+      });
+
+      expect(result.selected?.id).toBe('product-option-base-item');
+      expect(result.selected?.unit_amount).toBe(350000);
+    });
+
     it('uses product option BASE only when the explicit campaign target includes the variant', () => {
       const productId = 'product-1';
       const variantId = 'variant-1';
