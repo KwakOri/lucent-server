@@ -648,4 +648,84 @@ describe('V2CatalogService', () => {
       expect(mocks.priceListUpdate).not.toHaveBeenCalled();
     });
   });
+
+  describe('createCampaignTarget', () => {
+    it('restores a soft-deleted target instead of inserting a duplicate', async () => {
+      const deletedTarget = {
+        id: 'target-1',
+        campaign_id: 'campaign-1',
+        target_type: 'VARIANT',
+        target_id: 'variant-1',
+        deleted_at: '2026-06-29T00:00:00.000Z',
+      };
+      const restoredTarget = {
+        ...deletedTarget,
+        sort_order: 3,
+        is_excluded: false,
+        metadata: { source: 'campaign-detail' },
+        deleted_at: null,
+      };
+      const findQuery: any = {
+        eq: jest.fn(() => findQuery),
+        maybeSingle: jest
+          .fn()
+          .mockResolvedValue({ data: deletedTarget, error: null }),
+      };
+      const updateQuery: any = {
+        eq: jest.fn(() => updateQuery),
+        select: jest.fn(() => updateQuery),
+        single: jest
+          .fn()
+          .mockResolvedValue({ data: restoredTarget, error: null }),
+      };
+      const targetSelect = jest.fn(() => findQuery);
+      const targetUpdate = jest.fn(() => updateQuery);
+      const targetInsert = jest.fn();
+      const from = jest.fn((table: string) => {
+        if (table === 'v2_campaign_targets') {
+          return {
+            select: targetSelect,
+            update: targetUpdate,
+            insert: targetInsert,
+          };
+        }
+        throw new Error(`Unexpected table: ${table}`);
+      });
+
+      jest
+        .spyOn(service as any, 'supabase', 'get')
+        .mockReturnValue({ from } as any);
+      jest.spyOn(service as any, 'getCampaignById').mockResolvedValue({
+        id: 'campaign-1',
+        campaign_type: 'POPUP',
+        status: 'ACTIVE',
+      } as any);
+      jest
+        .spyOn(service as any, 'ensureCampaignTargetEntityExists')
+        .mockResolvedValue(undefined);
+
+      const result = await service.createCampaignTarget('campaign-1', {
+        target_type: 'VARIANT',
+        target_id: 'variant-1',
+        sort_order: 3,
+        is_excluded: false,
+        metadata: { source: 'campaign-detail' },
+      });
+
+      expect(result).toEqual(restoredTarget);
+      expect(targetInsert).not.toHaveBeenCalled();
+      expect(targetUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          campaign_id: 'campaign-1',
+          target_type: 'VARIANT',
+          target_id: 'variant-1',
+          sort_order: 3,
+          is_excluded: false,
+          metadata: { source: 'campaign-detail' },
+          deleted_at: null,
+        }),
+      );
+      expect(updateQuery.eq).toHaveBeenCalledWith('id', 'target-1');
+    });
+  });
 });
