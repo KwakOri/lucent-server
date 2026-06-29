@@ -2317,7 +2317,9 @@ export class V2CatalogService {
     return data || [];
   }
 
-  async getVariantsMap(productIdsInput: unknown): Promise<Record<string, any[]>> {
+  async getVariantsMap(
+    productIdsInput: unknown,
+  ): Promise<Record<string, any[]>> {
     const productIds = this.normalizeProductIdList(productIdsInput);
     const { data, error } = await this.supabase
       .from('v2_product_variants')
@@ -3909,10 +3911,6 @@ export class V2CatalogService {
 
   async getCampaignDetailContext(campaignId: string): Promise<any> {
     const campaign = await this.getCampaignById(campaignId);
-    const campaignScopeType =
-      (campaign.campaign_type as V2CampaignType) === 'ALWAYS_ON'
-        ? 'BASE'
-        : 'OVERRIDE';
 
     const [
       targets,
@@ -3933,14 +3931,12 @@ export class V2CatalogService {
     ]);
 
     const campaignScopedPriceLists = priceLists.filter(
-      (priceList) => priceList.scope_type === campaignScopeType,
+      (priceList) => priceList.scope_type === 'OVERRIDE',
     );
     const activeCampaignPriceList =
       campaignScopedPriceLists.find(
         (priceList) => priceList.status === 'PUBLISHED',
       ) || this.pickLatestPriceListByUpdatedAt(campaignScopedPriceLists);
-    const activeBasePriceList =
-      this.pickLatestPriceListByUpdatedAt(basePriceLists);
     const productIds = products.map((product) => product.id as string);
 
     const [
@@ -3952,9 +3948,9 @@ export class V2CatalogService {
       activeCampaignPriceList
         ? this.fetchPriceListItems(activeCampaignPriceList.id as string)
         : Promise.resolve([]),
-      activeBasePriceList
-        ? this.fetchPriceListItems(activeBasePriceList.id as string)
-        : Promise.resolve([]),
+      this.fetchPriceListItemsForPriceLists(
+        basePriceLists.map((priceList) => priceList.id as string),
+      ),
       productIds.length > 0 ? this.getVariantsMap(productIds) : {},
       productIds.length > 0 ? this.getProductMediaMap(productIds) : {},
     ]);
@@ -3977,10 +3973,6 @@ export class V2CatalogService {
 
   async getCampaignPricingContext(campaignId: string): Promise<any> {
     const campaign = await this.getCampaignById(campaignId);
-    const campaignScopeType =
-      (campaign.campaign_type as V2CampaignType) === 'ALWAYS_ON'
-        ? 'BASE'
-        : 'OVERRIDE';
 
     const [
       targets,
@@ -3994,7 +3986,7 @@ export class V2CatalogService {
       this.fetchActiveStockLocations(),
       this.getPriceLists({
         campaignId,
-        scopeType: campaignScopeType,
+        scopeType: 'OVERRIDE',
       }),
       this.getPriceLists({ scopeType: 'BASE', status: 'PUBLISHED' }),
     ]);
@@ -4003,8 +3995,6 @@ export class V2CatalogService {
       campaignPriceLists.find(
         (priceList) => priceList.status === 'PUBLISHED',
       ) || this.pickLatestPriceListByUpdatedAt(campaignPriceLists);
-    const activeBasePriceList =
-      this.pickLatestPriceListByUpdatedAt(basePriceLists);
     const productIds = products.map((product) => product.id as string);
 
     const [campaignPriceItems, basePriceItems, variantsByProductId] =
@@ -4012,9 +4002,9 @@ export class V2CatalogService {
         activeCampaignPriceList
           ? this.fetchPriceListItems(activeCampaignPriceList.id as string)
           : Promise.resolve([]),
-        activeBasePriceList
-          ? this.fetchPriceListItems(activeBasePriceList.id as string)
-          : Promise.resolve([]),
+        this.fetchPriceListItemsForPriceLists(
+          basePriceLists.map((priceList) => priceList.id as string),
+        ),
         productIds.length > 0 ? this.getVariantsMap(productIds) : {},
       ]);
 
@@ -5117,12 +5107,16 @@ export class V2CatalogService {
     this.assertDateRange(startsAt, endsAt, 'price list 기간');
 
     const campaignId = this.normalizeOptionalText(input.campaign_id);
-    let scopeType: V2PriceListScope = requestedScopeType ?? 'BASE';
+    const scopeType: V2PriceListScope =
+      requestedScopeType ?? (campaignId ? 'OVERRIDE' : 'BASE');
     if (campaignId) {
-      const campaign = await this.getCampaignById(campaignId);
-      scopeType = this.resolvePriceListScopeForCampaign(
-        campaign,
-        requestedScopeType,
+      await this.getCampaignById(campaignId);
+    }
+    if (scopeType === 'OVERRIDE' && !campaignId) {
+      throw new ApiException(
+        'OVERRIDE 가격표는 campaign_id가 필요합니다',
+        400,
+        'VALIDATION_ERROR',
       );
     }
 
@@ -5167,7 +5161,6 @@ export class V2CatalogService {
   ): Promise<any> {
     const current = await this.getPriceListById(priceListId);
     const updateData: Record<string, unknown> = {};
-    let nextCampaign: any | null = null;
     let nextCampaignId =
       this.normalizeOptionalText(
         current.campaign_id as string | null | undefined,
@@ -5177,7 +5170,7 @@ export class V2CatalogService {
     if (input.campaign_id !== undefined) {
       const campaignId = this.normalizeOptionalText(input.campaign_id);
       if (campaignId) {
-        nextCampaign = await this.getCampaignById(campaignId);
+        await this.getCampaignById(campaignId);
       }
       nextCampaignId = campaignId;
       updateData.campaign_id = campaignId;
@@ -5258,13 +5251,11 @@ export class V2CatalogService {
 
     let nextScopeType =
       requestedScopeType ?? (current.scope_type as V2PriceListScope);
-    if (nextCampaignId) {
-      if (!nextCampaign) {
-        nextCampaign = await this.getCampaignById(nextCampaignId);
-      }
-      nextScopeType = this.resolvePriceListScopeForCampaign(
-        nextCampaign,
-        requestedScopeType ?? nextScopeType,
+    if (nextScopeType === 'OVERRIDE' && !nextCampaignId) {
+      throw new ApiException(
+        'OVERRIDE 가격표는 campaign_id가 필요합니다',
+        400,
+        'VALIDATION_ERROR',
       );
     }
     if (
@@ -5472,6 +5463,44 @@ export class V2CatalogService {
     return data || [];
   }
 
+  private async fetchPriceListItemsForPriceLists(
+    priceListIds: string[],
+  ): Promise<any[]> {
+    const uniquePriceListIds = Array.from(
+      new Set(
+        priceListIds
+          .map((priceListId) => this.normalizeOptionalText(priceListId))
+          .filter((priceListId): priceListId is string => Boolean(priceListId)),
+      ),
+    );
+    if (uniquePriceListIds.length === 0) {
+      return [];
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_price_list_items')
+      .select(
+        `
+        *,
+        product:v2_products(id,title,slug,status,product_kind,project_id),
+        variant:v2_product_variants(id,sku,title,status,fulfillment_type,requires_shipping),
+        price_list:v2_price_lists(id,campaign_id,scope_type,status,currency_code,priority,published_at,starts_at,ends_at,updated_at)
+      `,
+      )
+      .in('price_list_id', uniquePriceListIds)
+      .is('deleted_at', null);
+
+    if (error) {
+      throw new ApiException(
+        'price list item 목록 조회 실패',
+        500,
+        'V2_PRICE_LIST_ITEMS_FETCH_FAILED',
+      );
+    }
+
+    return this.sortPriceItemsByPriceListPriority(data || []);
+  }
+
   async createPriceListItem(
     priceListId: string,
     input: CreateV2PriceListItemInput,
@@ -5533,28 +5562,55 @@ export class V2CatalogService {
     const endsAt = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
     this.assertDateRange(startsAt, endsAt, 'price list item 기간');
 
+    const itemData = {
+      product_id: productId,
+      variant_id: variantId,
+      status,
+      unit_amount: unitAmount,
+      compare_at_amount: input.compare_at_amount ?? null,
+      min_purchase_quantity: minPurchaseQuantity,
+      max_purchase_quantity: maxPurchaseQuantity,
+      starts_at: startsAt,
+      ends_at: endsAt,
+      channel_scope_json: this.normalizeOptionalArrayJson(
+        input.channel_scope_json,
+      ),
+      source_type: this.normalizeOptionalText(input.source_type),
+      source_id: this.normalizeOptionalText(input.source_id),
+      source_snapshot_json: this.normalizeOptionalObjectJson(
+        input.source_snapshot_json,
+      ),
+      metadata: input.metadata ?? {},
+    };
+    const existingItem = await this.findPriceListItemByKey({
+      priceListId,
+      productId,
+      variantId,
+    });
+    if (existingItem) {
+      const { data: updated, error: updateError } = await this.supabase
+        .from('v2_price_list_items')
+        .update(itemData)
+        .eq('id', existingItem.id)
+        .select('*')
+        .single();
+
+      if (updateError || !updated) {
+        throw new ApiException(
+          'price list item 생성 실패',
+          500,
+          'V2_PRICE_LIST_ITEM_CREATE_FAILED',
+        );
+      }
+
+      return updated;
+    }
+
     const { data, error } = await this.supabase
       .from('v2_price_list_items')
       .insert({
         price_list_id: priceListId,
-        product_id: productId,
-        variant_id: variantId,
-        status,
-        unit_amount: unitAmount,
-        compare_at_amount: input.compare_at_amount ?? null,
-        min_purchase_quantity: minPurchaseQuantity,
-        max_purchase_quantity: maxPurchaseQuantity,
-        starts_at: startsAt,
-        ends_at: endsAt,
-        channel_scope_json: this.normalizeOptionalArrayJson(
-          input.channel_scope_json,
-        ),
-        source_type: this.normalizeOptionalText(input.source_type),
-        source_id: this.normalizeOptionalText(input.source_id),
-        source_snapshot_json: this.normalizeOptionalObjectJson(
-          input.source_snapshot_json,
-        ),
-        metadata: input.metadata ?? {},
+        ...itemData,
       })
       .select('*')
       .single();
@@ -10318,6 +10374,34 @@ export class V2CatalogService {
     return data;
   }
 
+  private async findPriceListItemByKey(params: {
+    priceListId: string;
+    productId: string;
+    variantId: string | null;
+  }): Promise<any | null> {
+    let query = this.supabase
+      .from('v2_price_list_items')
+      .select('*')
+      .eq('price_list_id', params.priceListId)
+      .eq('product_id', params.productId)
+      .is('deleted_at', null);
+
+    query = params.variantId
+      ? query.eq('variant_id', params.variantId)
+      : query.is('variant_id', null);
+
+    const { data, error } = await query.maybeSingle();
+    if (error) {
+      throw new ApiException(
+        'price list item 조회 실패',
+        500,
+        'V2_PRICE_LIST_ITEM_FETCH_FAILED',
+      );
+    }
+
+    return data || null;
+  }
+
   private async getPromotionRuleById(ruleId: string): Promise<any> {
     const { data, error } = await this.supabase
       .from('v2_promotion_rules')
@@ -10479,22 +10563,6 @@ export class V2CatalogService {
         'VALIDATION_ERROR',
       );
     }
-  }
-
-  private resolvePriceListScopeForCampaign(
-    campaign: any,
-    requestedScope: V2PriceListScope | undefined,
-  ): V2PriceListScope {
-    const expectedScope: V2PriceListScope =
-      campaign?.campaign_type === 'ALWAYS_ON' ? 'BASE' : 'OVERRIDE';
-    if (requestedScope && requestedScope !== expectedScope) {
-      throw new ApiException(
-        `campaign 유형(${campaign?.campaign_type})에는 ${expectedScope} scope만 허용됩니다`,
-        400,
-        'VALIDATION_ERROR',
-      );
-    }
-    return expectedScope;
   }
 
   private assertPriceListStatus(value: string): void {
@@ -10869,6 +10937,28 @@ export class V2CatalogService {
     return sorted[0];
   }
 
+  private sortPriceItemsByPriceListPriority(items: any[]): any[] {
+    return [...(items || [])].sort((a, b) => {
+      const priorityDiff =
+        (b.price_list?.priority ?? 0) - (a.price_list?.priority ?? 0);
+      if (priorityDiff !== 0) {
+        return priorityDiff;
+      }
+      const publishedA = a.price_list?.published_at
+        ? new Date(a.price_list.published_at).getTime()
+        : 0;
+      const publishedB = b.price_list?.published_at
+        ? new Date(b.price_list.published_at).getTime()
+        : 0;
+      if (publishedA !== publishedB) {
+        return publishedB - publishedA;
+      }
+      const createdA = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const createdB = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return createdB - createdA;
+    });
+  }
+
   private isCampaignApplicableForShopPricing(
     campaign: any,
     evaluatedAt: string,
@@ -11095,12 +11185,8 @@ export class V2CatalogService {
     }
 
     const projectId = this.normalizeOptionalText(params.projectId);
-    const allowsProjectIncludeTargets =
-      eligibility.campaignType === 'ALWAYS_ON';
     const includedByProject =
-      allowsProjectIncludeTargets &&
-      !!projectId &&
-      eligibility.include.projectIds.has(projectId);
+      !!projectId && eligibility.include.projectIds.has(projectId);
     const includedByProduct = eligibility.include.productIds.has(
       params.productId,
     );
@@ -11164,6 +11250,7 @@ export class V2CatalogService {
         const linkedCampaignId = this.normalizeOptionalText(
           priceList.campaign_id as string | null | undefined,
         );
+        const priceListScopeType = priceList.scope_type as V2PriceListScope;
         if (
           !linkedCampaignId &&
           !this.isTimestampInRange(
@@ -11188,6 +11275,10 @@ export class V2CatalogService {
           return false;
         }
 
+        if (!linkedCampaignId) {
+          return priceListScopeType === 'BASE';
+        }
+
         const linkedCampaign = priceList.campaign;
         if (
           !this.isCampaignApplicableForShopPricing(
@@ -11200,7 +11291,7 @@ export class V2CatalogService {
         }
 
         return this.isCampaignTargetEligibleForShopPricing({
-          campaignId: priceList.campaign_id as string | null | undefined,
+          campaignId: linkedCampaignId,
           projectId: params.projectId,
           productId: params.productId,
           variantId: params.variantId,
@@ -11221,16 +11312,16 @@ export class V2CatalogService {
       return false;
     }
 
-    // 상점 노출 기준은 "상시 운영(ALWAYS_ON) 캠페인에 연결된 BASE"만 허용한다.
     if (!priceList.campaign_id) {
-      return false;
+      return Boolean(params.campaignId);
     }
 
     const linkedCampaign = priceList.campaign;
     if (!linkedCampaign || typeof linkedCampaign !== 'object') {
       return false;
     }
-    if (linkedCampaign.campaign_type !== 'ALWAYS_ON') {
+
+    if (!params.campaignId && linkedCampaign.campaign_type !== 'ALWAYS_ON') {
       return false;
     }
 
@@ -11276,9 +11367,6 @@ export class V2CatalogService {
     }
 
     if (!linkedCampaign || typeof linkedCampaign !== 'object') {
-      return false;
-    }
-    if (linkedCampaign.campaign_type === 'ALWAYS_ON') {
       return false;
     }
 
@@ -12745,10 +12833,13 @@ export class V2CatalogService {
     rows: any[],
   ): Record<string, any[]> {
     const groupedRows = this.groupRowsByProductId(rows);
-    return productIds.reduce<Record<string, any[]>>((accumulator, productId) => {
-      accumulator[productId] = groupedRows[productId] || [];
-      return accumulator;
-    }, {});
+    return productIds.reduce<Record<string, any[]>>(
+      (accumulator, productId) => {
+        accumulator[productId] = groupedRows[productId] || [];
+        return accumulator;
+      },
+      {},
+    );
   }
 
   private buildRowsMapForCampaignIds(
@@ -12756,10 +12847,13 @@ export class V2CatalogService {
     rows: any[],
   ): Record<string, any[]> {
     const groupedRows = this.groupRowsByCampaignId(rows);
-    return campaignIds.reduce<Record<string, any[]>>((accumulator, campaignId) => {
-      accumulator[campaignId] = groupedRows[campaignId] || [];
-      return accumulator;
-    }, {});
+    return campaignIds.reduce<Record<string, any[]>>(
+      (accumulator, campaignId) => {
+        accumulator[campaignId] = groupedRows[campaignId] || [];
+        return accumulator;
+      },
+      {},
+    );
   }
 
   private buildVariantStatusCounts(
@@ -13527,11 +13621,7 @@ export class V2CatalogService {
         : null;
 
     if (!rawItems) {
-      throw new ApiException(
-        messages.invalidMessage,
-        400,
-        'VALIDATION_ERROR',
-      );
+      throw new ApiException(messages.invalidMessage, 400, 'VALIDATION_ERROR');
     }
 
     const normalized = Array.from(
@@ -13544,11 +13634,7 @@ export class V2CatalogService {
     );
 
     if (normalized.length === 0) {
-      throw new ApiException(
-        messages.emptyMessage,
-        400,
-        'VALIDATION_ERROR',
-      );
+      throw new ApiException(messages.emptyMessage, 400, 'VALIDATION_ERROR');
     }
 
     return normalized;
