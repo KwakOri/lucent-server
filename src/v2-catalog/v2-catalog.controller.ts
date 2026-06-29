@@ -502,8 +502,7 @@ export class V2CatalogController {
     @Query('productIds') productIds?: string | string[],
   ) {
     await this.requireAdmin(authorization);
-    const variantsMap =
-      await this.v2CatalogService.getVariantsMap(productIds);
+    const variantsMap = await this.v2CatalogService.getVariantsMap(productIds);
     return successResponse(variantsMap);
   }
 
@@ -513,8 +512,7 @@ export class V2CatalogController {
     @Query('productIds') productIds?: string | string[],
   ) {
     await this.requireAdmin(authorization);
-    const mediaMap =
-      await this.v2CatalogService.getProductMediaMap(productIds);
+    const mediaMap = await this.v2CatalogService.getProductMediaMap(productIds);
     return successResponse(mediaMap);
   }
 
@@ -1448,6 +1446,28 @@ export class V2CatalogController {
     await this.requireAdmin(authorization);
     const quote = await this.v2CatalogService.buildPriceQuote(body);
     return successResponse(quote);
+  }
+
+  @Post('pricing/base-price-change/analyze')
+  async analyzeBasePriceChange(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const result =
+      await this.v2CatalogService.analyzeVariantBasePriceChange(body);
+    return successResponse(result);
+  }
+
+  @Post('pricing/base-price-change/apply')
+  async applyBasePriceChange(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const result =
+      await this.v2CatalogService.applyVariantBasePriceChange(body);
+    return successResponse(result);
   }
 
   @Post('pricing/promotions/evaluate')

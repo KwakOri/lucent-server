@@ -291,6 +291,112 @@ describe('V2CatalogService', () => {
     });
   });
 
+  describe('base price override propagation helpers', () => {
+    it('recomputes percent discount overrides from the next BASE amount', () => {
+      const result = (service as any).buildBasePriceOverrideImpact({
+        item: {
+          id: 'override-1',
+          price_list_id: 'override-list',
+          product_id: 'product-1',
+          variant_id: 'variant-1',
+          unit_amount: 31500,
+          compare_at_amount: 35000,
+          status: 'ACTIVE',
+          metadata: {
+            pricing_mode: 'PERCENT_DISCOUNT',
+            discount_value: 10,
+            base_amount: 35000,
+          },
+          price_list: {
+            campaign_id: 'campaign-1',
+            campaign: { id: 'campaign-1', name: 'Campaign' },
+          },
+        },
+        nextBaseAmount: 100000,
+        currentBaseAmount: 35000,
+      });
+
+      expect(result.pricing_mode).toBe('PERCENT_DISCOUNT');
+      expect(result.can_auto_propagate).toBe(true);
+      expect(result.default_action).toBe('PROPAGATE');
+      expect(result.next_unit_amount).toBe(90000);
+      expect(result.next_compare_at_amount).toBe(100000);
+    });
+
+    it('recomputes fixed discount overrides from the next BASE amount', () => {
+      const result = (service as any).buildBasePriceOverrideImpact({
+        item: {
+          id: 'override-1',
+          price_list_id: 'override-list',
+          product_id: 'product-1',
+          variant_id: 'variant-1',
+          unit_amount: 30000,
+          compare_at_amount: 35000,
+          status: 'ACTIVE',
+          metadata: {
+            pricing_mode: 'FIXED_DISCOUNT',
+            discount_value: 5000,
+            base_amount: 35000,
+          },
+          price_list: { campaign_id: 'campaign-1' },
+        },
+        nextBaseAmount: 100000,
+        currentBaseAmount: 35000,
+      });
+
+      expect(result.next_unit_amount).toBe(95000);
+      expect(result.can_auto_propagate).toBe(true);
+    });
+
+    it('keeps direct price overrides by default', () => {
+      const result = (service as any).buildBasePriceOverrideImpact({
+        item: {
+          id: 'override-1',
+          price_list_id: 'override-list',
+          product_id: 'product-1',
+          variant_id: 'variant-1',
+          unit_amount: 25000,
+          compare_at_amount: 35000,
+          status: 'ACTIVE',
+          metadata: {
+            pricing_mode: 'DIRECT_PRICE',
+            discount_value: 25000,
+            base_amount: 35000,
+          },
+          price_list: { campaign_id: 'campaign-1' },
+        },
+        nextBaseAmount: 100000,
+        currentBaseAmount: 35000,
+      });
+
+      expect(result.next_unit_amount).toBe(25000);
+      expect(result.default_action).toBe('KEEP');
+      expect(result.can_auto_propagate).toBe(false);
+    });
+
+    it('marks missing pricing metadata as non-propagatable', () => {
+      const result = (service as any).buildBasePriceOverrideImpact({
+        item: {
+          id: 'override-1',
+          price_list_id: 'override-list',
+          product_id: 'product-1',
+          variant_id: 'variant-1',
+          unit_amount: 25000,
+          compare_at_amount: 35000,
+          status: 'ACTIVE',
+          metadata: {},
+          price_list: { campaign_id: 'campaign-1' },
+        },
+        nextBaseAmount: 100000,
+        currentBaseAmount: 35000,
+      });
+
+      expect(result.pricing_mode).toBe('UNKNOWN');
+      expect(result.default_action).toBe('SKIP');
+      expect(result.can_auto_propagate).toBe(false);
+    });
+  });
+
   describe('selectShopPriceItem', () => {
     it('uses product option BASE only when the explicit campaign target includes the variant', () => {
       const productId = 'product-1';
