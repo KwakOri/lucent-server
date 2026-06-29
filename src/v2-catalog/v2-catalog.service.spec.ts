@@ -243,6 +243,52 @@ describe('V2CatalogService', () => {
       expect(result.base?.id).toBe('base-item-1');
       expect(result.selected?.id).toBe('base-item-1');
     });
+
+    it('uses updated_at as a tie-breaker for same-priority BASE items', () => {
+      const sharedPriceList = {
+        campaign_id: null,
+        scope_type: 'BASE',
+        status: 'PUBLISHED',
+        priority: 100,
+        published_at: '2026-06-29T00:00:00.000Z',
+        channel_scope_json: [],
+        deleted_at: null,
+        campaign: null,
+      };
+
+      const result = (service as any).buildShopPriceSelectionFromCandidates({
+        candidates: [
+          {
+            id: 'base-item-old',
+            price_list_id: 'base-list-1',
+            unit_amount: 1000,
+            starts_at: null,
+            ends_at: null,
+            channel_scope_json: [],
+            created_at: '2026-06-29T00:00:00.000Z',
+            updated_at: '2026-06-29T01:00:00.000Z',
+            price_list: sharedPriceList,
+          },
+          {
+            id: 'base-item-new',
+            price_list_id: 'base-list-1',
+            unit_amount: 2000,
+            starts_at: null,
+            ends_at: null,
+            channel_scope_json: [],
+            created_at: '2026-06-29T00:00:00.000Z',
+            updated_at: '2026-06-29T02:00:00.000Z',
+            price_list: sharedPriceList,
+          },
+        ],
+        campaignId: 'popup-campaign',
+        evaluatedAt: '2026-06-29T03:00:00.000Z',
+        channel: 'WEB',
+      });
+
+      expect(result.base?.id).toBe('base-item-new');
+      expect(result.selected?.unit_amount).toBe(2000);
+    });
   });
 
   describe('selectShopPriceItem', () => {

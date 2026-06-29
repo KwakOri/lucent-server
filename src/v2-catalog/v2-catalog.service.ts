@@ -10991,6 +10991,11 @@ export class V2CatalogService {
       if (publishedA !== publishedB) {
         return publishedB - publishedA;
       }
+      const updatedA = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+      const updatedB = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+      if (updatedA !== updatedB) {
+        return updatedB - updatedA;
+      }
       const createdA = a.created_at ? new Date(a.created_at).getTime() : 0;
       const createdB = b.created_at ? new Date(b.created_at).getTime() : 0;
       return createdB - createdA;
@@ -11013,6 +11018,11 @@ export class V2CatalogService {
         : 0;
       if (publishedA !== publishedB) {
         return publishedB - publishedA;
+      }
+      const updatedA = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+      const updatedB = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+      if (updatedA !== updatedB) {
+        return updatedB - updatedA;
       }
       const createdA = a.created_at ? new Date(a.created_at).getTime() : 0;
       const createdB = b.created_at ? new Date(b.created_at).getTime() : 0;
