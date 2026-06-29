@@ -67,6 +67,26 @@ interface CreateV2OrderInput extends ValidateV2CheckoutInput {
   metadata?: Record<string, unknown> | null;
 }
 
+interface DigitalOwnershipLookupInput {
+  variantIds?: string[];
+  productIds?: string[];
+}
+
+interface DigitalOwnershipRecord {
+  variant_id: string | null;
+  product_id: string | null;
+  owned: true;
+  ownership_status: 'OWNED' | 'PENDING';
+  entitlement_id: string;
+  entitlement_status: string;
+  order_id: string;
+  order_no: string | null;
+  order_status: string | null;
+  payment_status: string | null;
+  granted_at: string | null;
+  expires_at: string | null;
+}
+
 interface PaymentCallbackInput {
   external_reference?: string;
   status?:
@@ -222,6 +242,9 @@ export class V2CheckoutService {
 
     const cart = await this.getOrCreateActiveCart(profileId);
     const variant = await this.getVariantForCart(variantId);
+    if (this.isDigitalVariantSnapshot(variant)) {
+      await this.assertNoOwnedDigitalVariants(profileId, [variant.id]);
+    }
 
     let existingQuery = this.supabase
       .from('v2_cart_items')
@@ -404,6 +427,7 @@ export class V2CheckoutService {
     }
 
     const checkoutPayload = await this.resolveCheckoutPayload(input, cartItems);
+    await this.assertCartHasNoOwnedDigitalVariants(profileId, cartItems);
     const { quote } = await this.buildCheckoutQuote(profileId, checkoutPayload);
 
     await this.touchCart(cart.id);
@@ -464,6 +488,7 @@ export class V2CheckoutService {
     }
 
     const checkoutPayload = await this.resolveCheckoutPayload(input, cartItems);
+    await this.assertCartHasNoOwnedDigitalVariants(profileId, cartItems);
     const { quote, shippingAmount } = await this.buildCheckoutQuote(
       profileId,
       checkoutPayload,
@@ -987,6 +1012,108 @@ export class V2CheckoutService {
     return {
       items,
       total: items.length,
+    };
+  }
+
+  async getDigitalOwnership(
+    profileId: string,
+    input: DigitalOwnershipLookupInput = {},
+  ): Promise<any> {
+    const requestedVariantIds = this.normalizeUuidList(
+      input.variantIds || [],
+      'variant_ids',
+    );
+    const requestedProductIds = this.normalizeUuidList(
+      input.productIds || [],
+      'product_ids',
+    );
+
+    if (requestedVariantIds.length === 0 && requestedProductIds.length === 0) {
+      return this.buildEmptyDigitalOwnershipResult(
+        requestedVariantIds,
+        requestedProductIds,
+      );
+    }
+
+    const rows = await this.findActiveDigitalOwnershipRows(profileId, {
+      variantIds: requestedVariantIds,
+      productIds: requestedProductIds,
+    });
+    const requestedVariantIdSet = new Set(requestedVariantIds);
+    const requestedProductIdSet = new Set(requestedProductIds);
+    const byVariantId: Record<string, DigitalOwnershipRecord> = {};
+    const byProductId: Record<string, DigitalOwnershipRecord> = {};
+    const items: DigitalOwnershipRecord[] = [];
+
+    for (const row of rows) {
+      const orderItem =
+        row?.order_item &&
+        typeof row.order_item === 'object' &&
+        !Array.isArray(row.order_item)
+          ? row.order_item
+          : null;
+      const order =
+        row?.order && typeof row.order === 'object' && !Array.isArray(row.order)
+          ? row.order
+          : null;
+      const variantId = this.normalizeOptionalUuid(orderItem?.variant_id);
+      const productId = this.normalizeOptionalUuid(orderItem?.product_id);
+      const matchesVariant = Boolean(
+        variantId && requestedVariantIdSet.has(variantId),
+      );
+      const matchesProduct = Boolean(
+        productId && requestedProductIdSet.has(productId),
+      );
+
+      if (!matchesVariant && !matchesProduct) {
+        continue;
+      }
+
+      const record: DigitalOwnershipRecord = {
+        variant_id: variantId,
+        product_id: productId,
+        owned: true,
+        ownership_status:
+          this.normalizeOptionalText(row.status) === 'GRANTED'
+            ? 'OWNED'
+            : 'PENDING',
+        entitlement_id: row.id,
+        entitlement_status: this.normalizeOptionalText(row.status) || 'PENDING',
+        order_id: order?.id || row.order_id,
+        order_no: this.normalizeOptionalText(order?.order_no),
+        order_status: this.normalizeOptionalText(order?.order_status),
+        payment_status: this.normalizeOptionalText(order?.payment_status),
+        granted_at: this.normalizeOptionalText(row.granted_at),
+        expires_at: this.normalizeOptionalText(row.expires_at),
+      };
+
+      items.push(record);
+      if (
+        variantId &&
+        (!byVariantId[variantId] ||
+          this.shouldPreferDigitalOwnershipRecord(record, byVariantId[variantId]))
+      ) {
+        byVariantId[variantId] = record;
+      }
+      if (
+        productId &&
+        (!byProductId[productId] ||
+          this.shouldPreferDigitalOwnershipRecord(record, byProductId[productId]))
+      ) {
+        byProductId[productId] = record;
+      }
+    }
+
+    return {
+      requested: {
+        variant_ids: requestedVariantIds,
+        product_ids: requestedProductIds,
+      },
+      items,
+      by_variant_id: byVariantId,
+      by_product_id: byProductId,
+      owned_variant_ids: Object.keys(byVariantId),
+      owned_product_ids: Object.keys(byProductId),
     };
   }
 
@@ -3707,6 +3834,202 @@ export class V2CheckoutService {
     return data;
   }
 
+  private buildEmptyDigitalOwnershipResult(
+    variantIds: string[],
+    productIds: string[],
+  ): any {
+    return {
+      requested: {
+        variant_ids: variantIds,
+        product_ids: productIds,
+      },
+      items: [],
+      by_variant_id: {},
+      by_product_id: {},
+      owned_variant_ids: [],
+      owned_product_ids: [],
+    };
+  }
+
+  private async findActiveDigitalOwnershipRows(
+    profileId: string,
+    input: { variantIds: string[]; productIds: string[] },
+  ): Promise<any[]> {
+    if (input.variantIds.length === 0 && input.productIds.length === 0) {
+      return [];
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_digital_entitlements')
+      .select(
+        `
+        id,
+        order_id,
+        status,
+        granted_at,
+        expires_at,
+        created_at,
+        order:v2_orders!inner (
+          id,
+          profile_id,
+          order_no,
+          order_status,
+          payment_status,
+          fulfillment_status,
+          placed_at
+        ),
+        order_item:v2_order_items!inner (
+          id,
+          order_id,
+          product_id,
+          variant_id,
+          line_status,
+          product_name_snapshot,
+          variant_name_snapshot
+        )
+      `,
+      )
+      .eq('order.profile_id', profileId)
+      .in('status', ['PENDING', 'GRANTED'])
+      .order('granted_at', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(1000);
+
+    if (error) {
+      throw new ApiException(
+        '디지털 ownership 조회 실패',
+        500,
+        'V2_DIGITAL_OWNERSHIP_FETCH_FAILED',
+      );
+    }
+
+    const variantIdSet = new Set(input.variantIds);
+    const productIdSet = new Set(input.productIds);
+
+    return ((data || []) as any[]).filter((row) => {
+      if (this.shouldSkipDigitalOwnershipRow(row)) {
+        return false;
+      }
+      const orderItem =
+        row?.order_item &&
+        typeof row.order_item === 'object' &&
+        !Array.isArray(row.order_item)
+          ? row.order_item
+          : null;
+      const variantId = this.normalizeOptionalUuid(orderItem?.variant_id);
+      const productId = this.normalizeOptionalUuid(orderItem?.product_id);
+
+      return Boolean(
+        (variantId && variantIdSet.has(variantId)) ||
+          (productId && productIdSet.has(productId)),
+      );
+    });
+  }
+
+  private shouldSkipDigitalOwnershipRow(row: any): boolean {
+    const order =
+      row?.order && typeof row.order === 'object' && !Array.isArray(row.order)
+        ? row.order
+        : null;
+    const orderItem =
+      row?.order_item &&
+      typeof row.order_item === 'object' &&
+      !Array.isArray(row.order_item)
+        ? row.order_item
+        : null;
+    const orderStatus = this.normalizeOptionalText(
+      order?.order_status,
+    )?.toUpperCase();
+    const lineStatus = this.normalizeOptionalText(
+      orderItem?.line_status,
+    )?.toUpperCase();
+
+    return (
+      orderStatus === 'CANCELED' ||
+      lineStatus === 'CANCELED' ||
+      lineStatus === 'REFUNDED'
+    );
+  }
+
+  private shouldPreferDigitalOwnershipRecord(
+    candidate: DigitalOwnershipRecord,
+    current: DigitalOwnershipRecord,
+  ): boolean {
+    const candidateRank = candidate.ownership_status === 'OWNED' ? 2 : 1;
+    const currentRank = current.ownership_status === 'OWNED' ? 2 : 1;
+    if (candidateRank !== currentRank) {
+      return candidateRank > currentRank;
+    }
+
+    const candidateTime =
+      new Date(candidate.granted_at || candidate.expires_at || 0).getTime() ||
+      0;
+    const currentTime =
+      new Date(current.granted_at || current.expires_at || 0).getTime() || 0;
+    return candidateTime > currentTime;
+  }
+
+  private async assertCartHasNoOwnedDigitalVariants(
+    profileId: string,
+    cartItems: any[],
+  ): Promise<void> {
+    const digitalVariantIds = this.collectDigitalVariantIdsFromCartItems(cartItems);
+    await this.assertNoOwnedDigitalVariants(profileId, digitalVariantIds);
+  }
+
+  private collectDigitalVariantIdsFromCartItems(cartItems: any[]): string[] {
+    const digitalVariantIds = new Set<string>();
+
+    for (const item of cartItems) {
+      if (!this.isDigitalVariantSnapshot(item?.variant)) {
+        continue;
+      }
+      const variantId = this.normalizeOptionalUuid(
+        item?.variant_id || item?.variant?.id,
+      );
+      if (variantId) {
+        digitalVariantIds.add(variantId);
+      }
+    }
+
+    return Array.from(digitalVariantIds);
+  }
+
+  private async assertNoOwnedDigitalVariants(
+    profileId: string,
+    variantIds: string[],
+  ): Promise<void> {
+    const normalizedVariantIds = this.normalizeUuidList(
+      variantIds,
+      'variant_ids',
+    );
+    if (normalizedVariantIds.length === 0) {
+      return;
+    }
+
+    const ownership = await this.getDigitalOwnership(profileId, {
+      variantIds: normalizedVariantIds,
+    });
+    const ownedVariantIds = Array.isArray(ownership?.owned_variant_ids)
+      ? ownership.owned_variant_ids
+      : [];
+
+    if (ownedVariantIds.length > 0) {
+      throw new ApiException(
+        '이미 구매한 디지털 상품입니다. 마이페이지에서 다운로드할 수 있습니다.',
+        409,
+        'DIGITAL_ENTITLEMENT_ALREADY_OWNED',
+      );
+    }
+  }
+
+  private isDigitalVariantSnapshot(variant: any): boolean {
+    return (
+      this.normalizeOptionalText(variant?.fulfillment_type)?.toUpperCase() ===
+        'DIGITAL' && variant?.requires_shipping !== true
+    );
+  }
+
   private async fetchDigitalEntitlementById(
     entitlementId: string,
   ): Promise<any> {
@@ -4222,6 +4545,37 @@ export class V2CheckoutService {
       return null;
     }
     return normalized;
+  }
+
+  private normalizeUuidList(values: unknown[], fieldName: string): string[] {
+    if (!Array.isArray(values) || values.length === 0) {
+      return [];
+    }
+
+    const normalizedValues: string[] = [];
+    for (const value of values) {
+      const normalized = this.normalizeOptionalUuid(value);
+      if (!normalized) {
+        throw new ApiException(
+          `${fieldName}에 유효하지 않은 uuid가 포함되어 있습니다`,
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+      if (!normalizedValues.includes(normalized)) {
+        normalizedValues.push(normalized);
+      }
+    }
+
+    if (normalizedValues.length > 100) {
+      throw new ApiException(
+        `${fieldName}는 최대 100개까지 조회할 수 있습니다`,
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    return normalizedValues;
   }
 
   private normalizePositiveInteger(value: unknown, fieldName: string): number {
