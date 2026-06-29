@@ -717,6 +717,31 @@ interface BuildV2PriceQuoteInput {
   evaluated_at?: string | null;
 }
 
+type V2CampaignOverridePricingMode =
+  | 'PERCENT_DISCOUNT'
+  | 'FIXED_DISCOUNT'
+  | 'DIRECT_PRICE'
+  | 'UNKNOWN';
+
+type V2BasePriceOverrideAction = 'PROPAGATE' | 'KEEP' | 'SET_CUSTOM' | 'SKIP';
+
+interface AnalyzeV2BasePriceChangeInput {
+  product_id?: string;
+  variant_id?: string;
+  next_base_amount?: number;
+}
+
+interface ApplyV2BasePriceOverrideDecisionInput {
+  price_list_item_id?: string;
+  action?: V2BasePriceOverrideAction;
+  unit_amount?: number;
+}
+
+interface ApplyV2BasePriceChangeInput extends AnalyzeV2BasePriceChangeInput {
+  base_price_item_id?: string | null;
+  override_decisions?: ApplyV2BasePriceOverrideDecisionInput[];
+}
+
 type V2ShopSort =
   | 'SORT_ORDER'
   | 'LATEST'
@@ -5831,6 +5856,241 @@ export class V2CatalogService {
     }
 
     return data;
+  }
+
+  async analyzeVariantBasePriceChange(
+    input: AnalyzeV2BasePriceChangeInput,
+  ): Promise<any> {
+    const productId = this.normalizeRequiredText(
+      input.product_id,
+      'product_id는 필수입니다',
+    );
+    const variantId = this.normalizeRequiredText(
+      input.variant_id,
+      'variant_id는 필수입니다',
+    );
+    const nextBaseAmount = this.normalizeOptionalInteger(
+      input.next_base_amount,
+      'next_base_amount',
+    );
+    if (nextBaseAmount === null) {
+      throw new ApiException(
+        'next_base_amount는 필수입니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const product = await this.getProductById(productId);
+    const variant = await this.getVariantById(variantId);
+    if (variant.product_id !== productId) {
+      throw new ApiException(
+        'variant가 지정한 product에 속하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const priceItems = await this.fetchBasePriceChangePriceItems(productId);
+    const matchingItems = priceItems.filter(
+      (item) => item.variant_id === variantId || item.variant_id === null,
+    );
+    const currentBaseItem = this.resolveBasePriceItemForVariant(
+      matchingItems,
+      productId,
+      variantId,
+    );
+    const impacts = matchingItems
+      .filter((item) => this.isActivePublishedOverrideItem(item))
+      .map((item) =>
+        this.buildBasePriceOverrideImpact({
+          item,
+          nextBaseAmount,
+          currentBaseAmount: currentBaseItem?.unit_amount ?? null,
+        }),
+      );
+
+    return {
+      product: {
+        id: product.id,
+        title: product.title,
+        project_id: product.project_id,
+      },
+      variant: {
+        id: variant.id,
+        title: variant.title,
+        sku: variant.sku,
+      },
+      current_base: currentBaseItem
+        ? this.buildBasePriceItemSummary(currentBaseItem, variantId)
+        : null,
+      next_base_amount: nextBaseAmount,
+      impacts,
+      summary: {
+        total_count: impacts.length,
+        propagatable_count: impacts.filter(
+          (impact) => impact.can_auto_propagate,
+        ).length,
+        direct_price_count: impacts.filter(
+          (impact) => impact.pricing_mode === 'DIRECT_PRICE',
+        ).length,
+        unknown_count: impacts.filter(
+          (impact) => impact.pricing_mode === 'UNKNOWN',
+        ).length,
+      },
+    };
+  }
+
+  async applyVariantBasePriceChange(
+    input: ApplyV2BasePriceChangeInput,
+  ): Promise<any> {
+    const analysis = await this.analyzeVariantBasePriceChange(input);
+    const productId = analysis.product.id as string;
+    const variantId = analysis.variant.id as string;
+    const nextBaseAmount = analysis.next_base_amount as number;
+    const basePriceItemId = this.normalizeOptionalText(
+      input.base_price_item_id,
+    );
+    if (!basePriceItemId) {
+      throw new ApiException(
+        'base_price_item_id는 필수입니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const baseSnapshot = await this.getPriceListItemById(basePriceItemId);
+    if (
+      baseSnapshot.product_id !== productId ||
+      ![variantId, null].includes(baseSnapshot.variant_id)
+    ) {
+      throw new ApiException(
+        'base_price_item_id가 지정한 상품 옵션과 일치하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const decisionsByItemId = new Map(
+      (input.override_decisions || [])
+        .map((decision) => ({
+          ...decision,
+          price_list_item_id: this.normalizeOptionalText(
+            decision.price_list_item_id,
+          ),
+        }))
+        .filter(
+          (
+            decision,
+          ): decision is ApplyV2BasePriceOverrideDecisionInput & {
+            price_list_item_id: string;
+          } => Boolean(decision.price_list_item_id),
+        )
+        .map((decision) => [decision.price_list_item_id, decision]),
+    );
+
+    const overrideSnapshots: any[] = [];
+    const updatedOverrides: any[] = [];
+    let updatedBase: any | null = null;
+
+    try {
+      updatedBase = await this.updatePriceListItemFields(baseSnapshot.id, {
+        unit_amount: nextBaseAmount,
+        compare_at_amount: null,
+        metadata: {
+          ...this.normalizeRecordMetadata(baseSnapshot.metadata),
+          pricing_mode: 'BASE',
+          source: 'v2-variant-form',
+          base_price_change_applied_at: new Date().toISOString(),
+          previous_unit_amount: baseSnapshot.unit_amount,
+        },
+      });
+
+      for (const impact of analysis.impacts || []) {
+        const decision = decisionsByItemId.get(impact.price_list_item_id);
+        const action = this.resolveBasePriceOverrideAction(impact, decision);
+        if (action === 'SKIP' || action === 'KEEP') {
+          continue;
+        }
+
+        const nextOverrideAmount =
+          action === 'SET_CUSTOM'
+            ? this.normalizeOptionalInteger(
+                decision?.unit_amount,
+                'override unit_amount',
+              )
+            : impact.next_unit_amount;
+        if (nextOverrideAmount === null || nextOverrideAmount === undefined) {
+          throw new ApiException(
+            '전파할 OVERRIDE 가격을 계산할 수 없습니다',
+            400,
+            'VALIDATION_ERROR',
+          );
+        }
+
+        const snapshot = await this.getPriceListItemById(
+          impact.price_list_item_id,
+        );
+        overrideSnapshots.push(snapshot);
+        const metadata = this.buildPropagatedOverrideMetadata({
+          item: snapshot,
+          impact,
+          action,
+          nextBaseAmount,
+          nextOverrideAmount,
+        });
+        const updated = await this.updatePriceListItemFields(snapshot.id, {
+          unit_amount: nextOverrideAmount,
+          compare_at_amount: this.resolveCompareAtAmountForOverride(
+            nextBaseAmount,
+            nextOverrideAmount,
+          ),
+          metadata,
+        });
+        updatedOverrides.push(updated);
+      }
+    } catch (error) {
+      const rollbackErrors: string[] = [];
+      if (updatedBase) {
+        try {
+          await this.restorePriceListItemSnapshot(baseSnapshot);
+        } catch (rollbackError) {
+          rollbackErrors.push(this.getErrorMessage(rollbackError));
+        }
+      }
+      for (const snapshot of overrideSnapshots.reverse()) {
+        try {
+          await this.restorePriceListItemSnapshot(snapshot);
+        } catch (rollbackError) {
+          rollbackErrors.push(this.getErrorMessage(rollbackError));
+        }
+      }
+
+      if (rollbackErrors.length > 0) {
+        throw new ApiException(
+          `가격 변경 적용 실패 후 rollback도 실패했습니다. 수동 확인이 필요합니다. 원인: ${this.getErrorMessage(
+            error,
+          )}`,
+          500,
+          'V2_BASE_PRICE_CHANGE_ROLLBACK_FAILED',
+        );
+      }
+
+      throw new ApiException(
+        `가격 변경 적용에 실패해 기존 상태로 복구했습니다. 원인: ${this.getErrorMessage(
+          error,
+        )}`,
+        500,
+        'V2_BASE_PRICE_CHANGE_ROLLED_BACK',
+      );
+    }
+
+    return {
+      analysis,
+      updated_base_price_item: updatedBase,
+      updated_override_price_items: updatedOverrides,
+      rollback_performed: false,
+    };
   }
 
   async getPromotions(filters: {
@@ -12973,6 +13233,360 @@ export class V2CatalogService {
       return {};
     }
     return { ...(value as Record<string, unknown>) };
+  }
+
+  private async fetchBasePriceChangePriceItems(
+    productId: string,
+  ): Promise<any[]> {
+    const { data, error } = await this.supabase
+      .from('v2_price_list_items')
+      .select(
+        `
+        *,
+        price_list:v2_price_lists(
+          id,
+          campaign_id,
+          scope_type,
+          status,
+          currency_code,
+          priority,
+          published_at,
+          starts_at,
+          ends_at,
+          channel_scope_json,
+          deleted_at,
+          created_at,
+          updated_at,
+          campaign:v2_campaigns(
+            id,
+            code,
+            name,
+            campaign_type,
+            status,
+            starts_at,
+            ends_at,
+            deleted_at
+          )
+        )
+      `,
+      )
+      .eq('product_id', productId)
+      .eq('status', 'ACTIVE')
+      .is('deleted_at', null);
+
+    if (error) {
+      throw new ApiException(
+        '가격 변경 영향 분석용 price item 조회 실패',
+        500,
+        'V2_BASE_PRICE_CHANGE_ITEMS_FETCH_FAILED',
+      );
+    }
+
+    return data || [];
+  }
+
+  private resolveBasePriceItemForVariant(
+    items: any[],
+    productId: string,
+    variantId: string,
+  ): any | null {
+    const baseItems = (items || []).filter((item) => {
+      const priceList = item.price_list;
+      return (
+        item.product_id === productId &&
+        (item.variant_id === variantId || item.variant_id === null) &&
+        item.status === 'ACTIVE' &&
+        priceList?.scope_type === 'BASE' &&
+        priceList?.status === 'PUBLISHED' &&
+        !priceList?.deleted_at
+      );
+    });
+    const exact = baseItems.filter((item) => item.variant_id === variantId);
+    return this.pickBestPriceItem(exact.length > 0 ? exact : baseItems);
+  }
+
+  private buildBasePriceItemSummary(item: any, variantId: string): any {
+    return {
+      price_list_item_id: item.id,
+      price_list_id: item.price_list_id,
+      unit_amount: item.unit_amount,
+      compare_at_amount: item.compare_at_amount ?? null,
+      scope_level: item.variant_id === variantId ? 'VARIANT' : 'PRODUCT',
+      pricing_mode:
+        this.normalizeRecordMetadata(item.metadata).pricing_mode ?? 'BASE',
+      updated_at: item.updated_at,
+    };
+  }
+
+  private isActivePublishedOverrideItem(item: any): boolean {
+    const priceList = item.price_list;
+    return (
+      item.status === 'ACTIVE' &&
+      !item.deleted_at &&
+      priceList?.scope_type === 'OVERRIDE' &&
+      priceList?.status === 'PUBLISHED' &&
+      !priceList?.deleted_at
+    );
+  }
+
+  private buildBasePriceOverrideImpact(params: {
+    item: any;
+    nextBaseAmount: number;
+    currentBaseAmount: number | null;
+  }): any {
+    const item = params.item;
+    const metadata = this.normalizeRecordMetadata(item.metadata);
+    const pricingMode = this.resolveOverridePricingMode(metadata);
+    const discountValue = this.readOptionalNumber(metadata.discount_value);
+    const configuredBaseAmount = this.readOptionalNumber(metadata.base_amount);
+    const nextUnitAmount = this.computeBasePriceOverrideAmount({
+      pricingMode,
+      nextBaseAmount: params.nextBaseAmount,
+      currentUnitAmount: item.unit_amount,
+      discountValue,
+    });
+    const canAutoPropagate =
+      ['PERCENT_DISCOUNT', 'FIXED_DISCOUNT'].includes(pricingMode) &&
+      nextUnitAmount !== null;
+    const defaultAction: V2BasePriceOverrideAction = canAutoPropagate
+      ? 'PROPAGATE'
+      : pricingMode === 'DIRECT_PRICE'
+        ? 'KEEP'
+        : 'SKIP';
+
+    return {
+      price_list_item_id: item.id,
+      price_list_id: item.price_list_id,
+      campaign_id: item.price_list?.campaign_id ?? null,
+      campaign: item.price_list?.campaign
+        ? {
+            id: item.price_list.campaign.id,
+            code: item.price_list.campaign.code,
+            name: item.price_list.campaign.name,
+            campaign_type: item.price_list.campaign.campaign_type,
+            status: item.price_list.campaign.status,
+          }
+        : null,
+      product_id: item.product_id,
+      variant_id: item.variant_id,
+      scope_level: item.variant_id ? 'VARIANT' : 'PRODUCT',
+      pricing_mode: pricingMode,
+      current_unit_amount: item.unit_amount,
+      compare_at_amount: item.compare_at_amount ?? null,
+      configured_base_amount: configuredBaseAmount,
+      current_base_amount: params.currentBaseAmount,
+      next_base_amount: params.nextBaseAmount,
+      discount_value: discountValue,
+      next_unit_amount: nextUnitAmount,
+      next_compare_at_amount:
+        nextUnitAmount === null
+          ? null
+          : this.resolveCompareAtAmountForOverride(
+              params.nextBaseAmount,
+              nextUnitAmount,
+            ),
+      can_auto_propagate: canAutoPropagate,
+      default_action: defaultAction,
+      warning:
+        pricingMode === 'UNKNOWN'
+          ? 'pricing_mode metadata가 없어 자동 전파할 수 없습니다.'
+          : pricingMode === 'DIRECT_PRICE'
+            ? '직접 가격은 기본적으로 고정가를 유지합니다.'
+            : nextUnitAmount === null
+              ? '할인 값이 유효하지 않아 자동 전파할 수 없습니다.'
+              : null,
+      metadata,
+    };
+  }
+
+  private resolveOverridePricingMode(
+    metadata: Record<string, unknown>,
+  ): V2CampaignOverridePricingMode {
+    const raw = metadata.pricing_mode;
+    if (
+      raw === 'PERCENT_DISCOUNT' ||
+      raw === 'FIXED_DISCOUNT' ||
+      raw === 'DIRECT_PRICE'
+    ) {
+      return raw;
+    }
+    return 'UNKNOWN';
+  }
+
+  private readOptionalNumber(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  }
+
+  private computeBasePriceOverrideAmount(params: {
+    pricingMode: V2CampaignOverridePricingMode;
+    nextBaseAmount: number;
+    currentUnitAmount: number;
+    discountValue: number | null;
+  }): number | null {
+    if (params.pricingMode === 'PERCENT_DISCOUNT') {
+      const discountValue = params.discountValue;
+      if (discountValue === null || discountValue < 0 || discountValue > 100) {
+        return null;
+      }
+      return Math.max(
+        0,
+        Math.round(params.nextBaseAmount * ((100 - discountValue) / 100)),
+      );
+    }
+    if (params.pricingMode === 'FIXED_DISCOUNT') {
+      const discountValue = params.discountValue;
+      if (discountValue === null || discountValue < 0) {
+        return null;
+      }
+      return Math.max(0, params.nextBaseAmount - Math.round(discountValue));
+    }
+    if (params.pricingMode === 'DIRECT_PRICE') {
+      return params.currentUnitAmount;
+    }
+    return null;
+  }
+
+  private resolveBasePriceOverrideAction(
+    impact: any,
+    decision?: ApplyV2BasePriceOverrideDecisionInput,
+  ): V2BasePriceOverrideAction {
+    const action = decision?.action ?? impact.default_action;
+    const allowed: V2BasePriceOverrideAction[] = [
+      'PROPAGATE',
+      'KEEP',
+      'SET_CUSTOM',
+      'SKIP',
+    ];
+    if (!allowed.includes(action)) {
+      throw new ApiException(
+        'OVERRIDE 전파 action 값이 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    if (impact.pricing_mode === 'UNKNOWN' && action !== 'SKIP') {
+      throw new ApiException(
+        'metadata가 없는 OVERRIDE는 자동 전파할 수 없습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    if (
+      impact.pricing_mode !== 'DIRECT_PRICE' &&
+      (action === 'KEEP' || action === 'SET_CUSTOM')
+    ) {
+      throw new ApiException(
+        '할인 OVERRIDE에는 PROPAGATE 또는 SKIP만 사용할 수 있습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    if (impact.pricing_mode === 'DIRECT_PRICE' && action === 'PROPAGATE') {
+      throw new ApiException(
+        '직접 가격 OVERRIDE에는 PROPAGATE를 사용할 수 없습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    return action;
+  }
+
+  private buildPropagatedOverrideMetadata(params: {
+    item: any;
+    impact: any;
+    action: V2BasePriceOverrideAction;
+    nextBaseAmount: number;
+    nextOverrideAmount: number;
+  }): Record<string, unknown> {
+    const metadata = this.normalizeRecordMetadata(params.item.metadata);
+    return {
+      ...metadata,
+      base_amount: params.nextBaseAmount,
+      previous_base_amount: params.impact.configured_base_amount,
+      previous_unit_amount: params.item.unit_amount,
+      propagated_action: params.action,
+      propagated_at: new Date().toISOString(),
+      propagated_source: 'BASE_PRICE_CHANGE',
+      pricing_mode:
+        params.impact.pricing_mode === 'UNKNOWN'
+          ? metadata.pricing_mode
+          : params.impact.pricing_mode,
+      discount_value:
+        params.action === 'SET_CUSTOM'
+          ? params.nextOverrideAmount
+          : metadata.discount_value,
+    };
+  }
+
+  private resolveCompareAtAmountForOverride(
+    nextBaseAmount: number,
+    nextUnitAmount: number,
+  ): number | null {
+    return nextBaseAmount >= nextUnitAmount ? nextBaseAmount : null;
+  }
+
+  private async updatePriceListItemFields(
+    itemId: string,
+    fields: Record<string, unknown>,
+  ): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('v2_price_list_items')
+      .update(fields)
+      .eq('id', itemId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'price list item 수정 실패',
+        500,
+        'V2_PRICE_LIST_ITEM_UPDATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  private async restorePriceListItemSnapshot(snapshot: any): Promise<void> {
+    await this.updatePriceListItemFields(snapshot.id, {
+      product_id: snapshot.product_id,
+      variant_id: snapshot.variant_id,
+      status: snapshot.status,
+      unit_amount: snapshot.unit_amount,
+      compare_at_amount: snapshot.compare_at_amount,
+      min_purchase_quantity: snapshot.min_purchase_quantity,
+      max_purchase_quantity: snapshot.max_purchase_quantity,
+      starts_at: snapshot.starts_at,
+      ends_at: snapshot.ends_at,
+      channel_scope_json: snapshot.channel_scope_json,
+      source_type: snapshot.source_type,
+      source_id: snapshot.source_id,
+      source_snapshot_json: snapshot.source_snapshot_json,
+      metadata: snapshot.metadata ?? {},
+    });
+  }
+
+  private getErrorMessage(error: unknown): string {
+    if (error instanceof Error && error.message) {
+      return error.message;
+    }
+    if (error && typeof error === 'object') {
+      const response = (error as { response?: unknown }).response;
+      if (response && typeof response === 'object') {
+        const message = (response as { message?: unknown }).message;
+        if (typeof message === 'string') {
+          return message;
+        }
+      }
+    }
+    return '알 수 없는 오류';
   }
 
   private assertArtistStatus(value: string): void {

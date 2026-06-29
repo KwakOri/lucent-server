@@ -144,6 +144,20 @@ interface CheckoutPayload {
   shippingRequired: boolean;
 }
 
+interface CheckoutPriceMismatch {
+  cart_item_id: string;
+  product_id: string | null;
+  variant_id: string;
+  campaign_id: string | null;
+  quantity: number;
+  product_title: string | null;
+  variant_title: string | null;
+  snapshot_unit_amount: number;
+  current_unit_amount: number;
+  snapshot_line_total: number;
+  current_line_total: number;
+}
+
 interface CampaignSnapshotContext {
   campaignId: string | null;
   campaignName: string | null;
@@ -429,12 +443,15 @@ export class V2CheckoutService {
     const checkoutPayload = await this.resolveCheckoutPayload(input, cartItems);
     await this.assertCartHasNoOwnedDigitalVariants(profileId, cartItems);
     const { quote } = await this.buildCheckoutQuote(profileId, checkoutPayload);
+    const priceMismatches = this.buildCheckoutPriceMismatches(cartItems, quote);
 
     await this.touchCart(cart.id);
 
     return {
       cart: this.buildCartSummary(cart, cartItems),
       quote,
+      price_mismatches: priceMismatches,
+      price_mismatch_count: priceMismatches.length,
     };
   }
 
@@ -493,6 +510,14 @@ export class V2CheckoutService {
       profileId,
       checkoutPayload,
     );
+    const priceMismatches = this.buildCheckoutPriceMismatches(cartItems, quote);
+    if (priceMismatches.length > 0) {
+      throw new ApiException(
+        '장바구니 가격 정보가 변경되었습니다. 장바구니를 갱신한 뒤 다시 시도해 주세요.',
+        409,
+        'V2_CHECKOUT_PRICE_CHANGED',
+      );
+    }
 
     const summary = (quote?.summary || {}) as Record<string, unknown>;
     const currencyCode = this.normalizeCurrencyCode(input.currency_code);
@@ -939,7 +964,7 @@ export class V2CheckoutService {
 
         const hasDigitalAssetDownloadTarget = Boolean(
           this.resolveDigitalAssetDirectDownloadUrl(digitalAsset) ||
-            this.resolveDigitalAssetR2StoragePath(digitalAsset),
+          this.resolveDigitalAssetR2StoragePath(digitalAsset),
         );
         const availability = this.evaluateEntitlementAvailability({
           entitlement: row,
@@ -1091,14 +1116,20 @@ export class V2CheckoutService {
       if (
         variantId &&
         (!byVariantId[variantId] ||
-          this.shouldPreferDigitalOwnershipRecord(record, byVariantId[variantId]))
+          this.shouldPreferDigitalOwnershipRecord(
+            record,
+            byVariantId[variantId],
+          ))
       ) {
         byVariantId[variantId] = record;
       }
       if (
         productId &&
         (!byProductId[productId] ||
-          this.shouldPreferDigitalOwnershipRecord(record, byProductId[productId]))
+          this.shouldPreferDigitalOwnershipRecord(
+            record,
+            byProductId[productId],
+          ))
       ) {
         byProductId[productId] = record;
       }
@@ -2538,6 +2569,87 @@ export class V2CheckoutService {
     };
   }
 
+  private buildCheckoutPriceMismatches(
+    cartItems: any[],
+    quote: any,
+  ): CheckoutPriceMismatch[] {
+    const quoteLines = Array.isArray(quote?.lines) ? quote.lines : [];
+    const mismatches: CheckoutPriceMismatch[] = [];
+
+    for (let index = 0; index < cartItems.length; index += 1) {
+      const cartItem = cartItems[index];
+      const quoteLine = quoteLines[index] || null;
+      const snapshotUnitAmount = this.readDisplayPriceSnapshotUnitAmount(
+        cartItem?.display_price_snapshot,
+      );
+      if (snapshotUnitAmount === null) {
+        continue;
+      }
+
+      const pricing = this.toOptionalRecord(quoteLine?.pricing);
+      const currentUnitAmount = this.readOptionalNonNegativeAmount(
+        pricing?.unit_amount,
+      );
+      if (currentUnitAmount === null) {
+        continue;
+      }
+      if (snapshotUnitAmount === currentUnitAmount) {
+        continue;
+      }
+
+      const quantity = this.normalizePositiveInteger(
+        cartItem?.quantity ?? quoteLine?.quantity ?? 1,
+        `cartItems[${index}].quantity`,
+      );
+      mismatches.push({
+        cart_item_id: String(cartItem?.id || ''),
+        product_id: this.normalizeOptionalUuid(
+          cartItem?.product_id || quoteLine?.product_id,
+        ),
+        variant_id: String(cartItem?.variant_id || quoteLine?.variant_id || ''),
+        campaign_id: this.normalizeOptionalUuid(
+          cartItem?.campaign_id || quoteLine?.campaign_id,
+        ),
+        quantity,
+        product_title:
+          this.normalizeOptionalText(cartItem?.variant?.product?.title) ||
+          this.normalizeOptionalText(quoteLine?.product_name_snapshot),
+        variant_title:
+          this.normalizeOptionalText(cartItem?.variant?.title) ||
+          this.normalizeOptionalText(quoteLine?.variant_name_snapshot) ||
+          this.normalizeOptionalText(quoteLine?.title),
+        snapshot_unit_amount: snapshotUnitAmount,
+        current_unit_amount: currentUnitAmount,
+        snapshot_line_total: snapshotUnitAmount * quantity,
+        current_line_total: currentUnitAmount * quantity,
+      });
+    }
+
+    return mismatches.filter(
+      (mismatch) => mismatch.cart_item_id && mismatch.variant_id,
+    );
+  }
+
+  private readDisplayPriceSnapshotUnitAmount(value: unknown): number | null {
+    const snapshot = this.toOptionalRecord(value);
+    if (!snapshot) {
+      return null;
+    }
+    const candidates = [
+      snapshot.final_unit_amount,
+      snapshot.sale_unit_amount,
+      snapshot.unit_amount,
+      snapshot.amount,
+    ];
+    for (const candidate of candidates) {
+      const amount = this.readOptionalNonNegativeAmount(candidate);
+      if (amount !== null) {
+        return amount;
+      }
+    }
+    return null;
+  }
+
   private async insertOrderWithUniqueOrderNo(
     orderRow: Record<string, unknown>,
   ): Promise<any> {
@@ -3921,7 +4033,7 @@ export class V2CheckoutService {
 
       return Boolean(
         (variantId && variantIdSet.has(variantId)) ||
-          (productId && productIdSet.has(productId)),
+        (productId && productIdSet.has(productId)),
       );
     });
   }
@@ -3973,7 +4085,8 @@ export class V2CheckoutService {
     profileId: string,
     cartItems: any[],
   ): Promise<void> {
-    const digitalVariantIds = this.collectDigitalVariantIdsFromCartItems(cartItems);
+    const digitalVariantIds =
+      this.collectDigitalVariantIdsFromCartItems(cartItems);
     await this.assertNoOwnedDigitalVariants(profileId, digitalVariantIds);
   }
 
@@ -4505,6 +4618,29 @@ export class V2CheckoutService {
     }
     const normalized = value.trim();
     return normalized.length > 0 ? normalized : null;
+  }
+
+  private toOptionalRecord(value: unknown): Record<string, unknown> | null {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+    return value as Record<string, unknown>;
+  }
+
+  private readOptionalNonNegativeAmount(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      return Math.round(value);
+    }
+    if (typeof value === 'string' && value.trim().length > 0) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        return Math.round(parsed);
+      }
+    }
+    return null;
   }
 
   private normalizeOptionalHttpUrl(value: unknown): string | null {
