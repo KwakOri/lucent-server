@@ -89,6 +89,13 @@ interface ListV2OrdersQuery {
   order_status?: string;
 }
 
+interface DigitalOwnershipQuery {
+  variant_ids?: string | string[];
+  variantIds?: string | string[];
+  product_ids?: string | string[];
+  productIds?: string | string[];
+}
+
 @Controller('v2/checkout')
 export class V2CheckoutController {
   constructor(
@@ -166,6 +173,19 @@ export class V2CheckoutController {
         ? '중복 요청으로 기존 주문을 반환했습니다'
         : 'v2 주문이 생성되었습니다',
     );
+  }
+
+  @Get('me/digital-ownership')
+  async getDigitalOwnership(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: DigitalOwnershipQuery,
+  ) {
+    const user = await this.authSessionService.requireUser(authorization);
+    const result = await this.v2CheckoutService.getDigitalOwnership(user.id, {
+      variantIds: this.parseCsvQueryList(query.variant_ids ?? query.variantIds),
+      productIds: this.parseCsvQueryList(query.product_ids ?? query.productIds),
+    });
+    return successResponse(result);
   }
 
   @Get('me/digital-entitlements')
@@ -311,6 +331,18 @@ export class V2CheckoutController {
     await this.requireAdmin(authorization);
     const result = await this.v2CheckoutService.getOrderDebugById(orderId);
     return successResponse(result);
+  }
+
+  private parseCsvQueryList(value?: string | string[]): string[] {
+    if (value === undefined) {
+      return [];
+    }
+
+    const values = Array.isArray(value) ? value : [value];
+    return values
+      .flatMap((item) => item.split(','))
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
   }
 
   private async requireAdmin(
