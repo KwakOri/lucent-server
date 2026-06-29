@@ -177,7 +177,7 @@ describe('V2CatalogService', () => {
   });
 
   describe('buildShopPriceSelectionFromCandidates', () => {
-    it('falls back to ALWAYS_ON BASE when a non-base campaignId is provided', () => {
+    it('falls back to product option BASE when a campaignId is provided', () => {
       const result = (service as any).buildShopPriceSelectionFromCandidates({
         candidates: [
           {
@@ -188,20 +188,12 @@ describe('V2CatalogService', () => {
             ends_at: null,
             channel_scope_json: [],
             price_list: {
-              campaign_id: 'always-on-campaign',
+              campaign_id: null,
               scope_type: 'BASE',
               status: 'PUBLISHED',
               channel_scope_json: [],
               deleted_at: null,
-              campaign: {
-                id: 'always-on-campaign',
-                campaign_type: 'ALWAYS_ON',
-                status: 'ACTIVE',
-                starts_at: null,
-                ends_at: null,
-                channel_scope_json: [],
-                deleted_at: null,
-              },
+              campaign: null,
             },
           },
         ],
@@ -254,11 +246,10 @@ describe('V2CatalogService', () => {
   });
 
   describe('selectShopPriceItem', () => {
-    it('uses ALWAYS_ON BASE fallback only when the explicit campaign target includes the variant', () => {
+    it('uses product option BASE only when the explicit campaign target includes the variant', () => {
       const productId = 'product-1';
       const variantId = 'variant-1';
       const popupCampaignId = 'popup-campaign';
-      const alwaysOnCampaignId = 'always-on-campaign';
       const priceItems = [
         {
           id: 'base-item-1',
@@ -269,20 +260,12 @@ describe('V2CatalogService', () => {
           ends_at: null,
           channel_scope_json: [],
           price_list: {
-            campaign_id: alwaysOnCampaignId,
+            campaign_id: null,
             scope_type: 'BASE',
             status: 'PUBLISHED',
             channel_scope_json: [],
             deleted_at: null,
-            campaign: {
-              id: alwaysOnCampaignId,
-              campaign_type: 'ALWAYS_ON',
-              status: 'ACTIVE',
-              starts_at: null,
-              ends_at: null,
-              channel_scope_json: [],
-              deleted_at: null,
-            },
+            campaign: null,
           },
         },
       ];
@@ -296,7 +279,6 @@ describe('V2CatalogService', () => {
         campaignId: popupCampaignId,
         channel: 'WEB',
         campaignTargetEligibilityByCampaignId: new Map([
-          [alwaysOnCampaignId, createCampaignEligibilityScope(productId)],
           [popupCampaignId, createCampaignEligibilityScope(productId)],
         ]),
       });
@@ -310,19 +292,16 @@ describe('V2CatalogService', () => {
         evaluatedAt: '2026-03-22T00:00:00.000Z',
         campaignId: popupCampaignId,
         channel: 'WEB',
-        campaignTargetEligibilityByCampaignId: new Map([
-          [alwaysOnCampaignId, createCampaignEligibilityScope(productId)],
-        ]),
+        campaignTargetEligibilityByCampaignId: new Map(),
       });
       expect(notTargeted.selected).toBeNull();
     });
 
-    it('does not treat PROJECT targets as explicit inclusion for non-always campaigns', () => {
+    it('uses product option BASE for non-always campaigns with PROJECT targets', () => {
       const projectId = 'project-1';
       const productId = 'product-1';
       const variantId = 'variant-1';
       const popupCampaignId = 'popup-campaign';
-      const alwaysOnCampaignId = 'always-on-campaign';
       const priceItems = [
         {
           id: 'base-item-1',
@@ -333,20 +312,12 @@ describe('V2CatalogService', () => {
           ends_at: null,
           channel_scope_json: [],
           price_list: {
-            campaign_id: alwaysOnCampaignId,
+            campaign_id: null,
             scope_type: 'BASE',
             status: 'PUBLISHED',
             channel_scope_json: [],
             deleted_at: null,
-            campaign: {
-              id: alwaysOnCampaignId,
-              campaign_type: 'ALWAYS_ON',
-              status: 'ACTIVE',
-              starts_at: null,
-              ends_at: null,
-              channel_scope_json: [],
-              deleted_at: null,
-            },
+            campaign: null,
           },
         },
       ];
@@ -361,17 +332,13 @@ describe('V2CatalogService', () => {
         channel: 'WEB',
         campaignTargetEligibilityByCampaignId: new Map([
           [
-            alwaysOnCampaignId,
-            createProjectCampaignEligibilityScope(projectId, 'ALWAYS_ON'),
-          ],
-          [
             popupCampaignId,
             createProjectCampaignEligibilityScope(projectId, 'POPUP'),
           ],
         ]),
       });
 
-      expect(result.selected).toBeNull();
+      expect(result.selected?.id).toBe('base-item-1');
     });
   });
 
