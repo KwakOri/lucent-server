@@ -1073,6 +1073,20 @@ export class V2CatalogController {
     return successResponse({ message: 'campaign이 삭제되었습니다' });
   }
 
+  @Post('campaigns/:id/product-editor/apply')
+  async applyCampaignProductEditor(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') campaignId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2CatalogService.applyCampaignProductEditor(
+      campaignId,
+      body,
+    );
+    return successResponse(result, 'campaign 상품 편집 변경사항이 저장되었습니다');
+  }
+
   @Get('campaigns/:id/targets')
   async getCampaignTargets(
     @Headers('authorization') authorization: string | undefined,
