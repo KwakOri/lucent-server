@@ -4403,6 +4403,133 @@ export class V2CatalogService {
     return data;
   }
 
+  async deleteCampaign(campaignId: string): Promise<void> {
+    await this.getCampaignById(campaignId);
+    const deletedAt = new Date().toISOString();
+
+    const { data: promotionRows, error: promotionFetchError } =
+      await this.supabase
+        .from('v2_promotions')
+        .select('id')
+        .eq('campaign_id', campaignId)
+        .is('deleted_at', null);
+
+    if (promotionFetchError) {
+      throw new ApiException(
+        'campaign 연동 promotion 조회 실패',
+        500,
+        'V2_CAMPAIGN_PROMOTIONS_FETCH_FAILED',
+      );
+    }
+
+    const promotionIds = (promotionRows || [])
+      .map((promotion) => this.normalizeOptionalText(promotion.id as string))
+      .filter((promotionId): promotionId is string => Boolean(promotionId));
+
+    const { error: targetDeleteError } = await this.supabase
+      .from('v2_campaign_targets')
+      .update({
+        deleted_at: deletedAt,
+      })
+      .eq('campaign_id', campaignId)
+      .is('deleted_at', null);
+
+    if (targetDeleteError) {
+      throw new ApiException(
+        'campaign target 삭제 실패',
+        500,
+        'V2_CAMPAIGN_TARGET_DELETE_FAILED',
+      );
+    }
+
+    const { error: priceListDeleteError } = await this.supabase
+      .from('v2_price_lists')
+      .update({
+        status: 'ARCHIVED',
+        deleted_at: deletedAt,
+      })
+      .eq('campaign_id', campaignId)
+      .is('deleted_at', null);
+
+    if (priceListDeleteError) {
+      throw new ApiException(
+        'campaign 연동 price list 삭제 실패',
+        500,
+        'V2_CAMPAIGN_PRICE_LIST_DELETE_FAILED',
+      );
+    }
+
+    if (promotionIds.length > 0) {
+      const { error: promotionRuleDeleteError } = await this.supabase
+        .from('v2_promotion_rules')
+        .update({
+          deleted_at: deletedAt,
+        })
+        .in('promotion_id', promotionIds)
+        .is('deleted_at', null);
+
+      if (promotionRuleDeleteError) {
+        throw new ApiException(
+          'campaign 연동 promotion rule 삭제 실패',
+          500,
+          'V2_CAMPAIGN_PROMOTION_RULE_DELETE_FAILED',
+        );
+      }
+
+      const { error: couponDeleteError } = await this.supabase
+        .from('v2_coupons')
+        .update({
+          status: 'ARCHIVED',
+          deleted_at: deletedAt,
+        })
+        .in('promotion_id', promotionIds)
+        .is('deleted_at', null);
+
+      if (couponDeleteError) {
+        throw new ApiException(
+          'campaign 연동 coupon 삭제 실패',
+          500,
+          'V2_CAMPAIGN_COUPON_DELETE_FAILED',
+        );
+      }
+    }
+
+    const { error: promotionDeleteError } = await this.supabase
+      .from('v2_promotions')
+      .update({
+        status: 'ARCHIVED',
+        deleted_at: deletedAt,
+      })
+      .eq('campaign_id', campaignId)
+      .is('deleted_at', null);
+
+    if (promotionDeleteError) {
+      throw new ApiException(
+        'campaign 연동 promotion 삭제 실패',
+        500,
+        'V2_CAMPAIGN_PROMOTION_DELETE_FAILED',
+      );
+    }
+
+    const { error } = await this.supabase
+      .from('v2_campaigns')
+      .update({
+        status: 'ARCHIVED',
+        project_id: null,
+        deleted_at: deletedAt,
+      })
+      .eq('id', campaignId)
+      .is('deleted_at', null);
+
+    if (error) {
+      throw new ApiException(
+        'campaign 삭제 실패',
+        500,
+        'V2_CAMPAIGN_DELETE_FAILED',
+      );
+    }
+  }
+
   async getCampaignTargets(campaignId: string): Promise<any[]> {
     await this.getCampaignById(campaignId);
     return this.fetchCampaignTargets(campaignId);
