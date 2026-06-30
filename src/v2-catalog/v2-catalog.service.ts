@@ -577,6 +577,21 @@ interface UpdateV2PriceListItemInput {
   metadata?: Record<string, unknown>;
 }
 
+interface ApplyV2CampaignProductEditorPriceChangeInput {
+  product_id?: string;
+  variant_id?: string;
+  use_base_price?: boolean;
+  unit_amount?: number | null;
+  compare_at_amount?: number | null;
+  metadata?: Record<string, unknown>;
+}
+
+interface ApplyV2CampaignProductEditorInput {
+  add_product_ids?: unknown;
+  remove_product_ids?: unknown;
+  price_changes?: ApplyV2CampaignProductEditorPriceChangeInput[];
+}
+
 interface CreateV2PromotionInput {
   campaign_id?: string | null;
   name?: string;
@@ -4001,6 +4016,448 @@ export class V2CatalogService {
       bundleDefinitions,
       variantsByProductId,
       mediaByProductId,
+    };
+  }
+
+  async applyCampaignProductEditor(
+    campaignId: string,
+    input: ApplyV2CampaignProductEditorInput,
+  ): Promise<any> {
+    const campaign = await this.getCampaignById(campaignId);
+    const normalizeOptionalProductIds = (
+      value: unknown,
+      fieldName: string,
+    ): string[] => {
+      if (value === undefined || value === null) {
+        return [];
+      }
+      const rawItems = Array.isArray(value)
+        ? value
+        : typeof value === 'string'
+          ? value.split(',')
+          : null;
+      if (!rawItems) {
+        throw new ApiException(
+          `${fieldName}는 배열 또는 쉼표 문자열이어야 합니다`,
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+      return Array.from(
+        new Set(
+          rawItems
+            .filter((item): item is string => typeof item === 'string')
+            .map((item) => item.trim())
+            .filter(Boolean),
+        ),
+      );
+    };
+
+    const addProductIds = normalizeOptionalProductIds(
+      input.add_product_ids,
+      'add_product_ids',
+    );
+    const removeProductIds = normalizeOptionalProductIds(
+      input.remove_product_ids,
+      'remove_product_ids',
+    );
+    const priceChanges =
+      input.price_changes === undefined || input.price_changes === null
+        ? []
+        : Array.isArray(input.price_changes)
+          ? input.price_changes
+          : null;
+    if (!priceChanges) {
+      throw new ApiException(
+        'price_changes는 배열이어야 합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const addProductIdSet = new Set(addProductIds);
+    const removeProductIdSet = new Set(removeProductIds);
+    const conflictedProductIds = addProductIds.filter((productId) =>
+      removeProductIdSet.has(productId),
+    );
+    if (conflictedProductIds.length > 0) {
+      throw new ApiException(
+        '같은 상품을 추가와 제거에 동시에 넣을 수 없습니다',
+        400,
+        'V2_CAMPAIGN_PRODUCT_EDITOR_CONFLICT',
+      );
+    }
+
+    const priceChangeVariantIds = new Set<string>();
+    priceChanges.forEach((change) => {
+      const variantId = this.normalizeRequiredText(
+        change.variant_id,
+        'price_changes.variant_id는 필수입니다',
+      );
+      if (priceChangeVariantIds.has(variantId)) {
+        throw new ApiException(
+          '같은 옵션의 가격 변경은 한 번만 저장할 수 있습니다',
+          400,
+          'V2_CAMPAIGN_PRODUCT_EDITOR_DUPLICATE_PRICE_CHANGE',
+        );
+      }
+      priceChangeVariantIds.add(variantId);
+    });
+
+    const [
+      targets,
+      campaignPriceLists,
+      basePriceLists,
+    ] = await Promise.all([
+      this.fetchCampaignTargets(campaignId),
+      this.getPriceLists({ campaignId, scopeType: 'OVERRIDE' }),
+      this.getPriceLists({ scopeType: 'BASE', status: 'PUBLISHED' }),
+    ]);
+    const activeCampaignPriceList =
+      campaignPriceLists.find(
+        (priceList) => priceList.status === 'PUBLISHED',
+      ) || this.pickLatestPriceListByUpdatedAt(campaignPriceLists);
+    let campaignPriceList = activeCampaignPriceList;
+    let campaignPriceListPublishedAfterChange = false;
+    const [campaignPriceItems, basePriceItems] = await Promise.all([
+      activeCampaignPriceList
+        ? this.fetchPriceListItems(activeCampaignPriceList.id as string)
+        : Promise.resolve([]),
+      this.fetchPriceListItemsForPriceLists(
+        basePriceLists.map((priceList) => priceList.id as string),
+      ),
+    ]);
+
+    const findTarget = (
+      targetType: V2CampaignTargetType,
+      targetId: string,
+      isExcluded: boolean,
+    ): any | null =>
+      targets.find(
+        (target) =>
+          target.target_type === targetType &&
+          target.target_id === targetId &&
+          target.is_excluded === isExcluded,
+      ) || null;
+    const getProductVariants = async (productId: string): Promise<any[]> => {
+      const variantsByProductId = await this.getVariantsMap([productId]);
+      return variantsByProductId[productId] || [];
+    };
+    const ensureEditorPriceList = async (): Promise<any> => {
+      if (campaignPriceList) {
+        return campaignPriceList;
+      }
+      campaignPriceList = await this.createPriceList({
+        campaign_id: campaignId,
+        name: `${campaign.name} 캠페인 가격`,
+        scope_type: 'OVERRIDE',
+        status: 'DRAFT',
+        currency_code: 'KRW',
+        starts_at: campaign.starts_at as string | null,
+        ends_at: campaign.ends_at as string | null,
+        source_type: 'ADMIN_CAMPAIGN_PRODUCT_EDITOR',
+      });
+      return campaignPriceList;
+    };
+    const isVariantIncluded = (product: any, variant: any): boolean => {
+      const projectScopeIds = new Set<string>();
+      if (campaign.project_id) {
+        projectScopeIds.add(campaign.project_id as string);
+      }
+      targets
+        .filter(
+          (target) => !target.is_excluded && target.target_type === 'PROJECT',
+        )
+        .forEach((target) => projectScopeIds.add(target.target_id as string));
+
+      const isExcluded =
+        Boolean(findTarget('PROJECT', product.project_id as string, true)) ||
+        Boolean(findTarget('PRODUCT', product.id as string, true)) ||
+        Boolean(findTarget('VARIANT', variant.id as string, true));
+      if (isExcluded) {
+        return false;
+      }
+
+      if (campaign.campaign_type === 'ALWAYS_ON') {
+        return (
+          projectScopeIds.size === 0 ||
+          projectScopeIds.has(product.project_id as string)
+        );
+      }
+
+      return (
+        Boolean(findTarget('PRODUCT', product.id as string, false)) ||
+        Boolean(findTarget('VARIANT', variant.id as string, false))
+      );
+    };
+    const findCampaignPriceItem = (
+      productId: string,
+      variantId: string,
+    ): any | null => {
+      const activeItems = (campaignPriceItems || []).filter(
+        (item) =>
+          item.product_id === productId &&
+          (item.variant_id === variantId || item.variant_id === null) &&
+          item.status === 'ACTIVE',
+      );
+      const exactItems = activeItems.filter(
+        (item) => item.variant_id === variantId,
+      );
+      return this.pickBestPriceItem(
+        exactItems.length > 0 ? exactItems : activeItems,
+      );
+    };
+
+    const result = {
+      added_products: 0,
+      added_variants: 0,
+      removed_products: 0,
+      removed_variants: 0,
+      price_changes: 0,
+    };
+
+    for (const productId of addProductIds) {
+      const product = await this.getProductById(productId);
+      const variants = await getProductVariants(productId);
+      const projectExcludeTarget = findTarget(
+        'PROJECT',
+        product.project_id as string,
+        true,
+      );
+      if (projectExcludeTarget) {
+        throw new ApiException(
+          '프로젝트 제외 대상에 속한 상품은 편집 모달에서 바로 추가할 수 없습니다',
+          400,
+          'V2_CAMPAIGN_PRODUCT_EDITOR_PROJECT_EXCLUDED',
+        );
+      }
+
+      const productExcludeTarget = findTarget('PRODUCT', productId, true);
+      if (productExcludeTarget) {
+        await this.deleteCampaignTarget(productExcludeTarget.id as string);
+      }
+      for (const variant of variants) {
+        const variantExcludeTarget = findTarget(
+          'VARIANT',
+          variant.id as string,
+          true,
+        );
+        if (variantExcludeTarget) {
+          await this.deleteCampaignTarget(variantExcludeTarget.id as string);
+        }
+      }
+
+      if (campaign.campaign_type === 'ALWAYS_ON') {
+        result.added_products += 1;
+        result.added_variants += variants.length;
+        continue;
+      }
+
+      const includeableVariants = variants.filter((variant) =>
+        this.resolveBasePriceItemForVariant(
+          basePriceItems,
+          productId,
+          variant.id as string,
+        ),
+      );
+      if (includeableVariants.length === 0) {
+        throw new ApiException(
+          '기본가가 있는 옵션이 없어 캠페인에 추가할 수 없습니다',
+          400,
+          'V2_CAMPAIGN_PRODUCT_EDITOR_NO_BASE_PRICE',
+        );
+      }
+
+      for (const variant of includeableVariants) {
+        await this.createCampaignTarget(campaignId, {
+          target_type: 'VARIANT',
+          target_id: variant.id as string,
+          source_type: 'ADMIN_CAMPAIGN_PRODUCT_EDITOR',
+          source_id: productId,
+          source_snapshot_json: {
+            product_id: productId,
+            product_title: product.title,
+            variant_id: variant.id,
+            variant_title: variant.title,
+          },
+          metadata: {
+            inclusion_mode: 'VARIANT',
+          },
+        });
+      }
+      result.added_products += 1;
+      result.added_variants += includeableVariants.length;
+    }
+
+    for (const productId of removeProductIds) {
+      const product = await this.getProductById(productId);
+      const variants = await getProductVariants(productId);
+
+      const productIncludeTarget = findTarget('PRODUCT', productId, false);
+      if (productIncludeTarget) {
+        await this.deleteCampaignTarget(productIncludeTarget.id as string);
+      }
+
+      let removedVariantCount = 0;
+      for (const variant of variants) {
+        const variantIncludeTarget = findTarget(
+          'VARIANT',
+          variant.id as string,
+          false,
+        );
+        if (variantIncludeTarget) {
+          await this.deleteCampaignTarget(variantIncludeTarget.id as string);
+        }
+
+        if (campaign.campaign_type === 'ALWAYS_ON') {
+          removedVariantCount += 1;
+          continue;
+        }
+        if (productIncludeTarget || variantIncludeTarget) {
+          removedVariantCount += 1;
+        }
+      }
+
+      if (campaign.campaign_type === 'ALWAYS_ON') {
+        await this.createCampaignTarget(campaignId, {
+          target_type: 'PRODUCT',
+          target_id: productId,
+          is_excluded: true,
+          source_type: 'ADMIN_CAMPAIGN_PRODUCT_EDITOR',
+          source_id: productId,
+          source_snapshot_json: {
+            product_id: productId,
+            product_title: product.title,
+          },
+          metadata: {
+            exclusion_mode: 'PRODUCT',
+          },
+        });
+      }
+
+      const activeItemsForProduct = (campaignPriceItems || []).filter(
+        (item) => item.product_id === productId && item.status === 'ACTIVE',
+      );
+      for (const item of activeItemsForProduct) {
+        await this.deactivatePriceListItem(item.id as string);
+      }
+
+      result.removed_products += 1;
+      result.removed_variants += removedVariantCount;
+    }
+
+    for (const change of priceChanges) {
+      const productId = this.normalizeRequiredText(
+        change.product_id,
+        'price_changes.product_id는 필수입니다',
+      );
+      const variantId = this.normalizeRequiredText(
+        change.variant_id,
+        'price_changes.variant_id는 필수입니다',
+      );
+      if (addProductIdSet.has(productId) || removeProductIdSet.has(productId)) {
+        throw new ApiException(
+          '추가/제거 예정 상품의 가격은 같은 저장에서 변경할 수 없습니다',
+          400,
+          'V2_CAMPAIGN_PRODUCT_EDITOR_PRICE_CONFLICT',
+        );
+      }
+
+      const product = await this.getProductById(productId);
+      const variant = await this.getVariantById(variantId);
+      if (variant.product_id !== productId) {
+        throw new ApiException(
+          'variant가 지정한 product에 속하지 않습니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+      if (!isVariantIncluded(product, variant)) {
+        throw new ApiException(
+          '캠페인에 포함되지 않은 상품/옵션의 가격은 변경할 수 없습니다',
+          400,
+          'V2_CAMPAIGN_PRODUCT_EDITOR_PRICE_NOT_INCLUDED',
+        );
+      }
+
+      const currentCampaignItem = findCampaignPriceItem(productId, variantId);
+      if (change.use_base_price) {
+        if (currentCampaignItem) {
+          await this.deactivatePriceListItem(currentCampaignItem.id as string);
+          result.price_changes += 1;
+        }
+        continue;
+      }
+
+      const baseItem = this.resolveBasePriceItemForVariant(
+        basePriceItems,
+        productId,
+        variantId,
+      );
+      if (!baseItem) {
+        throw new ApiException(
+          '기본가가 없는 옵션의 캠페인 가격은 변경할 수 없습니다',
+          400,
+          'V2_CAMPAIGN_PRODUCT_EDITOR_BASE_PRICE_REQUIRED',
+        );
+      }
+      const unitAmount = change.unit_amount;
+      if (!Number.isInteger(unitAmount) || (unitAmount as number) < 0) {
+        throw new ApiException(
+          'unit_amount는 0 이상의 정수여야 합니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+      const compareAtAmount =
+        change.compare_at_amount === undefined
+          ? (baseItem.unit_amount as number)
+          : change.compare_at_amount;
+      if (
+        compareAtAmount !== null &&
+        (!Number.isInteger(compareAtAmount) ||
+          compareAtAmount < (unitAmount as number))
+      ) {
+        throw new ApiException(
+          'compare_at_amount는 unit_amount 이상 정수여야 합니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+
+      const priceList = await ensureEditorPriceList();
+      await this.createPriceListItem(priceList.id as string, {
+        product_id: productId,
+        variant_id: variantId,
+        status: 'ACTIVE',
+        unit_amount: unitAmount as number,
+        compare_at_amount: compareAtAmount,
+        source_type: 'ADMIN_CAMPAIGN_PRODUCT_EDITOR',
+        source_id: campaignId,
+        source_snapshot_json: {
+          product_id: productId,
+          product_title: product.title,
+          variant_id: variantId,
+          variant_title: variant.title,
+          base_price_item_id: baseItem.id,
+        },
+        metadata: change.metadata ?? {},
+      });
+      result.price_changes += 1;
+      if (priceList.status !== 'PUBLISHED') {
+        campaignPriceListPublishedAfterChange = true;
+      }
+    }
+
+    if (campaignPriceListPublishedAfterChange && campaignPriceList) {
+      campaignPriceList = await this.publishPriceList(
+        campaignPriceList.id as string,
+      );
+    }
+
+    return {
+      ...result,
+      campaign_price_list_id: campaignPriceList?.id ?? null,
     };
   }
 
