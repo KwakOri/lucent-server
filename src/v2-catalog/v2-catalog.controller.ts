@@ -1063,6 +1063,16 @@ export class V2CatalogController {
     return successResponse(campaign, 'campaign이 CLOSED 상태로 전환되었습니다');
   }
 
+  @Delete('campaigns/:id')
+  async deleteCampaign(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') campaignId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    await this.v2CatalogService.deleteCampaign(campaignId);
+    return successResponse({ message: 'campaign이 삭제되었습니다' });
+  }
+
   @Get('campaigns/:id/targets')
   async getCampaignTargets(
     @Headers('authorization') authorization: string | undefined,
