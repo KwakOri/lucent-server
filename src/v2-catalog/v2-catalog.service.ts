@@ -577,6 +577,21 @@ interface UpdateV2PriceListItemInput {
   metadata?: Record<string, unknown>;
 }
 
+interface ApplyV2CampaignProductEditorPriceChangeInput {
+  product_id?: string;
+  variant_id?: string;
+  use_base_price?: boolean;
+  unit_amount?: number | null;
+  compare_at_amount?: number | null;
+  metadata?: Record<string, unknown>;
+}
+
+interface ApplyV2CampaignProductEditorInput {
+  add_product_ids?: unknown;
+  remove_product_ids?: unknown;
+  price_changes?: ApplyV2CampaignProductEditorPriceChangeInput[];
+}
+
 interface CreateV2PromotionInput {
   campaign_id?: string | null;
   name?: string;
@@ -715,6 +730,31 @@ interface BuildV2PriceQuoteInput {
   shipping_amount?: number | null;
   quote_reference?: string | null;
   evaluated_at?: string | null;
+}
+
+type V2CampaignOverridePricingMode =
+  | 'PERCENT_DISCOUNT'
+  | 'FIXED_DISCOUNT'
+  | 'DIRECT_PRICE'
+  | 'UNKNOWN';
+
+type V2BasePriceOverrideAction = 'PROPAGATE' | 'KEEP' | 'SET_CUSTOM' | 'SKIP';
+
+interface AnalyzeV2BasePriceChangeInput {
+  product_id?: string;
+  variant_id?: string;
+  next_base_amount?: number;
+}
+
+interface ApplyV2BasePriceOverrideDecisionInput {
+  price_list_item_id?: string;
+  action?: V2BasePriceOverrideAction;
+  unit_amount?: number;
+}
+
+interface ApplyV2BasePriceChangeInput extends AnalyzeV2BasePriceChangeInput {
+  base_price_item_id?: string | null;
+  override_decisions?: ApplyV2BasePriceOverrideDecisionInput[];
 }
 
 type V2ShopSort =
@@ -1825,6 +1865,7 @@ export class V2CatalogService {
       priceItems,
       campaignTargetEligibilityByCampaignId,
       projectStatusById,
+      shopCampaigns,
     } = await this.loadShopContext(
       [productId],
       [product.project_id as string | null],
@@ -1839,6 +1880,16 @@ export class V2CatalogService {
     const isProjectActive = projectStatus === 'ACTIVE';
 
     const variantViews = variants.map((variant: any, index: number) => {
+      const sellingCampaignId = this.resolveShopSellingCampaignId({
+        explicitCampaignId: campaignId,
+        projectId: product.project_id as string | null,
+        productId,
+        variantId: variant.id as string,
+        campaigns: shopCampaigns,
+        evaluatedAt,
+        channel,
+        campaignTargetEligibilityByCampaignId,
+      });
       const priceSelection = isProjectActive
         ? this.selectShopPriceItem({
             productId,
@@ -1846,7 +1897,7 @@ export class V2CatalogService {
             variantId: variant.id as string,
             priceItems,
             evaluatedAt,
-            campaignId,
+            campaignId: sellingCampaignId,
             channel,
             campaignTargetEligibilityByCampaignId,
           })
@@ -1872,18 +1923,10 @@ export class V2CatalogService {
         status: variant.status,
         is_primary: index === 0,
         availability,
-        display_price: priceSelection.selected
-          ? {
-              amount: priceSelection.selected.unit_amount,
-              compare_at_amount: priceSelection.selected.compare_at_amount,
-              currency_code:
-                priceSelection.selected.price_list?.currency_code ?? 'KRW',
-              source:
-                priceSelection.selected.price_list?.scope_type === 'OVERRIDE'
-                  ? 'OVERRIDE'
-                  : 'BASE',
-            }
-          : null,
+        display_price: this.buildShopDisplayPrice(
+          priceSelection.selected,
+          sellingCampaignId,
+        ),
         purchase_constraints: {
           min_quantity: priceSelection.selected?.min_purchase_quantity ?? 1,
           max_quantity: priceSelection.selected?.max_purchase_quantity ?? null,
@@ -1914,14 +1957,19 @@ export class V2CatalogService {
     let preview: any = null;
     if (defaultVariant) {
       try {
+        const previewCampaignId =
+          this.normalizeOptionalText(
+            defaultVariant.display_price?.selling_campaign_id,
+          ) || campaignId;
         const quote = await this.buildPriceQuote({
           lines: [
             {
               variant_id: defaultVariant.id,
               quantity: 1,
+              campaign_id: previewCampaignId,
             },
           ],
-          campaign_id: campaignId,
+          campaign_id: previewCampaignId,
           channel,
         });
         preview = {
@@ -2317,7 +2365,9 @@ export class V2CatalogService {
     return data || [];
   }
 
-  async getVariantsMap(productIdsInput: unknown): Promise<Record<string, any[]>> {
+  async getVariantsMap(
+    productIdsInput: unknown,
+  ): Promise<Record<string, any[]>> {
     const productIds = this.normalizeProductIdList(productIdsInput);
     const { data, error } = await this.supabase
       .from('v2_product_variants')
@@ -3909,10 +3959,6 @@ export class V2CatalogService {
 
   async getCampaignDetailContext(campaignId: string): Promise<any> {
     const campaign = await this.getCampaignById(campaignId);
-    const campaignScopeType =
-      (campaign.campaign_type as V2CampaignType) === 'ALWAYS_ON'
-        ? 'BASE'
-        : 'OVERRIDE';
 
     const [
       targets,
@@ -3933,14 +3979,12 @@ export class V2CatalogService {
     ]);
 
     const campaignScopedPriceLists = priceLists.filter(
-      (priceList) => priceList.scope_type === campaignScopeType,
+      (priceList) => priceList.scope_type === 'OVERRIDE',
     );
     const activeCampaignPriceList =
       campaignScopedPriceLists.find(
         (priceList) => priceList.status === 'PUBLISHED',
       ) || this.pickLatestPriceListByUpdatedAt(campaignScopedPriceLists);
-    const activeBasePriceList =
-      this.pickLatestPriceListByUpdatedAt(basePriceLists);
     const productIds = products.map((product) => product.id as string);
 
     const [
@@ -3952,9 +3996,9 @@ export class V2CatalogService {
       activeCampaignPriceList
         ? this.fetchPriceListItems(activeCampaignPriceList.id as string)
         : Promise.resolve([]),
-      activeBasePriceList
-        ? this.fetchPriceListItems(activeBasePriceList.id as string)
-        : Promise.resolve([]),
+      this.fetchPriceListItemsForPriceLists(
+        basePriceLists.map((priceList) => priceList.id as string),
+      ),
       productIds.length > 0 ? this.getVariantsMap(productIds) : {},
       productIds.length > 0 ? this.getProductMediaMap(productIds) : {},
     ]);
@@ -3975,12 +4019,450 @@ export class V2CatalogService {
     };
   }
 
+  async applyCampaignProductEditor(
+    campaignId: string,
+    input: ApplyV2CampaignProductEditorInput,
+  ): Promise<any> {
+    const campaign = await this.getCampaignById(campaignId);
+    const normalizeOptionalProductIds = (
+      value: unknown,
+      fieldName: string,
+    ): string[] => {
+      if (value === undefined || value === null) {
+        return [];
+      }
+      const rawItems = Array.isArray(value)
+        ? value
+        : typeof value === 'string'
+          ? value.split(',')
+          : null;
+      if (!rawItems) {
+        throw new ApiException(
+          `${fieldName}는 배열 또는 쉼표 문자열이어야 합니다`,
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+      return Array.from(
+        new Set(
+          rawItems
+            .filter((item): item is string => typeof item === 'string')
+            .map((item) => item.trim())
+            .filter(Boolean),
+        ),
+      );
+    };
+
+    const addProductIds = normalizeOptionalProductIds(
+      input.add_product_ids,
+      'add_product_ids',
+    );
+    const removeProductIds = normalizeOptionalProductIds(
+      input.remove_product_ids,
+      'remove_product_ids',
+    );
+    const priceChanges =
+      input.price_changes === undefined || input.price_changes === null
+        ? []
+        : Array.isArray(input.price_changes)
+          ? input.price_changes
+          : null;
+    if (!priceChanges) {
+      throw new ApiException(
+        'price_changes는 배열이어야 합니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const addProductIdSet = new Set(addProductIds);
+    const removeProductIdSet = new Set(removeProductIds);
+    const conflictedProductIds = addProductIds.filter((productId) =>
+      removeProductIdSet.has(productId),
+    );
+    if (conflictedProductIds.length > 0) {
+      throw new ApiException(
+        '같은 상품을 추가와 제거에 동시에 넣을 수 없습니다',
+        400,
+        'V2_CAMPAIGN_PRODUCT_EDITOR_CONFLICT',
+      );
+    }
+
+    const priceChangeVariantIds = new Set<string>();
+    priceChanges.forEach((change) => {
+      const variantId = this.normalizeRequiredText(
+        change.variant_id,
+        'price_changes.variant_id는 필수입니다',
+      );
+      if (priceChangeVariantIds.has(variantId)) {
+        throw new ApiException(
+          '같은 옵션의 가격 변경은 한 번만 저장할 수 있습니다',
+          400,
+          'V2_CAMPAIGN_PRODUCT_EDITOR_DUPLICATE_PRICE_CHANGE',
+        );
+      }
+      priceChangeVariantIds.add(variantId);
+    });
+
+    const [
+      targets,
+      campaignPriceLists,
+      basePriceLists,
+    ] = await Promise.all([
+      this.fetchCampaignTargets(campaignId),
+      this.getPriceLists({ campaignId, scopeType: 'OVERRIDE' }),
+      this.getPriceLists({ scopeType: 'BASE', status: 'PUBLISHED' }),
+    ]);
+    const activeCampaignPriceList =
+      campaignPriceLists.find(
+        (priceList) => priceList.status === 'PUBLISHED',
+      ) || this.pickLatestPriceListByUpdatedAt(campaignPriceLists);
+    let campaignPriceList = activeCampaignPriceList;
+    let campaignPriceListPublishedAfterChange = false;
+    const [campaignPriceItems, basePriceItems] = await Promise.all([
+      activeCampaignPriceList
+        ? this.fetchPriceListItems(activeCampaignPriceList.id as string)
+        : Promise.resolve([]),
+      this.fetchPriceListItemsForPriceLists(
+        basePriceLists.map((priceList) => priceList.id as string),
+      ),
+    ]);
+
+    const findTarget = (
+      targetType: V2CampaignTargetType,
+      targetId: string,
+      isExcluded: boolean,
+    ): any | null =>
+      targets.find(
+        (target) =>
+          target.target_type === targetType &&
+          target.target_id === targetId &&
+          target.is_excluded === isExcluded,
+      ) || null;
+    const getProductVariants = async (productId: string): Promise<any[]> => {
+      const variantsByProductId = await this.getVariantsMap([productId]);
+      return variantsByProductId[productId] || [];
+    };
+    const ensureEditorPriceList = async (): Promise<any> => {
+      if (campaignPriceList) {
+        return campaignPriceList;
+      }
+      campaignPriceList = await this.createPriceList({
+        campaign_id: campaignId,
+        name: `${campaign.name} 캠페인 가격`,
+        scope_type: 'OVERRIDE',
+        status: 'DRAFT',
+        currency_code: 'KRW',
+        starts_at: campaign.starts_at as string | null,
+        ends_at: campaign.ends_at as string | null,
+        source_type: 'ADMIN_CAMPAIGN_PRODUCT_EDITOR',
+      });
+      return campaignPriceList;
+    };
+    const isVariantIncluded = (product: any, variant: any): boolean => {
+      const projectScopeIds = new Set<string>();
+      if (campaign.project_id) {
+        projectScopeIds.add(campaign.project_id as string);
+      }
+      targets
+        .filter(
+          (target) => !target.is_excluded && target.target_type === 'PROJECT',
+        )
+        .forEach((target) => projectScopeIds.add(target.target_id as string));
+
+      const isExcluded =
+        Boolean(findTarget('PROJECT', product.project_id as string, true)) ||
+        Boolean(findTarget('PRODUCT', product.id as string, true)) ||
+        Boolean(findTarget('VARIANT', variant.id as string, true));
+      if (isExcluded) {
+        return false;
+      }
+
+      if (campaign.campaign_type === 'ALWAYS_ON') {
+        return (
+          projectScopeIds.size === 0 ||
+          projectScopeIds.has(product.project_id as string)
+        );
+      }
+
+      return (
+        Boolean(findTarget('PRODUCT', product.id as string, false)) ||
+        Boolean(findTarget('VARIANT', variant.id as string, false))
+      );
+    };
+    const findCampaignPriceItem = (
+      productId: string,
+      variantId: string,
+    ): any | null => {
+      const activeItems = (campaignPriceItems || []).filter(
+        (item) =>
+          item.product_id === productId &&
+          (item.variant_id === variantId || item.variant_id === null) &&
+          item.status === 'ACTIVE',
+      );
+      const exactItems = activeItems.filter(
+        (item) => item.variant_id === variantId,
+      );
+      return this.pickBestPriceItem(
+        exactItems.length > 0 ? exactItems : activeItems,
+      );
+    };
+
+    const result = {
+      added_products: 0,
+      added_variants: 0,
+      removed_products: 0,
+      removed_variants: 0,
+      price_changes: 0,
+    };
+
+    for (const productId of addProductIds) {
+      const product = await this.getProductById(productId);
+      const variants = await getProductVariants(productId);
+      const projectExcludeTarget = findTarget(
+        'PROJECT',
+        product.project_id as string,
+        true,
+      );
+      if (projectExcludeTarget) {
+        throw new ApiException(
+          '프로젝트 제외 대상에 속한 상품은 편집 모달에서 바로 추가할 수 없습니다',
+          400,
+          'V2_CAMPAIGN_PRODUCT_EDITOR_PROJECT_EXCLUDED',
+        );
+      }
+
+      const productExcludeTarget = findTarget('PRODUCT', productId, true);
+      if (productExcludeTarget) {
+        await this.deleteCampaignTarget(productExcludeTarget.id as string);
+      }
+      for (const variant of variants) {
+        const variantExcludeTarget = findTarget(
+          'VARIANT',
+          variant.id as string,
+          true,
+        );
+        if (variantExcludeTarget) {
+          await this.deleteCampaignTarget(variantExcludeTarget.id as string);
+        }
+      }
+
+      if (campaign.campaign_type === 'ALWAYS_ON') {
+        result.added_products += 1;
+        result.added_variants += variants.length;
+        continue;
+      }
+
+      const includeableVariants = variants.filter((variant) =>
+        this.resolveBasePriceItemForVariant(
+          basePriceItems,
+          productId,
+          variant.id as string,
+        ),
+      );
+      if (includeableVariants.length === 0) {
+        throw new ApiException(
+          '기본가가 있는 옵션이 없어 캠페인에 추가할 수 없습니다',
+          400,
+          'V2_CAMPAIGN_PRODUCT_EDITOR_NO_BASE_PRICE',
+        );
+      }
+
+      for (const variant of includeableVariants) {
+        await this.createCampaignTarget(campaignId, {
+          target_type: 'VARIANT',
+          target_id: variant.id as string,
+          source_type: 'ADMIN_CAMPAIGN_PRODUCT_EDITOR',
+          source_id: productId,
+          source_snapshot_json: {
+            product_id: productId,
+            product_title: product.title,
+            variant_id: variant.id,
+            variant_title: variant.title,
+          },
+          metadata: {
+            inclusion_mode: 'VARIANT',
+          },
+        });
+      }
+      result.added_products += 1;
+      result.added_variants += includeableVariants.length;
+    }
+
+    for (const productId of removeProductIds) {
+      const product = await this.getProductById(productId);
+      const variants = await getProductVariants(productId);
+
+      const productIncludeTarget = findTarget('PRODUCT', productId, false);
+      if (productIncludeTarget) {
+        await this.deleteCampaignTarget(productIncludeTarget.id as string);
+      }
+
+      let removedVariantCount = 0;
+      for (const variant of variants) {
+        const variantIncludeTarget = findTarget(
+          'VARIANT',
+          variant.id as string,
+          false,
+        );
+        if (variantIncludeTarget) {
+          await this.deleteCampaignTarget(variantIncludeTarget.id as string);
+        }
+
+        if (campaign.campaign_type === 'ALWAYS_ON') {
+          removedVariantCount += 1;
+          continue;
+        }
+        if (productIncludeTarget || variantIncludeTarget) {
+          removedVariantCount += 1;
+        }
+      }
+
+      if (campaign.campaign_type === 'ALWAYS_ON') {
+        await this.createCampaignTarget(campaignId, {
+          target_type: 'PRODUCT',
+          target_id: productId,
+          is_excluded: true,
+          source_type: 'ADMIN_CAMPAIGN_PRODUCT_EDITOR',
+          source_id: productId,
+          source_snapshot_json: {
+            product_id: productId,
+            product_title: product.title,
+          },
+          metadata: {
+            exclusion_mode: 'PRODUCT',
+          },
+        });
+      }
+
+      const activeItemsForProduct = (campaignPriceItems || []).filter(
+        (item) => item.product_id === productId && item.status === 'ACTIVE',
+      );
+      for (const item of activeItemsForProduct) {
+        await this.deactivatePriceListItem(item.id as string);
+      }
+
+      result.removed_products += 1;
+      result.removed_variants += removedVariantCount;
+    }
+
+    for (const change of priceChanges) {
+      const productId = this.normalizeRequiredText(
+        change.product_id,
+        'price_changes.product_id는 필수입니다',
+      );
+      const variantId = this.normalizeRequiredText(
+        change.variant_id,
+        'price_changes.variant_id는 필수입니다',
+      );
+      if (addProductIdSet.has(productId) || removeProductIdSet.has(productId)) {
+        throw new ApiException(
+          '추가/제거 예정 상품의 가격은 같은 저장에서 변경할 수 없습니다',
+          400,
+          'V2_CAMPAIGN_PRODUCT_EDITOR_PRICE_CONFLICT',
+        );
+      }
+
+      const product = await this.getProductById(productId);
+      const variant = await this.getVariantById(variantId);
+      if (variant.product_id !== productId) {
+        throw new ApiException(
+          'variant가 지정한 product에 속하지 않습니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+      if (!isVariantIncluded(product, variant)) {
+        throw new ApiException(
+          '캠페인에 포함되지 않은 상품/옵션의 가격은 변경할 수 없습니다',
+          400,
+          'V2_CAMPAIGN_PRODUCT_EDITOR_PRICE_NOT_INCLUDED',
+        );
+      }
+
+      const currentCampaignItem = findCampaignPriceItem(productId, variantId);
+      if (change.use_base_price) {
+        if (currentCampaignItem) {
+          await this.deactivatePriceListItem(currentCampaignItem.id as string);
+          result.price_changes += 1;
+        }
+        continue;
+      }
+
+      const baseItem = this.resolveBasePriceItemForVariant(
+        basePriceItems,
+        productId,
+        variantId,
+      );
+      if (!baseItem) {
+        throw new ApiException(
+          '기본가가 없는 옵션의 캠페인 가격은 변경할 수 없습니다',
+          400,
+          'V2_CAMPAIGN_PRODUCT_EDITOR_BASE_PRICE_REQUIRED',
+        );
+      }
+      const unitAmount = change.unit_amount;
+      if (!Number.isInteger(unitAmount) || (unitAmount as number) < 0) {
+        throw new ApiException(
+          'unit_amount는 0 이상의 정수여야 합니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+      const compareAtAmount =
+        change.compare_at_amount === undefined
+          ? (baseItem.unit_amount as number)
+          : change.compare_at_amount;
+      if (
+        compareAtAmount !== null &&
+        (!Number.isInteger(compareAtAmount) ||
+          compareAtAmount < (unitAmount as number))
+      ) {
+        throw new ApiException(
+          'compare_at_amount는 unit_amount 이상 정수여야 합니다',
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+
+      const priceList = await ensureEditorPriceList();
+      await this.createPriceListItem(priceList.id as string, {
+        product_id: productId,
+        variant_id: variantId,
+        status: 'ACTIVE',
+        unit_amount: unitAmount as number,
+        compare_at_amount: compareAtAmount,
+        source_type: 'ADMIN_CAMPAIGN_PRODUCT_EDITOR',
+        source_id: campaignId,
+        source_snapshot_json: {
+          product_id: productId,
+          product_title: product.title,
+          variant_id: variantId,
+          variant_title: variant.title,
+          base_price_item_id: baseItem.id,
+        },
+        metadata: change.metadata ?? {},
+      });
+      result.price_changes += 1;
+      if (priceList.status !== 'PUBLISHED') {
+        campaignPriceListPublishedAfterChange = true;
+      }
+    }
+
+    if (campaignPriceListPublishedAfterChange && campaignPriceList) {
+      campaignPriceList = await this.publishPriceList(
+        campaignPriceList.id as string,
+      );
+    }
+
+    return {
+      ...result,
+      campaign_price_list_id: campaignPriceList?.id ?? null,
+    };
+  }
+
   async getCampaignPricingContext(campaignId: string): Promise<any> {
     const campaign = await this.getCampaignById(campaignId);
-    const campaignScopeType =
-      (campaign.campaign_type as V2CampaignType) === 'ALWAYS_ON'
-        ? 'BASE'
-        : 'OVERRIDE';
 
     const [
       targets,
@@ -3994,7 +4476,7 @@ export class V2CatalogService {
       this.fetchActiveStockLocations(),
       this.getPriceLists({
         campaignId,
-        scopeType: campaignScopeType,
+        scopeType: 'OVERRIDE',
       }),
       this.getPriceLists({ scopeType: 'BASE', status: 'PUBLISHED' }),
     ]);
@@ -4003,8 +4485,6 @@ export class V2CatalogService {
       campaignPriceLists.find(
         (priceList) => priceList.status === 'PUBLISHED',
       ) || this.pickLatestPriceListByUpdatedAt(campaignPriceLists);
-    const activeBasePriceList =
-      this.pickLatestPriceListByUpdatedAt(basePriceLists);
     const productIds = products.map((product) => product.id as string);
 
     const [campaignPriceItems, basePriceItems, variantsByProductId] =
@@ -4012,9 +4492,9 @@ export class V2CatalogService {
         activeCampaignPriceList
           ? this.fetchPriceListItems(activeCampaignPriceList.id as string)
           : Promise.resolve([]),
-        activeBasePriceList
-          ? this.fetchPriceListItems(activeBasePriceList.id as string)
-          : Promise.resolve([]),
+        this.fetchPriceListItemsForPriceLists(
+          basePriceLists.map((priceList) => priceList.id as string),
+        ),
         productIds.length > 0 ? this.getVariantsMap(productIds) : {},
       ]);
 
@@ -4378,6 +4858,133 @@ export class V2CatalogService {
     }
 
     return data;
+  }
+
+  async deleteCampaign(campaignId: string): Promise<void> {
+    await this.getCampaignById(campaignId);
+    const deletedAt = new Date().toISOString();
+
+    const { data: promotionRows, error: promotionFetchError } =
+      await this.supabase
+        .from('v2_promotions')
+        .select('id')
+        .eq('campaign_id', campaignId)
+        .is('deleted_at', null);
+
+    if (promotionFetchError) {
+      throw new ApiException(
+        'campaign 연동 promotion 조회 실패',
+        500,
+        'V2_CAMPAIGN_PROMOTIONS_FETCH_FAILED',
+      );
+    }
+
+    const promotionIds = (promotionRows || [])
+      .map((promotion) => this.normalizeOptionalText(promotion.id as string))
+      .filter((promotionId): promotionId is string => Boolean(promotionId));
+
+    const { error: targetDeleteError } = await this.supabase
+      .from('v2_campaign_targets')
+      .update({
+        deleted_at: deletedAt,
+      })
+      .eq('campaign_id', campaignId)
+      .is('deleted_at', null);
+
+    if (targetDeleteError) {
+      throw new ApiException(
+        'campaign target 삭제 실패',
+        500,
+        'V2_CAMPAIGN_TARGET_DELETE_FAILED',
+      );
+    }
+
+    const { error: priceListDeleteError } = await this.supabase
+      .from('v2_price_lists')
+      .update({
+        status: 'ARCHIVED',
+        deleted_at: deletedAt,
+      })
+      .eq('campaign_id', campaignId)
+      .is('deleted_at', null);
+
+    if (priceListDeleteError) {
+      throw new ApiException(
+        'campaign 연동 price list 삭제 실패',
+        500,
+        'V2_CAMPAIGN_PRICE_LIST_DELETE_FAILED',
+      );
+    }
+
+    if (promotionIds.length > 0) {
+      const { error: promotionRuleDeleteError } = await this.supabase
+        .from('v2_promotion_rules')
+        .update({
+          deleted_at: deletedAt,
+        })
+        .in('promotion_id', promotionIds)
+        .is('deleted_at', null);
+
+      if (promotionRuleDeleteError) {
+        throw new ApiException(
+          'campaign 연동 promotion rule 삭제 실패',
+          500,
+          'V2_CAMPAIGN_PROMOTION_RULE_DELETE_FAILED',
+        );
+      }
+
+      const { error: couponDeleteError } = await this.supabase
+        .from('v2_coupons')
+        .update({
+          status: 'ARCHIVED',
+          deleted_at: deletedAt,
+        })
+        .in('promotion_id', promotionIds)
+        .is('deleted_at', null);
+
+      if (couponDeleteError) {
+        throw new ApiException(
+          'campaign 연동 coupon 삭제 실패',
+          500,
+          'V2_CAMPAIGN_COUPON_DELETE_FAILED',
+        );
+      }
+    }
+
+    const { error: promotionDeleteError } = await this.supabase
+      .from('v2_promotions')
+      .update({
+        status: 'ARCHIVED',
+        deleted_at: deletedAt,
+      })
+      .eq('campaign_id', campaignId)
+      .is('deleted_at', null);
+
+    if (promotionDeleteError) {
+      throw new ApiException(
+        'campaign 연동 promotion 삭제 실패',
+        500,
+        'V2_CAMPAIGN_PROMOTION_DELETE_FAILED',
+      );
+    }
+
+    const { error } = await this.supabase
+      .from('v2_campaigns')
+      .update({
+        status: 'ARCHIVED',
+        project_id: null,
+        deleted_at: deletedAt,
+      })
+      .eq('id', campaignId)
+      .is('deleted_at', null);
+
+    if (error) {
+      throw new ApiException(
+        'campaign 삭제 실패',
+        500,
+        'V2_CAMPAIGN_DELETE_FAILED',
+      );
+    }
   }
 
   async getCampaignTargets(campaignId: string): Promise<any[]> {
@@ -4798,19 +5405,27 @@ export class V2CatalogService {
       'target_id는 필수입니다',
     );
     await this.ensureCampaignTargetEntityExists(targetType, targetId);
+    const existingTarget = await this.findCampaignTargetByKey({
+      campaignId,
+      targetType,
+      targetId,
+    });
 
     let alwaysOnProjectIds: string[] = [];
     if (campaign.campaign_type === 'ALWAYS_ON') {
       const currentTargetRows =
         await this.fetchCampaignTargetScopeRows(campaignId);
-      const nextTargetRows: CampaignTargetScopeRow[] = [
-        ...currentTargetRows,
-        {
-          target_type: targetType,
-          target_id: targetId,
-          is_excluded: input.is_excluded ?? false,
-        },
-      ];
+      const nextTargetRow = {
+        target_type: targetType,
+        target_id: targetId,
+        is_excluded: input.is_excluded ?? false,
+      };
+      const nextTargetRows: CampaignTargetScopeRow[] =
+        existingTarget && !existingTarget.deleted_at
+          ? currentTargetRows.map((row) =>
+              row.id === existingTarget.id ? { ...row, ...nextTargetRow } : row,
+            )
+          : [...currentTargetRows, nextTargetRow];
       alwaysOnProjectIds = await this.resolveCampaignIncludedProjectIds(
         campaignId,
         nextTargetRows,
@@ -4831,21 +5446,50 @@ export class V2CatalogService {
       this.assertSortOrder(input.sort_order);
     }
 
+    const targetData = {
+      campaign_id: campaignId,
+      target_type: targetType,
+      target_id: targetId,
+      sort_order: input.sort_order ?? 0,
+      is_excluded: input.is_excluded ?? false,
+      source_type: this.normalizeOptionalText(input.source_type),
+      source_id: this.normalizeOptionalText(input.source_id),
+      source_snapshot_json: this.normalizeOptionalObjectJson(
+        input.source_snapshot_json,
+      ),
+      metadata: input.metadata ?? {},
+      deleted_at: null,
+    };
+
+    if (existingTarget) {
+      const { data: restored, error: restoreError } = await this.supabase
+        .from('v2_campaign_targets')
+        .update(targetData)
+        .eq('id', existingTarget.id)
+        .select('*')
+        .single();
+
+      if (restoreError || !restored) {
+        throw new ApiException(
+          'campaign target 생성 실패',
+          500,
+          'V2_CAMPAIGN_TARGET_CREATE_FAILED',
+        );
+      }
+
+      if (campaign.campaign_type === 'ALWAYS_ON') {
+        await this.updateCampaignProjectScope(
+          campaignId,
+          alwaysOnProjectIds[0] ?? null,
+        );
+      }
+
+      return restored;
+    }
+
     const { data, error } = await this.supabase
       .from('v2_campaign_targets')
-      .insert({
-        campaign_id: campaignId,
-        target_type: targetType,
-        target_id: targetId,
-        sort_order: input.sort_order ?? 0,
-        is_excluded: input.is_excluded ?? false,
-        source_type: this.normalizeOptionalText(input.source_type),
-        source_id: this.normalizeOptionalText(input.source_id),
-        source_snapshot_json: this.normalizeOptionalObjectJson(
-          input.source_snapshot_json,
-        ),
-        metadata: input.metadata ?? {},
-      })
+      .insert(targetData)
       .select('*')
       .single();
 
@@ -5117,12 +5761,16 @@ export class V2CatalogService {
     this.assertDateRange(startsAt, endsAt, 'price list 기간');
 
     const campaignId = this.normalizeOptionalText(input.campaign_id);
-    let scopeType: V2PriceListScope = requestedScopeType ?? 'BASE';
+    const scopeType: V2PriceListScope =
+      requestedScopeType ?? (campaignId ? 'OVERRIDE' : 'BASE');
     if (campaignId) {
-      const campaign = await this.getCampaignById(campaignId);
-      scopeType = this.resolvePriceListScopeForCampaign(
-        campaign,
-        requestedScopeType,
+      await this.getCampaignById(campaignId);
+    }
+    if (scopeType === 'OVERRIDE' && !campaignId) {
+      throw new ApiException(
+        'OVERRIDE 가격표는 campaign_id가 필요합니다',
+        400,
+        'VALIDATION_ERROR',
       );
     }
 
@@ -5167,7 +5815,6 @@ export class V2CatalogService {
   ): Promise<any> {
     const current = await this.getPriceListById(priceListId);
     const updateData: Record<string, unknown> = {};
-    let nextCampaign: any | null = null;
     let nextCampaignId =
       this.normalizeOptionalText(
         current.campaign_id as string | null | undefined,
@@ -5177,7 +5824,7 @@ export class V2CatalogService {
     if (input.campaign_id !== undefined) {
       const campaignId = this.normalizeOptionalText(input.campaign_id);
       if (campaignId) {
-        nextCampaign = await this.getCampaignById(campaignId);
+        await this.getCampaignById(campaignId);
       }
       nextCampaignId = campaignId;
       updateData.campaign_id = campaignId;
@@ -5256,15 +5903,13 @@ export class V2CatalogService {
       updateData.metadata = input.metadata ?? {};
     }
 
-    let nextScopeType =
+    const nextScopeType =
       requestedScopeType ?? (current.scope_type as V2PriceListScope);
-    if (nextCampaignId) {
-      if (!nextCampaign) {
-        nextCampaign = await this.getCampaignById(nextCampaignId);
-      }
-      nextScopeType = this.resolvePriceListScopeForCampaign(
-        nextCampaign,
-        requestedScopeType ?? nextScopeType,
+    if (nextScopeType === 'OVERRIDE' && !nextCampaignId) {
+      throw new ApiException(
+        'OVERRIDE 가격표는 campaign_id가 필요합니다',
+        400,
+        'VALIDATION_ERROR',
       );
     }
     if (
@@ -5472,6 +6117,44 @@ export class V2CatalogService {
     return data || [];
   }
 
+  private async fetchPriceListItemsForPriceLists(
+    priceListIds: string[],
+  ): Promise<any[]> {
+    const uniquePriceListIds = Array.from(
+      new Set(
+        priceListIds
+          .map((priceListId) => this.normalizeOptionalText(priceListId))
+          .filter((priceListId): priceListId is string => Boolean(priceListId)),
+      ),
+    );
+    if (uniquePriceListIds.length === 0) {
+      return [];
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_price_list_items')
+      .select(
+        `
+        *,
+        product:v2_products(id,title,slug,status,product_kind,project_id),
+        variant:v2_product_variants(id,sku,title,status,fulfillment_type,requires_shipping),
+        price_list:v2_price_lists(id,campaign_id,scope_type,status,currency_code,priority,published_at,starts_at,ends_at,updated_at)
+      `,
+      )
+      .in('price_list_id', uniquePriceListIds)
+      .is('deleted_at', null);
+
+    if (error) {
+      throw new ApiException(
+        'price list item 목록 조회 실패',
+        500,
+        'V2_PRICE_LIST_ITEMS_FETCH_FAILED',
+      );
+    }
+
+    return this.sortPriceItemsByPriceListPriority(data || []);
+  }
+
   async createPriceListItem(
     priceListId: string,
     input: CreateV2PriceListItemInput,
@@ -5533,28 +6216,55 @@ export class V2CatalogService {
     const endsAt = this.normalizeOptionalTimestamp(input.ends_at, 'ends_at');
     this.assertDateRange(startsAt, endsAt, 'price list item 기간');
 
+    const itemData = {
+      product_id: productId,
+      variant_id: variantId,
+      status,
+      unit_amount: unitAmount,
+      compare_at_amount: input.compare_at_amount ?? null,
+      min_purchase_quantity: minPurchaseQuantity,
+      max_purchase_quantity: maxPurchaseQuantity,
+      starts_at: startsAt,
+      ends_at: endsAt,
+      channel_scope_json: this.normalizeOptionalArrayJson(
+        input.channel_scope_json,
+      ),
+      source_type: this.normalizeOptionalText(input.source_type),
+      source_id: this.normalizeOptionalText(input.source_id),
+      source_snapshot_json: this.normalizeOptionalObjectJson(
+        input.source_snapshot_json,
+      ),
+      metadata: input.metadata ?? {},
+    };
+    const existingItem = await this.findPriceListItemByKey({
+      priceListId,
+      productId,
+      variantId,
+    });
+    if (existingItem) {
+      const { data: updated, error: updateError } = await this.supabase
+        .from('v2_price_list_items')
+        .update(itemData)
+        .eq('id', existingItem.id)
+        .select('*')
+        .single();
+
+      if (updateError || !updated) {
+        throw new ApiException(
+          'price list item 생성 실패',
+          500,
+          'V2_PRICE_LIST_ITEM_CREATE_FAILED',
+        );
+      }
+
+      return updated;
+    }
+
     const { data, error } = await this.supabase
       .from('v2_price_list_items')
       .insert({
         price_list_id: priceListId,
-        product_id: productId,
-        variant_id: variantId,
-        status,
-        unit_amount: unitAmount,
-        compare_at_amount: input.compare_at_amount ?? null,
-        min_purchase_quantity: minPurchaseQuantity,
-        max_purchase_quantity: maxPurchaseQuantity,
-        starts_at: startsAt,
-        ends_at: endsAt,
-        channel_scope_json: this.normalizeOptionalArrayJson(
-          input.channel_scope_json,
-        ),
-        source_type: this.normalizeOptionalText(input.source_type),
-        source_id: this.normalizeOptionalText(input.source_id),
-        source_snapshot_json: this.normalizeOptionalObjectJson(
-          input.source_snapshot_json,
-        ),
-        metadata: input.metadata ?? {},
+        ...itemData,
       })
       .select('*')
       .single();
@@ -5738,6 +6448,241 @@ export class V2CatalogService {
     }
 
     return data;
+  }
+
+  async analyzeVariantBasePriceChange(
+    input: AnalyzeV2BasePriceChangeInput,
+  ): Promise<any> {
+    const productId = this.normalizeRequiredText(
+      input.product_id,
+      'product_id는 필수입니다',
+    );
+    const variantId = this.normalizeRequiredText(
+      input.variant_id,
+      'variant_id는 필수입니다',
+    );
+    const nextBaseAmount = this.normalizeOptionalInteger(
+      input.next_base_amount,
+      'next_base_amount',
+    );
+    if (nextBaseAmount === null) {
+      throw new ApiException(
+        'next_base_amount는 필수입니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const product = await this.getProductById(productId);
+    const variant = await this.getVariantById(variantId);
+    if (variant.product_id !== productId) {
+      throw new ApiException(
+        'variant가 지정한 product에 속하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const priceItems = await this.fetchBasePriceChangePriceItems(productId);
+    const matchingItems = priceItems.filter(
+      (item) => item.variant_id === variantId || item.variant_id === null,
+    );
+    const currentBaseItem = this.resolveBasePriceItemForVariant(
+      matchingItems,
+      productId,
+      variantId,
+    );
+    const impacts = matchingItems
+      .filter((item) => this.isActivePublishedOverrideItem(item))
+      .map((item) =>
+        this.buildBasePriceOverrideImpact({
+          item,
+          nextBaseAmount,
+          currentBaseAmount: currentBaseItem?.unit_amount ?? null,
+        }),
+      );
+
+    return {
+      product: {
+        id: product.id,
+        title: product.title,
+        project_id: product.project_id,
+      },
+      variant: {
+        id: variant.id,
+        title: variant.title,
+        sku: variant.sku,
+      },
+      current_base: currentBaseItem
+        ? this.buildBasePriceItemSummary(currentBaseItem, variantId)
+        : null,
+      next_base_amount: nextBaseAmount,
+      impacts,
+      summary: {
+        total_count: impacts.length,
+        propagatable_count: impacts.filter(
+          (impact) => impact.can_auto_propagate,
+        ).length,
+        direct_price_count: impacts.filter(
+          (impact) => impact.pricing_mode === 'DIRECT_PRICE',
+        ).length,
+        unknown_count: impacts.filter(
+          (impact) => impact.pricing_mode === 'UNKNOWN',
+        ).length,
+      },
+    };
+  }
+
+  async applyVariantBasePriceChange(
+    input: ApplyV2BasePriceChangeInput,
+  ): Promise<any> {
+    const analysis = await this.analyzeVariantBasePriceChange(input);
+    const productId = analysis.product.id as string;
+    const variantId = analysis.variant.id as string;
+    const nextBaseAmount = analysis.next_base_amount as number;
+    const basePriceItemId = this.normalizeOptionalText(
+      input.base_price_item_id,
+    );
+    if (!basePriceItemId) {
+      throw new ApiException(
+        'base_price_item_id는 필수입니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const baseSnapshot = await this.getPriceListItemById(basePriceItemId);
+    if (
+      baseSnapshot.product_id !== productId ||
+      ![variantId, null].includes(baseSnapshot.variant_id)
+    ) {
+      throw new ApiException(
+        'base_price_item_id가 지정한 상품 옵션과 일치하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    const decisionsByItemId = new Map(
+      (input.override_decisions || [])
+        .map((decision) => ({
+          ...decision,
+          price_list_item_id: this.normalizeOptionalText(
+            decision.price_list_item_id,
+          ),
+        }))
+        .filter(
+          (
+            decision,
+          ): decision is ApplyV2BasePriceOverrideDecisionInput & {
+            price_list_item_id: string;
+          } => Boolean(decision.price_list_item_id),
+        )
+        .map((decision) => [decision.price_list_item_id, decision]),
+    );
+
+    const overrideSnapshots: any[] = [];
+    const updatedOverrides: any[] = [];
+    let updatedBase: any | null = null;
+
+    try {
+      updatedBase = await this.updatePriceListItemFields(baseSnapshot.id, {
+        unit_amount: nextBaseAmount,
+        compare_at_amount: null,
+        metadata: {
+          ...this.normalizeRecordMetadata(baseSnapshot.metadata),
+          pricing_mode: 'BASE',
+          source: 'v2-variant-form',
+          base_price_change_applied_at: new Date().toISOString(),
+          previous_unit_amount: baseSnapshot.unit_amount,
+        },
+      });
+
+      for (const impact of analysis.impacts || []) {
+        const decision = decisionsByItemId.get(impact.price_list_item_id);
+        const action = this.resolveBasePriceOverrideAction(impact, decision);
+        if (action === 'SKIP' || action === 'KEEP') {
+          continue;
+        }
+
+        const nextOverrideAmount =
+          action === 'SET_CUSTOM'
+            ? this.normalizeOptionalInteger(
+                decision?.unit_amount,
+                'override unit_amount',
+              )
+            : impact.next_unit_amount;
+        if (nextOverrideAmount === null || nextOverrideAmount === undefined) {
+          throw new ApiException(
+            '전파할 OVERRIDE 가격을 계산할 수 없습니다',
+            400,
+            'VALIDATION_ERROR',
+          );
+        }
+
+        const snapshot = await this.getPriceListItemById(
+          impact.price_list_item_id,
+        );
+        overrideSnapshots.push(snapshot);
+        const metadata = this.buildPropagatedOverrideMetadata({
+          item: snapshot,
+          impact,
+          action,
+          nextBaseAmount,
+          nextOverrideAmount,
+        });
+        const updated = await this.updatePriceListItemFields(snapshot.id, {
+          unit_amount: nextOverrideAmount,
+          compare_at_amount: this.resolveCompareAtAmountForOverride(
+            nextBaseAmount,
+            nextOverrideAmount,
+          ),
+          metadata,
+        });
+        updatedOverrides.push(updated);
+      }
+    } catch (error) {
+      const rollbackErrors: string[] = [];
+      if (updatedBase) {
+        try {
+          await this.restorePriceListItemSnapshot(baseSnapshot);
+        } catch (rollbackError) {
+          rollbackErrors.push(this.getErrorMessage(rollbackError));
+        }
+      }
+      for (const snapshot of overrideSnapshots.reverse()) {
+        try {
+          await this.restorePriceListItemSnapshot(snapshot);
+        } catch (rollbackError) {
+          rollbackErrors.push(this.getErrorMessage(rollbackError));
+        }
+      }
+
+      if (rollbackErrors.length > 0) {
+        throw new ApiException(
+          `가격 변경 적용 실패 후 rollback도 실패했습니다. 수동 확인이 필요합니다. 원인: ${this.getErrorMessage(
+            error,
+          )}`,
+          500,
+          'V2_BASE_PRICE_CHANGE_ROLLBACK_FAILED',
+        );
+      }
+
+      throw new ApiException(
+        `가격 변경 적용에 실패해 기존 상태로 복구했습니다. 원인: ${this.getErrorMessage(
+          error,
+        )}`,
+        500,
+        'V2_BASE_PRICE_CHANGE_ROLLED_BACK',
+      );
+    }
+
+    return {
+      analysis,
+      updated_base_price_item: updatedBase,
+      updated_override_price_items: updatedOverrides,
+      rollback_performed: false,
+    };
   }
 
   async getPromotions(filters: {
@@ -10318,6 +11263,58 @@ export class V2CatalogService {
     return data;
   }
 
+  private async findCampaignTargetByKey(params: {
+    campaignId: string;
+    targetType: V2CampaignTargetType;
+    targetId: string;
+  }): Promise<any | null> {
+    const { data, error } = await this.supabase
+      .from('v2_campaign_targets')
+      .select('*')
+      .eq('campaign_id', params.campaignId)
+      .eq('target_type', params.targetType)
+      .eq('target_id', params.targetId)
+      .maybeSingle();
+
+    if (error) {
+      throw new ApiException(
+        'campaign target 조회 실패',
+        500,
+        'V2_CAMPAIGN_TARGET_FETCH_FAILED',
+      );
+    }
+
+    return data || null;
+  }
+
+  private async findPriceListItemByKey(params: {
+    priceListId: string;
+    productId: string;
+    variantId: string | null;
+  }): Promise<any | null> {
+    let query = this.supabase
+      .from('v2_price_list_items')
+      .select('*')
+      .eq('price_list_id', params.priceListId)
+      .eq('product_id', params.productId)
+      .is('deleted_at', null);
+
+    query = params.variantId
+      ? query.eq('variant_id', params.variantId)
+      : query.is('variant_id', null);
+
+    const { data, error } = await query.maybeSingle();
+    if (error) {
+      throw new ApiException(
+        'price list item 조회 실패',
+        500,
+        'V2_PRICE_LIST_ITEM_FETCH_FAILED',
+      );
+    }
+
+    return data || null;
+  }
+
   private async getPromotionRuleById(ruleId: string): Promise<any> {
     const { data, error } = await this.supabase
       .from('v2_promotion_rules')
@@ -10479,22 +11476,6 @@ export class V2CatalogService {
         'VALIDATION_ERROR',
       );
     }
-  }
-
-  private resolvePriceListScopeForCampaign(
-    campaign: any,
-    requestedScope: V2PriceListScope | undefined,
-  ): V2PriceListScope {
-    const expectedScope: V2PriceListScope =
-      campaign?.campaign_type === 'ALWAYS_ON' ? 'BASE' : 'OVERRIDE';
-    if (requestedScope && requestedScope !== expectedScope) {
-      throw new ApiException(
-        `campaign 유형(${campaign?.campaign_type})에는 ${expectedScope} scope만 허용됩니다`,
-        400,
-        'VALIDATION_ERROR',
-      );
-    }
-    return expectedScope;
   }
 
   private assertPriceListStatus(value: string): void {
@@ -10862,11 +11843,43 @@ export class V2CatalogService {
       if (publishedA !== publishedB) {
         return publishedB - publishedA;
       }
+      const updatedA = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+      const updatedB = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+      if (updatedA !== updatedB) {
+        return updatedB - updatedA;
+      }
       const createdA = a.created_at ? new Date(a.created_at).getTime() : 0;
       const createdB = b.created_at ? new Date(b.created_at).getTime() : 0;
       return createdB - createdA;
     });
     return sorted[0];
+  }
+
+  private sortPriceItemsByPriceListPriority(items: any[]): any[] {
+    return [...(items || [])].sort((a, b) => {
+      const priorityDiff =
+        (b.price_list?.priority ?? 0) - (a.price_list?.priority ?? 0);
+      if (priorityDiff !== 0) {
+        return priorityDiff;
+      }
+      const publishedA = a.price_list?.published_at
+        ? new Date(a.price_list.published_at).getTime()
+        : 0;
+      const publishedB = b.price_list?.published_at
+        ? new Date(b.price_list.published_at).getTime()
+        : 0;
+      if (publishedA !== publishedB) {
+        return publishedB - publishedA;
+      }
+      const updatedA = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+      const updatedB = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+      if (updatedA !== updatedB) {
+        return updatedB - updatedA;
+      }
+      const createdA = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const createdB = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return createdB - createdA;
+    });
   }
 
   private isCampaignApplicableForShopPricing(
@@ -11095,12 +12108,8 @@ export class V2CatalogService {
     }
 
     const projectId = this.normalizeOptionalText(params.projectId);
-    const allowsProjectIncludeTargets =
-      eligibility.campaignType === 'ALWAYS_ON';
     const includedByProject =
-      allowsProjectIncludeTargets &&
-      !!projectId &&
-      eligibility.include.projectIds.has(projectId);
+      !!projectId && eligibility.include.projectIds.has(projectId);
     const includedByProduct = eligibility.include.productIds.has(
       params.productId,
     );
@@ -11164,6 +12173,7 @@ export class V2CatalogService {
         const linkedCampaignId = this.normalizeOptionalText(
           priceList.campaign_id as string | null | undefined,
         );
+        const priceListScopeType = priceList.scope_type as V2PriceListScope;
         if (
           !linkedCampaignId &&
           !this.isTimestampInRange(
@@ -11188,6 +12198,10 @@ export class V2CatalogService {
           return false;
         }
 
+        if (!linkedCampaignId) {
+          return priceListScopeType === 'BASE';
+        }
+
         const linkedCampaign = priceList.campaign;
         if (
           !this.isCampaignApplicableForShopPricing(
@@ -11200,7 +12214,7 @@ export class V2CatalogService {
         }
 
         return this.isCampaignTargetEligibleForShopPricing({
-          campaignId: priceList.campaign_id as string | null | undefined,
+          campaignId: linkedCampaignId,
           projectId: params.projectId,
           productId: params.productId,
           variantId: params.variantId,
@@ -11221,16 +12235,23 @@ export class V2CatalogService {
       return false;
     }
 
-    // 상점 노출 기준은 "상시 운영(ALWAYS_ON) 캠페인에 연결된 BASE"만 허용한다.
-    if (!priceList.campaign_id) {
-      return false;
+    const linkedCampaignId = this.normalizeOptionalText(
+      priceList.campaign_id as string | null | undefined,
+    );
+    if (!linkedCampaignId) {
+      return Boolean(params.campaignId);
     }
 
     const linkedCampaign = priceList.campaign;
     if (!linkedCampaign || typeof linkedCampaign !== 'object') {
       return false;
     }
-    if (linkedCampaign.campaign_type !== 'ALWAYS_ON') {
+
+    if (params.campaignId && linkedCampaignId !== params.campaignId) {
+      return false;
+    }
+
+    if (!params.campaignId && linkedCampaign.campaign_type !== 'ALWAYS_ON') {
       return false;
     }
 
@@ -11276,9 +12297,6 @@ export class V2CatalogService {
     }
 
     if (!linkedCampaign || typeof linkedCampaign !== 'object') {
-      return false;
-    }
-    if (linkedCampaign.campaign_type === 'ALWAYS_ON') {
       return false;
     }
 
@@ -11370,6 +12388,105 @@ export class V2CatalogService {
     };
   }
 
+  private getShopCampaignStartMs(campaign: any): number {
+    const startsAt = campaign?.starts_at;
+    if (!startsAt) {
+      return 0;
+    }
+    const parsed = new Date(startsAt).getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  private getShopCampaignUpdatedMs(campaign: any): number {
+    const updatedAt = campaign?.updated_at ?? campaign?.created_at ?? null;
+    if (!updatedAt) {
+      return 0;
+    }
+    const parsed = new Date(updatedAt).getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  private pickBestShopSellingCampaign(campaigns: any[]): any | null {
+    if (!campaigns || campaigns.length === 0) {
+      return null;
+    }
+
+    const sorted = [...campaigns].sort((left, right) => {
+      const leftType = left?.campaign_type as V2CampaignType | null;
+      const rightType = right?.campaign_type as V2CampaignType | null;
+      const leftTypeRank = leftType === 'ALWAYS_ON' ? 0 : 1;
+      const rightTypeRank = rightType === 'ALWAYS_ON' ? 0 : 1;
+      if (leftTypeRank !== rightTypeRank) {
+        return rightTypeRank - leftTypeRank;
+      }
+
+      const startDiff =
+        this.getShopCampaignStartMs(right) - this.getShopCampaignStartMs(left);
+      if (startDiff !== 0) {
+        return startDiff;
+      }
+
+      const updatedDiff =
+        this.getShopCampaignUpdatedMs(right) -
+        this.getShopCampaignUpdatedMs(left);
+      if (updatedDiff !== 0) {
+        return updatedDiff;
+      }
+
+      return String(left?.id ?? '').localeCompare(String(right?.id ?? ''));
+    });
+
+    return sorted[0] ?? null;
+  }
+
+  private resolveShopSellingCampaignId(params: {
+    explicitCampaignId: string | null;
+    projectId: string | null;
+    productId: string;
+    variantId: string | null;
+    campaigns: any[];
+    evaluatedAt: string;
+    channel: string | null;
+    campaignTargetEligibilityByCampaignId: Map<
+      string,
+      CampaignTargetEligibilityScope
+    >;
+  }): string | null {
+    const explicitCampaignId = this.normalizeOptionalText(
+      params.explicitCampaignId,
+    );
+    if (explicitCampaignId) {
+      return explicitCampaignId;
+    }
+
+    const eligibleCampaigns = (params.campaigns || []).filter((campaign) => {
+      const campaignId = this.normalizeOptionalText(campaign?.id);
+      if (!campaignId) {
+        return false;
+      }
+      if (
+        !this.isCampaignApplicableForShopPricing(
+          campaign,
+          params.evaluatedAt,
+          params.channel,
+        )
+      ) {
+        return false;
+      }
+      return this.isCampaignTargetEligibleForShopPricing({
+        campaignId,
+        projectId: params.projectId,
+        productId: params.productId,
+        variantId: params.variantId,
+        campaignTargetEligibilityByCampaignId:
+          params.campaignTargetEligibilityByCampaignId,
+      });
+    });
+
+    const campaign = this.pickBestShopSellingCampaign(eligibleCampaigns);
+    return this.normalizeOptionalText(campaign?.id);
+  }
+
   private async buildShopListItems(
     products: any[],
     context: {
@@ -11390,6 +12507,7 @@ export class V2CatalogService {
       priceItems,
       campaignTargetEligibilityByCampaignId,
       projectStatusById,
+      shopCampaigns,
     } = await this.loadShopContext(
       productIds,
       products.map((product) => product.project_id as string | null),
@@ -11407,6 +12525,18 @@ export class V2CatalogService {
       const primaryVariant = variants[0] || null;
       const media = mediaByProductId.get(productId) || [];
       const primaryMedia = this.pickPrimaryShopMedia(media);
+      const sellingCampaignId = primaryVariant
+        ? this.resolveShopSellingCampaignId({
+            explicitCampaignId: context.campaignId,
+            projectId: product.project_id as string | null,
+            productId,
+            variantId: primaryVariant.id as string,
+            campaigns: shopCampaigns,
+            evaluatedAt: context.evaluatedAt,
+            channel: context.channel,
+            campaignTargetEligibilityByCampaignId,
+          })
+        : context.campaignId;
       const priceSelection =
         primaryVariant && isProjectActive
           ? this.selectShopPriceItem({
@@ -11415,7 +12545,7 @@ export class V2CatalogService {
               variantId: primaryVariant.id as string,
               priceItems,
               evaluatedAt: context.evaluatedAt,
-              campaignId: context.campaignId,
+              campaignId: sellingCampaignId,
               channel: context.channel,
               campaignTargetEligibilityByCampaignId,
             })
@@ -11442,21 +12572,38 @@ export class V2CatalogService {
         primary_variant_id: primaryVariant?.id ?? null,
         primary_variant_title: primaryVariant?.title ?? null,
         fulfillment_type: primaryVariant?.fulfillment_type ?? null,
-        display_price: priceSelection.selected
-          ? {
-              amount: priceSelection.selected.unit_amount,
-              compare_at_amount: priceSelection.selected.compare_at_amount,
-              currency_code:
-                priceSelection.selected.price_list?.currency_code ?? 'KRW',
-              source:
-                priceSelection.selected.price_list?.scope_type === 'OVERRIDE'
-                  ? 'OVERRIDE'
-                  : 'BASE',
-            }
-          : null,
+        display_price: this.buildShopDisplayPrice(
+          priceSelection.selected,
+          sellingCampaignId,
+        ),
         availability,
       };
     });
+  }
+
+  private buildShopDisplayPrice(
+    priceItem: any | null,
+    sellingCampaignId: string | null = null,
+  ): any | null {
+    if (!priceItem) {
+      return null;
+    }
+    const priceList = priceItem.price_list || {};
+    const priceListCampaignId = this.normalizeOptionalText(
+      priceList.campaign_id,
+    );
+
+    return {
+      amount: priceItem.unit_amount,
+      compare_at_amount: priceItem.compare_at_amount,
+      currency_code: priceList.currency_code ?? 'KRW',
+      source: priceList.scope_type === 'OVERRIDE' ? 'OVERRIDE' : 'BASE',
+      campaign_id: priceListCampaignId,
+      selling_campaign_id:
+        this.normalizeOptionalText(sellingCampaignId) ?? priceListCampaignId,
+      price_list_id: this.normalizeOptionalText(priceItem.price_list_id),
+      price_list_item_id: this.normalizeOptionalText(priceItem.id),
+    };
   }
 
   private async loadShopContext(
@@ -11468,6 +12615,7 @@ export class V2CatalogService {
     mediaByProductId: Map<string, any[]>;
     inventoryByVariantId: Map<string, number>;
     priceItems: any[];
+    shopCampaigns: any[];
     projectStatusById: Map<string, V2ProjectStatus>;
     campaignTargetEligibilityByCampaignId: Map<
       string,
@@ -11489,6 +12637,7 @@ export class V2CatalogService {
         mediaByProductId,
         inventoryByVariantId,
         priceItems: [],
+        shopCampaigns: [],
         projectStatusById,
         campaignTargetEligibilityByCampaignId,
       };
@@ -11575,17 +12724,26 @@ export class V2CatalogService {
       .in('product_id', productIds)
       .eq('status', 'ACTIVE')
       .is('deleted_at', null);
+    const shopCampaignRowsPromise = this.supabase
+      .from('v2_campaigns')
+      .select(
+        'id,campaign_type,status,starts_at,ends_at,channel_scope_json,deleted_at,created_at,updated_at',
+      )
+      .eq('status', 'ACTIVE')
+      .is('deleted_at', null);
 
     const [
       { data: projectRows, error: projectsError },
       { data: variantRows, error: variantsError },
       { data: mediaRows, error: mediaError },
       { data: priceItems, error: priceItemsError },
+      { data: shopCampaignRows, error: shopCampaignsError },
     ] = await Promise.all([
       projectRowsPromise,
       variantRowsPromise,
       mediaRowsPromise,
       priceItemsPromise,
+      shopCampaignRowsPromise,
     ]);
 
     if (projectsError) {
@@ -11641,6 +12799,14 @@ export class V2CatalogService {
     }
 
     const normalizedPriceItems = (priceItems || []) as any[];
+    if (shopCampaignsError) {
+      throw new ApiException(
+        'v2 shop campaign 조회 실패',
+        500,
+        'V2_SHOP_CAMPAIGNS_FETCH_FAILED',
+      );
+    }
+    const shopCampaigns = (shopCampaignRows || []) as any[];
     const variantIds = (variantRows || []).map((row: any) => row.id as string);
     const inventoryRowsPromise =
       variantIds.length > 0
@@ -11652,6 +12818,9 @@ export class V2CatalogService {
     const campaignTargetEligibilityPromise =
       this.loadCampaignTargetEligibilityByCampaignIds([
         selectedCampaignId,
+        ...shopCampaigns.map(
+          (campaign) => campaign?.id as string | null | undefined,
+        ),
         ...normalizedPriceItems.map(
           (item) => item?.price_list?.campaign_id as string | null | undefined,
         ),
@@ -11696,6 +12865,7 @@ export class V2CatalogService {
       mediaByProductId,
       inventoryByVariantId,
       priceItems: normalizedPriceItems,
+      shopCampaigns,
       projectStatusById,
       campaignTargetEligibilityByCampaignId:
         loadedCampaignTargetEligibilityByCampaignId,
@@ -12745,10 +13915,13 @@ export class V2CatalogService {
     rows: any[],
   ): Record<string, any[]> {
     const groupedRows = this.groupRowsByProductId(rows);
-    return productIds.reduce<Record<string, any[]>>((accumulator, productId) => {
-      accumulator[productId] = groupedRows[productId] || [];
-      return accumulator;
-    }, {});
+    return productIds.reduce<Record<string, any[]>>(
+      (accumulator, productId) => {
+        accumulator[productId] = groupedRows[productId] || [];
+        return accumulator;
+      },
+      {},
+    );
   }
 
   private buildRowsMapForCampaignIds(
@@ -12756,10 +13929,13 @@ export class V2CatalogService {
     rows: any[],
   ): Record<string, any[]> {
     const groupedRows = this.groupRowsByCampaignId(rows);
-    return campaignIds.reduce<Record<string, any[]>>((accumulator, campaignId) => {
-      accumulator[campaignId] = groupedRows[campaignId] || [];
-      return accumulator;
-    }, {});
+    return campaignIds.reduce<Record<string, any[]>>(
+      (accumulator, campaignId) => {
+        accumulator[campaignId] = groupedRows[campaignId] || [];
+        return accumulator;
+      },
+      {},
+    );
   }
 
   private buildVariantStatusCounts(
@@ -12808,6 +13984,360 @@ export class V2CatalogService {
       return {};
     }
     return { ...(value as Record<string, unknown>) };
+  }
+
+  private async fetchBasePriceChangePriceItems(
+    productId: string,
+  ): Promise<any[]> {
+    const { data, error } = await this.supabase
+      .from('v2_price_list_items')
+      .select(
+        `
+        *,
+        price_list:v2_price_lists(
+          id,
+          campaign_id,
+          scope_type,
+          status,
+          currency_code,
+          priority,
+          published_at,
+          starts_at,
+          ends_at,
+          channel_scope_json,
+          deleted_at,
+          created_at,
+          updated_at,
+          campaign:v2_campaigns(
+            id,
+            code,
+            name,
+            campaign_type,
+            status,
+            starts_at,
+            ends_at,
+            deleted_at
+          )
+        )
+      `,
+      )
+      .eq('product_id', productId)
+      .eq('status', 'ACTIVE')
+      .is('deleted_at', null);
+
+    if (error) {
+      throw new ApiException(
+        '가격 변경 영향 분석용 price item 조회 실패',
+        500,
+        'V2_BASE_PRICE_CHANGE_ITEMS_FETCH_FAILED',
+      );
+    }
+
+    return data || [];
+  }
+
+  private resolveBasePriceItemForVariant(
+    items: any[],
+    productId: string,
+    variantId: string,
+  ): any | null {
+    const baseItems = (items || []).filter((item) => {
+      const priceList = item.price_list;
+      return (
+        item.product_id === productId &&
+        (item.variant_id === variantId || item.variant_id === null) &&
+        item.status === 'ACTIVE' &&
+        priceList?.scope_type === 'BASE' &&
+        priceList?.status === 'PUBLISHED' &&
+        !priceList?.deleted_at
+      );
+    });
+    const exact = baseItems.filter((item) => item.variant_id === variantId);
+    return this.pickBestPriceItem(exact.length > 0 ? exact : baseItems);
+  }
+
+  private buildBasePriceItemSummary(item: any, variantId: string): any {
+    return {
+      price_list_item_id: item.id,
+      price_list_id: item.price_list_id,
+      unit_amount: item.unit_amount,
+      compare_at_amount: item.compare_at_amount ?? null,
+      scope_level: item.variant_id === variantId ? 'VARIANT' : 'PRODUCT',
+      pricing_mode:
+        this.normalizeRecordMetadata(item.metadata).pricing_mode ?? 'BASE',
+      updated_at: item.updated_at,
+    };
+  }
+
+  private isActivePublishedOverrideItem(item: any): boolean {
+    const priceList = item.price_list;
+    return (
+      item.status === 'ACTIVE' &&
+      !item.deleted_at &&
+      priceList?.scope_type === 'OVERRIDE' &&
+      priceList?.status === 'PUBLISHED' &&
+      !priceList?.deleted_at
+    );
+  }
+
+  private buildBasePriceOverrideImpact(params: {
+    item: any;
+    nextBaseAmount: number;
+    currentBaseAmount: number | null;
+  }): any {
+    const item = params.item;
+    const metadata = this.normalizeRecordMetadata(item.metadata);
+    const pricingMode = this.resolveOverridePricingMode(metadata);
+    const discountValue = this.readOptionalNumber(metadata.discount_value);
+    const configuredBaseAmount = this.readOptionalNumber(metadata.base_amount);
+    const nextUnitAmount = this.computeBasePriceOverrideAmount({
+      pricingMode,
+      nextBaseAmount: params.nextBaseAmount,
+      currentUnitAmount: item.unit_amount,
+      discountValue,
+    });
+    const canAutoPropagate =
+      ['PERCENT_DISCOUNT', 'FIXED_DISCOUNT'].includes(pricingMode) &&
+      nextUnitAmount !== null;
+    const defaultAction: V2BasePriceOverrideAction = canAutoPropagate
+      ? 'PROPAGATE'
+      : pricingMode === 'DIRECT_PRICE'
+        ? 'KEEP'
+        : 'SKIP';
+
+    return {
+      price_list_item_id: item.id,
+      price_list_id: item.price_list_id,
+      campaign_id: item.price_list?.campaign_id ?? null,
+      campaign: item.price_list?.campaign
+        ? {
+            id: item.price_list.campaign.id,
+            code: item.price_list.campaign.code,
+            name: item.price_list.campaign.name,
+            campaign_type: item.price_list.campaign.campaign_type,
+            status: item.price_list.campaign.status,
+          }
+        : null,
+      product_id: item.product_id,
+      variant_id: item.variant_id,
+      scope_level: item.variant_id ? 'VARIANT' : 'PRODUCT',
+      pricing_mode: pricingMode,
+      current_unit_amount: item.unit_amount,
+      compare_at_amount: item.compare_at_amount ?? null,
+      configured_base_amount: configuredBaseAmount,
+      current_base_amount: params.currentBaseAmount,
+      next_base_amount: params.nextBaseAmount,
+      discount_value: discountValue,
+      next_unit_amount: nextUnitAmount,
+      next_compare_at_amount:
+        nextUnitAmount === null
+          ? null
+          : this.resolveCompareAtAmountForOverride(
+              params.nextBaseAmount,
+              nextUnitAmount,
+            ),
+      can_auto_propagate: canAutoPropagate,
+      default_action: defaultAction,
+      warning:
+        pricingMode === 'UNKNOWN'
+          ? 'pricing_mode metadata가 없어 자동 전파할 수 없습니다.'
+          : pricingMode === 'DIRECT_PRICE'
+            ? '직접 가격은 기본적으로 고정가를 유지합니다.'
+            : nextUnitAmount === null
+              ? '할인 값이 유효하지 않아 자동 전파할 수 없습니다.'
+              : null,
+      metadata,
+    };
+  }
+
+  private resolveOverridePricingMode(
+    metadata: Record<string, unknown>,
+  ): V2CampaignOverridePricingMode {
+    const raw = metadata.pricing_mode;
+    if (
+      raw === 'PERCENT_DISCOUNT' ||
+      raw === 'FIXED_DISCOUNT' ||
+      raw === 'DIRECT_PRICE'
+    ) {
+      return raw;
+    }
+    return 'UNKNOWN';
+  }
+
+  private readOptionalNumber(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  }
+
+  private computeBasePriceOverrideAmount(params: {
+    pricingMode: V2CampaignOverridePricingMode;
+    nextBaseAmount: number;
+    currentUnitAmount: number;
+    discountValue: number | null;
+  }): number | null {
+    if (params.pricingMode === 'PERCENT_DISCOUNT') {
+      const discountValue = params.discountValue;
+      if (discountValue === null || discountValue < 0 || discountValue > 100) {
+        return null;
+      }
+      return Math.max(
+        0,
+        Math.round(params.nextBaseAmount * ((100 - discountValue) / 100)),
+      );
+    }
+    if (params.pricingMode === 'FIXED_DISCOUNT') {
+      const discountValue = params.discountValue;
+      if (discountValue === null || discountValue < 0) {
+        return null;
+      }
+      return Math.max(0, params.nextBaseAmount - Math.round(discountValue));
+    }
+    if (params.pricingMode === 'DIRECT_PRICE') {
+      return params.currentUnitAmount;
+    }
+    return null;
+  }
+
+  private resolveBasePriceOverrideAction(
+    impact: any,
+    decision?: ApplyV2BasePriceOverrideDecisionInput,
+  ): V2BasePriceOverrideAction {
+    const action = decision?.action ?? impact.default_action;
+    const allowed: V2BasePriceOverrideAction[] = [
+      'PROPAGATE',
+      'KEEP',
+      'SET_CUSTOM',
+      'SKIP',
+    ];
+    if (!allowed.includes(action)) {
+      throw new ApiException(
+        'OVERRIDE 전파 action 값이 유효하지 않습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    if (impact.pricing_mode === 'UNKNOWN' && action !== 'SKIP') {
+      throw new ApiException(
+        'metadata가 없는 OVERRIDE는 자동 전파할 수 없습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    if (
+      impact.pricing_mode !== 'DIRECT_PRICE' &&
+      (action === 'KEEP' || action === 'SET_CUSTOM')
+    ) {
+      throw new ApiException(
+        '할인 OVERRIDE에는 PROPAGATE 또는 SKIP만 사용할 수 있습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    if (impact.pricing_mode === 'DIRECT_PRICE' && action === 'PROPAGATE') {
+      throw new ApiException(
+        '직접 가격 OVERRIDE에는 PROPAGATE를 사용할 수 없습니다',
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+    return action;
+  }
+
+  private buildPropagatedOverrideMetadata(params: {
+    item: any;
+    impact: any;
+    action: V2BasePriceOverrideAction;
+    nextBaseAmount: number;
+    nextOverrideAmount: number;
+  }): Record<string, unknown> {
+    const metadata = this.normalizeRecordMetadata(params.item.metadata);
+    return {
+      ...metadata,
+      base_amount: params.nextBaseAmount,
+      previous_base_amount: params.impact.configured_base_amount,
+      previous_unit_amount: params.item.unit_amount,
+      propagated_action: params.action,
+      propagated_at: new Date().toISOString(),
+      propagated_source: 'BASE_PRICE_CHANGE',
+      pricing_mode:
+        params.impact.pricing_mode === 'UNKNOWN'
+          ? metadata.pricing_mode
+          : params.impact.pricing_mode,
+      discount_value:
+        params.action === 'SET_CUSTOM'
+          ? params.nextOverrideAmount
+          : metadata.discount_value,
+    };
+  }
+
+  private resolveCompareAtAmountForOverride(
+    nextBaseAmount: number,
+    nextUnitAmount: number,
+  ): number | null {
+    return nextBaseAmount >= nextUnitAmount ? nextBaseAmount : null;
+  }
+
+  private async updatePriceListItemFields(
+    itemId: string,
+    fields: Record<string, unknown>,
+  ): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('v2_price_list_items')
+      .update(fields)
+      .eq('id', itemId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new ApiException(
+        'price list item 수정 실패',
+        500,
+        'V2_PRICE_LIST_ITEM_UPDATE_FAILED',
+      );
+    }
+
+    return data;
+  }
+
+  private async restorePriceListItemSnapshot(snapshot: any): Promise<void> {
+    await this.updatePriceListItemFields(snapshot.id, {
+      product_id: snapshot.product_id,
+      variant_id: snapshot.variant_id,
+      status: snapshot.status,
+      unit_amount: snapshot.unit_amount,
+      compare_at_amount: snapshot.compare_at_amount,
+      min_purchase_quantity: snapshot.min_purchase_quantity,
+      max_purchase_quantity: snapshot.max_purchase_quantity,
+      starts_at: snapshot.starts_at,
+      ends_at: snapshot.ends_at,
+      channel_scope_json: snapshot.channel_scope_json,
+      source_type: snapshot.source_type,
+      source_id: snapshot.source_id,
+      source_snapshot_json: snapshot.source_snapshot_json,
+      metadata: snapshot.metadata ?? {},
+    });
+  }
+
+  private getErrorMessage(error: unknown): string {
+    if (error instanceof Error && error.message) {
+      return error.message;
+    }
+    if (error && typeof error === 'object') {
+      const response = (error as { response?: unknown }).response;
+      if (response && typeof response === 'object') {
+        const message = (response as { message?: unknown }).message;
+        if (typeof message === 'string') {
+          return message;
+        }
+      }
+    }
+    return '알 수 없는 오류';
   }
 
   private assertArtistStatus(value: string): void {
@@ -13527,11 +15057,7 @@ export class V2CatalogService {
         : null;
 
     if (!rawItems) {
-      throw new ApiException(
-        messages.invalidMessage,
-        400,
-        'VALIDATION_ERROR',
-      );
+      throw new ApiException(messages.invalidMessage, 400, 'VALIDATION_ERROR');
     }
 
     const normalized = Array.from(
@@ -13544,11 +15070,7 @@ export class V2CatalogService {
     );
 
     if (normalized.length === 0) {
-      throw new ApiException(
-        messages.emptyMessage,
-        400,
-        'VALIDATION_ERROR',
-      );
+      throw new ApiException(messages.emptyMessage, 400, 'VALIDATION_ERROR');
     }
 
     return normalized;

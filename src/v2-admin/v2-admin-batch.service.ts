@@ -3121,7 +3121,7 @@ export class V2AdminBatchService {
     const { data, error } = await this.supabase
       .from('v2_order_items')
       .select(
-        'order_id, product_id, variant_id, product_name_snapshot, variant_name_snapshot, quantity, line_type, line_status, fulfillment_type_snapshot, requires_shipping_snapshot, display_snapshot',
+        'order_id, project_id_snapshot, project_name_snapshot, product_id, variant_id, product_name_snapshot, variant_name_snapshot, quantity, line_type, line_status, fulfillment_type_snapshot, requires_shipping_snapshot, display_snapshot',
       )
       .in('order_id', orderIds);
 
@@ -3136,6 +3136,8 @@ export class V2AdminBatchService {
     const aggregateMap = new Map<
       string,
       {
+        project_id: string | null;
+        project_name: string | null;
         product_id: string | null;
         variant_id: string | null;
         thumbnail_url: string | null;
@@ -3165,11 +3167,16 @@ export class V2AdminBatchService {
 
       const variantId = this.normalizeOptionalUuid(row.variant_id);
       const productId = this.normalizeOptionalUuid(row.product_id);
-      const key =
+      const projectId = this.normalizeOptionalUuid(row.project_id_snapshot);
+      const projectName = this.normalizeOptionalText(row.project_name_snapshot);
+      const productKey =
         variantId ||
         `product:${productId || 'unknown'}:${String(row.product_name_snapshot || '')}`;
+      const key = `${projectId || `no-project:${projectName || ''}`}::${productKey}`;
 
       const existing = aggregateMap.get(key) || {
+        project_id: projectId,
+        project_name: projectName,
         product_id: productId,
         variant_id: variantId,
         thumbnail_url: this.extractProductionThumbnailUrl(row?.display_snapshot),
@@ -3186,12 +3193,17 @@ export class V2AdminBatchService {
           row?.display_snapshot,
         );
       }
+      if (!existing.project_name && projectName) {
+        existing.project_name = projectName;
+      }
       existing.quantity_total += Number(row.quantity || 0);
       existing.order_id_set.add(orderId);
       aggregateMap.set(key, existing);
     }
 
     const aggregateRows = Array.from(aggregateMap.values()).map((row) => ({
+      project_id: row.project_id,
+      project_name: row.project_name,
       product_id: row.product_id,
       variant_id: row.variant_id,
       thumbnail_url: row.thumbnail_url,
@@ -3201,17 +3213,30 @@ export class V2AdminBatchService {
       order_count: row.order_id_set.size,
     }));
 
-    const productThumbnailById = await this.fetchProductThumbnailByIdsBestEffort(
-      aggregateRows
-        .filter((row) => !row.thumbnail_url)
-        .map((row) => this.normalizeOptionalUuid(row.product_id))
-        .filter((productId: string | null): productId is string =>
-          Boolean(productId),
-        ),
-    );
+    const projectIds = aggregateRows
+      .filter((row) => !row.project_name)
+      .map((row) => this.normalizeOptionalUuid(row.project_id))
+      .filter((projectId: string | null): projectId is string =>
+        Boolean(projectId),
+      );
+    const [projectNameById, productThumbnailById] = await Promise.all([
+      this.fetchProjectNameByIds(Array.from(new Set(projectIds))),
+      this.fetchProductThumbnailByIdsBestEffort(
+        aggregateRows
+          .filter((row) => !row.thumbnail_url)
+          .map((row) => this.normalizeOptionalUuid(row.product_id))
+          .filter((productId: string | null): productId is string =>
+            Boolean(productId),
+          ),
+      ),
+    ]);
 
     return this.sortProductionAggregateRowsByName(
       aggregateRows.map((row) => ({
+        project_id: row.project_id,
+        project_name:
+          row.project_name ||
+          (row.project_id ? projectNameById.get(row.project_id) || null : null),
         product_id: row.product_id,
         variant_id: row.variant_id,
         thumbnail_url:

@@ -177,7 +177,7 @@ describe('V2CatalogService', () => {
   });
 
   describe('buildShopPriceSelectionFromCandidates', () => {
-    it('falls back to ALWAYS_ON BASE when a non-base campaignId is provided', () => {
+    it('falls back to product option BASE when a campaignId is provided', () => {
       const result = (service as any).buildShopPriceSelectionFromCandidates({
         candidates: [
           {
@@ -188,9 +188,98 @@ describe('V2CatalogService', () => {
             ends_at: null,
             channel_scope_json: [],
             price_list: {
+              campaign_id: null,
+              scope_type: 'BASE',
+              status: 'PUBLISHED',
+              channel_scope_json: [],
+              deleted_at: null,
+              campaign: null,
+            },
+          },
+        ],
+        campaignId: 'popup-campaign',
+        evaluatedAt: '2026-03-22T00:00:00.000Z',
+        channel: 'WEB',
+      });
+
+      expect(result.base?.id).toBe('base-item-1');
+      expect(result.override).toBeNull();
+      expect(result.selected?.id).toBe('base-item-1');
+    });
+
+    it('does not expose product option BASE without a selling campaign context', () => {
+      const result = (service as any).buildShopPriceSelectionFromCandidates({
+        candidates: [
+          {
+            id: 'legacy-always-on-base-item',
+            price_list_id: 'legacy-always-on-base-list',
+            unit_amount: 35000,
+            starts_at: null,
+            ends_at: null,
+            channel_scope_json: [],
+            price_list: {
               campaign_id: 'always-on-campaign',
               scope_type: 'BASE',
               status: 'PUBLISHED',
+              priority: 0,
+              published_at: '2026-03-23T00:00:00.000Z',
+              channel_scope_json: [],
+              deleted_at: null,
+              campaign: {
+                id: 'always-on-campaign',
+                campaign_type: 'ALWAYS_ON',
+                status: 'ACTIVE',
+                starts_at: null,
+                ends_at: null,
+                channel_scope_json: [],
+                deleted_at: null,
+              },
+            },
+          },
+          {
+            id: 'product-option-base-item',
+            price_list_id: 'product-option-base-list',
+            unit_amount: 350000,
+            starts_at: null,
+            ends_at: null,
+            channel_scope_json: [],
+            price_list: {
+              campaign_id: null,
+              scope_type: 'BASE',
+              status: 'PUBLISHED',
+              priority: 100,
+              published_at: '2026-06-29T00:00:00.000Z',
+              channel_scope_json: [],
+              deleted_at: null,
+              campaign: null,
+            },
+          },
+        ],
+        campaignId: null,
+        evaluatedAt: '2026-06-29T03:00:00.000Z',
+        channel: 'WEB',
+      });
+
+      expect(result.base?.id).toBe('legacy-always-on-base-item');
+      expect(result.selected?.unit_amount).toBe(35000);
+    });
+
+    it('does not use another campaign-linked BASE for an explicit campaign', () => {
+      const result = (service as any).buildShopPriceSelectionFromCandidates({
+        candidates: [
+          {
+            id: 'always-on-base-item',
+            price_list_id: 'always-on-base-list',
+            unit_amount: 35000,
+            starts_at: null,
+            ends_at: null,
+            channel_scope_json: [],
+            price_list: {
+              campaign_id: 'always-on-campaign',
+              scope_type: 'BASE',
+              status: 'PUBLISHED',
+              priority: 0,
+              published_at: '2026-03-23T00:00:00.000Z',
               channel_scope_json: [],
               deleted_at: null,
               campaign: {
@@ -206,13 +295,12 @@ describe('V2CatalogService', () => {
           },
         ],
         campaignId: 'popup-campaign',
-        evaluatedAt: '2026-03-22T00:00:00.000Z',
+        evaluatedAt: '2026-06-29T03:00:00.000Z',
         channel: 'WEB',
       });
 
-      expect(result.base?.id).toBe('base-item-1');
-      expect(result.override).toBeNull();
-      expect(result.selected?.id).toBe('base-item-1');
+      expect(result.base).toBeNull();
+      expect(result.selected).toBeNull();
     });
 
     it('keeps BASE selection for matching ALWAYS_ON campaignId', () => {
@@ -251,14 +339,298 @@ describe('V2CatalogService', () => {
       expect(result.base?.id).toBe('base-item-1');
       expect(result.selected?.id).toBe('base-item-1');
     });
+
+    it('keeps the explicit selling campaign context for product option BASE display prices', () => {
+      const displayPrice = (service as any).buildShopDisplayPrice(
+        {
+          id: 'base-item-1',
+          price_list_id: 'base-list-1',
+          unit_amount: 12000,
+          compare_at_amount: null,
+          price_list: {
+            campaign_id: null,
+            scope_type: 'BASE',
+            currency_code: 'KRW',
+          },
+        },
+        'popup-campaign',
+      );
+
+      expect(displayPrice.source).toBe('BASE');
+      expect(displayPrice.campaign_id).toBeNull();
+      expect(displayPrice.selling_campaign_id).toBe('popup-campaign');
+      expect(displayPrice.price_list_item_id).toBe('base-item-1');
+    });
+
+    it('uses updated_at as a tie-breaker for same-priority BASE items', () => {
+      const sharedPriceList = {
+        campaign_id: null,
+        scope_type: 'BASE',
+        status: 'PUBLISHED',
+        priority: 100,
+        published_at: '2026-06-29T00:00:00.000Z',
+        channel_scope_json: [],
+        deleted_at: null,
+        campaign: null,
+      };
+
+      const result = (service as any).buildShopPriceSelectionFromCandidates({
+        candidates: [
+          {
+            id: 'base-item-old',
+            price_list_id: 'base-list-1',
+            unit_amount: 1000,
+            starts_at: null,
+            ends_at: null,
+            channel_scope_json: [],
+            created_at: '2026-06-29T00:00:00.000Z',
+            updated_at: '2026-06-29T01:00:00.000Z',
+            price_list: sharedPriceList,
+          },
+          {
+            id: 'base-item-new',
+            price_list_id: 'base-list-1',
+            unit_amount: 2000,
+            starts_at: null,
+            ends_at: null,
+            channel_scope_json: [],
+            created_at: '2026-06-29T00:00:00.000Z',
+            updated_at: '2026-06-29T02:00:00.000Z',
+            price_list: sharedPriceList,
+          },
+        ],
+        campaignId: 'popup-campaign',
+        evaluatedAt: '2026-06-29T03:00:00.000Z',
+        channel: 'WEB',
+      });
+
+      expect(result.base?.id).toBe('base-item-new');
+      expect(result.selected?.unit_amount).toBe(2000);
+    });
+  });
+
+  describe('base price override propagation helpers', () => {
+    it('recomputes percent discount overrides from the next BASE amount', () => {
+      const result = (service as any).buildBasePriceOverrideImpact({
+        item: {
+          id: 'override-1',
+          price_list_id: 'override-list',
+          product_id: 'product-1',
+          variant_id: 'variant-1',
+          unit_amount: 31500,
+          compare_at_amount: 35000,
+          status: 'ACTIVE',
+          metadata: {
+            pricing_mode: 'PERCENT_DISCOUNT',
+            discount_value: 10,
+            base_amount: 35000,
+          },
+          price_list: {
+            campaign_id: 'campaign-1',
+            campaign: { id: 'campaign-1', name: 'Campaign' },
+          },
+        },
+        nextBaseAmount: 100000,
+        currentBaseAmount: 35000,
+      });
+
+      expect(result.pricing_mode).toBe('PERCENT_DISCOUNT');
+      expect(result.can_auto_propagate).toBe(true);
+      expect(result.default_action).toBe('PROPAGATE');
+      expect(result.next_unit_amount).toBe(90000);
+      expect(result.next_compare_at_amount).toBe(100000);
+    });
+
+    it('recomputes fixed discount overrides from the next BASE amount', () => {
+      const result = (service as any).buildBasePriceOverrideImpact({
+        item: {
+          id: 'override-1',
+          price_list_id: 'override-list',
+          product_id: 'product-1',
+          variant_id: 'variant-1',
+          unit_amount: 30000,
+          compare_at_amount: 35000,
+          status: 'ACTIVE',
+          metadata: {
+            pricing_mode: 'FIXED_DISCOUNT',
+            discount_value: 5000,
+            base_amount: 35000,
+          },
+          price_list: { campaign_id: 'campaign-1' },
+        },
+        nextBaseAmount: 100000,
+        currentBaseAmount: 35000,
+      });
+
+      expect(result.next_unit_amount).toBe(95000);
+      expect(result.can_auto_propagate).toBe(true);
+    });
+
+    it('keeps direct price overrides by default', () => {
+      const result = (service as any).buildBasePriceOverrideImpact({
+        item: {
+          id: 'override-1',
+          price_list_id: 'override-list',
+          product_id: 'product-1',
+          variant_id: 'variant-1',
+          unit_amount: 25000,
+          compare_at_amount: 35000,
+          status: 'ACTIVE',
+          metadata: {
+            pricing_mode: 'DIRECT_PRICE',
+            discount_value: 25000,
+            base_amount: 35000,
+          },
+          price_list: { campaign_id: 'campaign-1' },
+        },
+        nextBaseAmount: 100000,
+        currentBaseAmount: 35000,
+      });
+
+      expect(result.next_unit_amount).toBe(25000);
+      expect(result.default_action).toBe('KEEP');
+      expect(result.can_auto_propagate).toBe(false);
+    });
+
+    it('marks missing pricing metadata as non-propagatable', () => {
+      const result = (service as any).buildBasePriceOverrideImpact({
+        item: {
+          id: 'override-1',
+          price_list_id: 'override-list',
+          product_id: 'product-1',
+          variant_id: 'variant-1',
+          unit_amount: 25000,
+          compare_at_amount: 35000,
+          status: 'ACTIVE',
+          metadata: {},
+          price_list: { campaign_id: 'campaign-1' },
+        },
+        nextBaseAmount: 100000,
+        currentBaseAmount: 35000,
+      });
+
+      expect(result.pricing_mode).toBe('UNKNOWN');
+      expect(result.default_action).toBe('SKIP');
+      expect(result.can_auto_propagate).toBe(false);
+    });
   });
 
   describe('selectShopPriceItem', () => {
-    it('uses ALWAYS_ON BASE fallback only when the explicit campaign target includes the variant', () => {
+    it('uses inferred selling campaign context so the shop default follows product option BASE over legacy ALWAYS_ON BASE', () => {
+      const projectId = 'project-1';
       const productId = 'product-1';
       const variantId = 'variant-1';
       const popupCampaignId = 'popup-campaign';
       const alwaysOnCampaignId = 'always-on-campaign';
+      const evaluatedAt = '2026-06-29T03:00:00.000Z';
+      const campaignTargetEligibilityByCampaignId = new Map([
+        [
+          popupCampaignId,
+          createProjectCampaignEligibilityScope(projectId, 'POPUP'),
+        ],
+        [
+          alwaysOnCampaignId,
+          createProjectCampaignEligibilityScope(projectId, 'ALWAYS_ON'),
+        ],
+      ]);
+
+      const sellingCampaignId = (service as any).resolveShopSellingCampaignId({
+        explicitCampaignId: null,
+        projectId,
+        productId,
+        variantId,
+        campaigns: [
+          {
+            id: alwaysOnCampaignId,
+            campaign_type: 'ALWAYS_ON',
+            status: 'ACTIVE',
+            starts_at: '2026-03-23T00:00:00.000Z',
+            ends_at: null,
+            channel_scope_json: [],
+            deleted_at: null,
+          },
+          {
+            id: popupCampaignId,
+            campaign_type: 'POPUP',
+            status: 'ACTIVE',
+            starts_at: '2026-06-27T00:00:00.000Z',
+            ends_at: null,
+            channel_scope_json: [],
+            deleted_at: null,
+          },
+        ],
+        evaluatedAt,
+        channel: 'WEB',
+        campaignTargetEligibilityByCampaignId,
+      });
+      expect(sellingCampaignId).toBe(popupCampaignId);
+
+      const result = (service as any).selectShopPriceItem({
+        productId,
+        projectId,
+        variantId,
+        priceItems: [
+          {
+            id: 'legacy-always-on-base-item',
+            product_id: productId,
+            variant_id: variantId,
+            unit_amount: 35000,
+            starts_at: null,
+            ends_at: null,
+            channel_scope_json: [],
+            price_list: {
+              campaign_id: alwaysOnCampaignId,
+              scope_type: 'BASE',
+              status: 'PUBLISHED',
+              priority: 0,
+              published_at: '2026-03-23T00:00:00.000Z',
+              channel_scope_json: [],
+              deleted_at: null,
+              campaign: {
+                id: alwaysOnCampaignId,
+                campaign_type: 'ALWAYS_ON',
+                status: 'ACTIVE',
+                starts_at: '2026-03-23T00:00:00.000Z',
+                ends_at: null,
+                channel_scope_json: [],
+                deleted_at: null,
+              },
+            },
+          },
+          {
+            id: 'product-option-base-item',
+            product_id: productId,
+            variant_id: variantId,
+            unit_amount: 350000,
+            starts_at: null,
+            ends_at: null,
+            channel_scope_json: [],
+            price_list: {
+              campaign_id: null,
+              scope_type: 'BASE',
+              status: 'PUBLISHED',
+              priority: 100,
+              published_at: '2026-06-29T00:00:00.000Z',
+              channel_scope_json: [],
+              deleted_at: null,
+              campaign: null,
+            },
+          },
+        ],
+        evaluatedAt,
+        campaignId: sellingCampaignId,
+        channel: 'WEB',
+        campaignTargetEligibilityByCampaignId,
+      });
+
+      expect(result.selected?.id).toBe('product-option-base-item');
+      expect(result.selected?.unit_amount).toBe(350000);
+    });
+
+    it('uses product option BASE only when the explicit campaign target includes the variant', () => {
+      const productId = 'product-1';
+      const variantId = 'variant-1';
+      const popupCampaignId = 'popup-campaign';
       const priceItems = [
         {
           id: 'base-item-1',
@@ -269,20 +641,12 @@ describe('V2CatalogService', () => {
           ends_at: null,
           channel_scope_json: [],
           price_list: {
-            campaign_id: alwaysOnCampaignId,
+            campaign_id: null,
             scope_type: 'BASE',
             status: 'PUBLISHED',
             channel_scope_json: [],
             deleted_at: null,
-            campaign: {
-              id: alwaysOnCampaignId,
-              campaign_type: 'ALWAYS_ON',
-              status: 'ACTIVE',
-              starts_at: null,
-              ends_at: null,
-              channel_scope_json: [],
-              deleted_at: null,
-            },
+            campaign: null,
           },
         },
       ];
@@ -296,7 +660,6 @@ describe('V2CatalogService', () => {
         campaignId: popupCampaignId,
         channel: 'WEB',
         campaignTargetEligibilityByCampaignId: new Map([
-          [alwaysOnCampaignId, createCampaignEligibilityScope(productId)],
           [popupCampaignId, createCampaignEligibilityScope(productId)],
         ]),
       });
@@ -310,19 +673,16 @@ describe('V2CatalogService', () => {
         evaluatedAt: '2026-03-22T00:00:00.000Z',
         campaignId: popupCampaignId,
         channel: 'WEB',
-        campaignTargetEligibilityByCampaignId: new Map([
-          [alwaysOnCampaignId, createCampaignEligibilityScope(productId)],
-        ]),
+        campaignTargetEligibilityByCampaignId: new Map(),
       });
       expect(notTargeted.selected).toBeNull();
     });
 
-    it('does not treat PROJECT targets as explicit inclusion for non-always campaigns', () => {
+    it('uses product option BASE for non-always campaigns with PROJECT targets', () => {
       const projectId = 'project-1';
       const productId = 'product-1';
       const variantId = 'variant-1';
       const popupCampaignId = 'popup-campaign';
-      const alwaysOnCampaignId = 'always-on-campaign';
       const priceItems = [
         {
           id: 'base-item-1',
@@ -333,20 +693,12 @@ describe('V2CatalogService', () => {
           ends_at: null,
           channel_scope_json: [],
           price_list: {
-            campaign_id: alwaysOnCampaignId,
+            campaign_id: null,
             scope_type: 'BASE',
             status: 'PUBLISHED',
             channel_scope_json: [],
             deleted_at: null,
-            campaign: {
-              id: alwaysOnCampaignId,
-              campaign_type: 'ALWAYS_ON',
-              status: 'ACTIVE',
-              starts_at: null,
-              ends_at: null,
-              channel_scope_json: [],
-              deleted_at: null,
-            },
+            campaign: null,
           },
         },
       ];
@@ -361,17 +713,13 @@ describe('V2CatalogService', () => {
         channel: 'WEB',
         campaignTargetEligibilityByCampaignId: new Map([
           [
-            alwaysOnCampaignId,
-            createProjectCampaignEligibilityScope(projectId, 'ALWAYS_ON'),
-          ],
-          [
             popupCampaignId,
             createProjectCampaignEligibilityScope(projectId, 'POPUP'),
           ],
         ]),
       });
 
-      expect(result.selected).toBeNull();
+      expect(result.selected?.id).toBe('base-item-1');
     });
   });
 
@@ -679,6 +1027,86 @@ describe('V2CatalogService', () => {
       });
 
       expect(mocks.priceListUpdate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('createCampaignTarget', () => {
+    it('restores a soft-deleted target instead of inserting a duplicate', async () => {
+      const deletedTarget = {
+        id: 'target-1',
+        campaign_id: 'campaign-1',
+        target_type: 'VARIANT',
+        target_id: 'variant-1',
+        deleted_at: '2026-06-29T00:00:00.000Z',
+      };
+      const restoredTarget = {
+        ...deletedTarget,
+        sort_order: 3,
+        is_excluded: false,
+        metadata: { source: 'campaign-detail' },
+        deleted_at: null,
+      };
+      const findQuery: any = {
+        eq: jest.fn(() => findQuery),
+        maybeSingle: jest
+          .fn()
+          .mockResolvedValue({ data: deletedTarget, error: null }),
+      };
+      const updateQuery: any = {
+        eq: jest.fn(() => updateQuery),
+        select: jest.fn(() => updateQuery),
+        single: jest
+          .fn()
+          .mockResolvedValue({ data: restoredTarget, error: null }),
+      };
+      const targetSelect = jest.fn(() => findQuery);
+      const targetUpdate = jest.fn(() => updateQuery);
+      const targetInsert = jest.fn();
+      const from = jest.fn((table: string) => {
+        if (table === 'v2_campaign_targets') {
+          return {
+            select: targetSelect,
+            update: targetUpdate,
+            insert: targetInsert,
+          };
+        }
+        throw new Error(`Unexpected table: ${table}`);
+      });
+
+      jest
+        .spyOn(service as any, 'supabase', 'get')
+        .mockReturnValue({ from } as any);
+      jest.spyOn(service as any, 'getCampaignById').mockResolvedValue({
+        id: 'campaign-1',
+        campaign_type: 'POPUP',
+        status: 'ACTIVE',
+      } as any);
+      jest
+        .spyOn(service as any, 'ensureCampaignTargetEntityExists')
+        .mockResolvedValue(undefined);
+
+      const result = await service.createCampaignTarget('campaign-1', {
+        target_type: 'VARIANT',
+        target_id: 'variant-1',
+        sort_order: 3,
+        is_excluded: false,
+        metadata: { source: 'campaign-detail' },
+      });
+
+      expect(result).toEqual(restoredTarget);
+      expect(targetInsert).not.toHaveBeenCalled();
+      expect(targetUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          campaign_id: 'campaign-1',
+          target_type: 'VARIANT',
+          target_id: 'variant-1',
+          sort_order: 3,
+          is_excluded: false,
+          metadata: { source: 'campaign-detail' },
+          deleted_at: null,
+        }),
+      );
+      expect(updateQuery.eq).toHaveBeenCalledWith('id', 'target-1');
     });
   });
 });

@@ -2116,17 +2116,23 @@ export class V2AdminService {
     const orderIds = rows
       .map((row) => this.normalizeOptionalUuid(row.order_id))
       .filter((orderId): orderId is string => Boolean(orderId));
-    const depositorNameByOrderId =
-      await this.fetchOrderDepositorNameByOrderIds(orderIds);
+    const [depositorNameByOrderId, itemSummaryByOrderId] = await Promise.all([
+      this.fetchOrderDepositorNameByOrderIds(orderIds),
+      this.fetchOrderItemSummariesByOrderIds(orderIds),
+    ]);
 
     return {
       items: rows.map((row) => {
         const orderId = this.normalizeOptionalUuid(row.order_id);
+        const itemSummary = orderId ? itemSummaryByOrderId.get(orderId) : null;
         return {
           ...row,
           depositor_name: orderId
             ? depositorNameByOrderId.get(orderId) || null
             : null,
+          item_line_count: itemSummary?.item_line_count || 0,
+          item_quantity_total: itemSummary?.item_quantity_total || 0,
+          items: itemSummary?.items || [],
         };
       }),
       limit,
@@ -2208,6 +2214,111 @@ export class V2AdminService {
       readSnapshotText(input.shippingAddressSnapshot, 'recipient_name') ||
       null
     );
+  }
+
+  private async fetchOrderItemSummariesByOrderIds(orderIds: string[]): Promise<
+    Map<
+      string,
+      {
+        item_line_count: number;
+        item_quantity_total: number;
+        items: Array<{
+          order_item_id: string | null;
+          product_name: string;
+          variant_name: string | null;
+          quantity: number;
+          line_type: string | null;
+          final_line_total: number;
+        }>;
+      }
+    >
+  > {
+    const normalizedOrderIds = Array.from(
+      new Set(
+        (orderIds || [])
+          .map((orderId) => this.normalizeOptionalUuid(orderId))
+          .filter((orderId): orderId is string => Boolean(orderId)),
+      ),
+    );
+    if (normalizedOrderIds.length === 0) {
+      return new Map();
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_order_items')
+      .select(
+        'id, order_id, line_type, quantity, product_name_snapshot, variant_name_snapshot, final_line_total, created_at',
+      )
+      .in('order_id', normalizedOrderIds)
+      .in('line_type', ['STANDARD', 'BUNDLE_PARENT'])
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw new ApiException(
+        'order queue 상품 요약 조회 실패',
+        500,
+        'V2_ADMIN_ORDER_QUEUE_ITEMS_FETCH_FAILED',
+      );
+    }
+
+    const summaryByOrderId = new Map<
+      string,
+      {
+        item_line_count: number;
+        item_quantity_total: number;
+        items: Array<{
+          order_item_id: string | null;
+          product_name: string;
+          variant_name: string | null;
+          quantity: number;
+          line_type: string | null;
+          final_line_total: number;
+        }>;
+      }
+    >();
+
+    for (const row of data || []) {
+      const orderId = this.normalizeOptionalUuid(row.order_id);
+      if (!orderId) {
+        continue;
+      }
+      const quantity = Math.max(0, Number(row.quantity || 0));
+      const summary =
+        summaryByOrderId.get(orderId) ||
+        ({
+          item_line_count: 0,
+          item_quantity_total: 0,
+          items: [],
+        } as {
+          item_line_count: number;
+          item_quantity_total: number;
+          items: Array<{
+            order_item_id: string | null;
+            product_name: string;
+            variant_name: string | null;
+            quantity: number;
+            line_type: string | null;
+            final_line_total: number;
+          }>;
+        });
+
+      summary.item_line_count += 1;
+      summary.item_quantity_total += quantity;
+      summary.items.push({
+        order_item_id: this.normalizeOptionalUuid(row.id),
+        product_name:
+          this.normalizeOptionalText(row.product_name_snapshot) ||
+          '이름 없는 상품',
+        variant_name: this.normalizeOptionalText(row.variant_name_snapshot),
+        quantity,
+        line_type:
+          this.normalizeOptionalText(row.line_type)?.toUpperCase() || null,
+        final_line_total: Number(row.final_line_total || 0),
+      });
+      summaryByOrderId.set(orderId, summary);
+    }
+
+    return summaryByOrderId;
   }
 
   async bulkOrderQueueAction(input: {
@@ -3557,10 +3668,16 @@ export class V2AdminService {
           fulfillment_status: row?.fulfillment_status || null,
           grand_total: Number(row?.grand_total || 0),
           depositor_name: row?.depositor_name || null,
+          item_line_count: Number(row?.item_line_count || 0),
+          item_quantity_total: Number(row?.item_quantity_total || 0),
+          items: Array.isArray(row?.items) ? row.items : [],
           waiting_shipment_count: Number(row?.waiting_shipment_count || 0),
           in_transit_shipment_count: Number(
             row?.in_transit_shipment_count || 0,
           ),
+          has_bundle: row?.has_bundle === true,
+          has_physical: row?.has_physical === true,
+          has_digital: row?.has_digital === true,
           age_hours: ageHours === null ? null : Number(ageHours.toFixed(2)),
           _priority: priorityByStage.get(stage) || 99,
           _age_sort: ageHours === null ? -1 : ageHours,
@@ -3591,8 +3708,14 @@ export class V2AdminService {
       fulfillment_status: row.fulfillment_status,
       grand_total: row.grand_total,
       depositor_name: row.depositor_name,
+      item_line_count: row.item_line_count,
+      item_quantity_total: row.item_quantity_total,
+      items: row.items,
       waiting_shipment_count: row.waiting_shipment_count,
       in_transit_shipment_count: row.in_transit_shipment_count,
+      has_bundle: row.has_bundle,
+      has_physical: row.has_physical,
+      has_digital: row.has_digital,
       age_hours: row.age_hours,
     }));
   }
@@ -4057,9 +4180,7 @@ export class V2AdminService {
       return new Map();
     }
 
-    let query = this.supabase
-      .from('v2_campaigns')
-      .select('id, campaign_type');
+    let query = this.supabase.from('v2_campaigns').select('id, campaign_type');
 
     if (normalizedIds.length > 0) {
       query = query.in('id', normalizedIds);
@@ -4091,10 +4212,9 @@ export class V2AdminService {
           ] as const;
         })
         .filter(
-          (entry: readonly [string, string | null] | null): entry is readonly [
-            string,
-            string | null,
-          ] => Boolean(entry),
+          (
+            entry: readonly [string, string | null] | null,
+          ): entry is readonly [string, string | null] => Boolean(entry),
         ),
     );
   }

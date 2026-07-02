@@ -67,6 +67,26 @@ interface CreateV2OrderInput extends ValidateV2CheckoutInput {
   metadata?: Record<string, unknown> | null;
 }
 
+interface DigitalOwnershipLookupInput {
+  variantIds?: string[];
+  productIds?: string[];
+}
+
+interface DigitalOwnershipRecord {
+  variant_id: string | null;
+  product_id: string | null;
+  owned: true;
+  ownership_status: 'OWNED' | 'PENDING';
+  entitlement_id: string;
+  entitlement_status: string;
+  order_id: string;
+  order_no: string | null;
+  order_status: string | null;
+  payment_status: string | null;
+  granted_at: string | null;
+  expires_at: string | null;
+}
+
 interface PaymentCallbackInput {
   external_reference?: string;
   status?:
@@ -122,6 +142,20 @@ interface CheckoutPayload {
   requestedShippingAmount: number | null;
   shippingPostcode: string | null;
   shippingRequired: boolean;
+}
+
+interface CheckoutPriceMismatch {
+  cart_item_id: string;
+  product_id: string | null;
+  variant_id: string;
+  campaign_id: string | null;
+  quantity: number;
+  product_title: string | null;
+  variant_title: string | null;
+  snapshot_unit_amount: number;
+  current_unit_amount: number;
+  snapshot_line_total: number;
+  current_line_total: number;
 }
 
 interface CampaignSnapshotContext {
@@ -209,7 +243,6 @@ export class V2CheckoutService {
       input.quantity ?? 1,
       'quantity',
     );
-    const campaignId = this.normalizeOptionalUuid(input.campaign_id);
     const metadata = this.normalizeOptionalJsonObject(input.metadata);
     const bundleConfiguration = this.normalizeOptionalJsonObject(
       input.bundle_configuration_snapshot,
@@ -217,11 +250,18 @@ export class V2CheckoutService {
     const displayPriceSnapshot = this.normalizeOptionalJsonObject(
       input.display_price_snapshot,
     );
+    const campaignId =
+      this.normalizeOptionalUuid(input.campaign_id) ||
+      this.normalizeOptionalUuid(displayPriceSnapshot?.selling_campaign_id) ||
+      this.normalizeOptionalUuid(displayPriceSnapshot?.campaign_id);
     const addedVia =
       this.normalizeOptionalText(input.added_via) || 'STOREFRONT';
 
     const cart = await this.getOrCreateActiveCart(profileId);
     const variant = await this.getVariantForCart(variantId);
+    if (this.isDigitalVariantSnapshot(variant)) {
+      await this.assertNoOwnedDigitalVariants(profileId, [variant.id]);
+    }
 
     let existingQuery = this.supabase
       .from('v2_cart_items')
@@ -404,13 +444,17 @@ export class V2CheckoutService {
     }
 
     const checkoutPayload = await this.resolveCheckoutPayload(input, cartItems);
+    await this.assertCartHasNoOwnedDigitalVariants(profileId, cartItems);
     const { quote } = await this.buildCheckoutQuote(profileId, checkoutPayload);
+    const priceMismatches = this.buildCheckoutPriceMismatches(cartItems, quote);
 
     await this.touchCart(cart.id);
 
     return {
       cart: this.buildCartSummary(cart, cartItems),
       quote,
+      price_mismatches: priceMismatches,
+      price_mismatch_count: priceMismatches.length,
     };
   }
 
@@ -464,10 +508,19 @@ export class V2CheckoutService {
     }
 
     const checkoutPayload = await this.resolveCheckoutPayload(input, cartItems);
+    await this.assertCartHasNoOwnedDigitalVariants(profileId, cartItems);
     const { quote, shippingAmount } = await this.buildCheckoutQuote(
       profileId,
       checkoutPayload,
     );
+    const priceMismatches = this.buildCheckoutPriceMismatches(cartItems, quote);
+    if (priceMismatches.length > 0) {
+      throw new ApiException(
+        '장바구니 가격 정보가 변경되었습니다. 장바구니를 갱신한 뒤 다시 시도해 주세요.',
+        409,
+        'V2_CHECKOUT_PRICE_CHANGED',
+      );
+    }
 
     const summary = (quote?.summary || {}) as Record<string, unknown>;
     const currencyCode = this.normalizeCurrencyCode(input.currency_code);
@@ -914,7 +967,7 @@ export class V2CheckoutService {
 
         const hasDigitalAssetDownloadTarget = Boolean(
           this.resolveDigitalAssetDirectDownloadUrl(digitalAsset) ||
-            this.resolveDigitalAssetR2StoragePath(digitalAsset),
+          this.resolveDigitalAssetR2StoragePath(digitalAsset),
         );
         const availability = this.evaluateEntitlementAvailability({
           entitlement: row,
@@ -987,6 +1040,114 @@ export class V2CheckoutService {
     return {
       items,
       total: items.length,
+    };
+  }
+
+  async getDigitalOwnership(
+    profileId: string,
+    input: DigitalOwnershipLookupInput = {},
+  ): Promise<any> {
+    const requestedVariantIds = this.normalizeUuidList(
+      input.variantIds || [],
+      'variant_ids',
+    );
+    const requestedProductIds = this.normalizeUuidList(
+      input.productIds || [],
+      'product_ids',
+    );
+
+    if (requestedVariantIds.length === 0 && requestedProductIds.length === 0) {
+      return this.buildEmptyDigitalOwnershipResult(
+        requestedVariantIds,
+        requestedProductIds,
+      );
+    }
+
+    const rows = await this.findActiveDigitalOwnershipRows(profileId, {
+      variantIds: requestedVariantIds,
+      productIds: requestedProductIds,
+    });
+    const requestedVariantIdSet = new Set(requestedVariantIds);
+    const requestedProductIdSet = new Set(requestedProductIds);
+    const byVariantId: Record<string, DigitalOwnershipRecord> = {};
+    const byProductId: Record<string, DigitalOwnershipRecord> = {};
+    const items: DigitalOwnershipRecord[] = [];
+
+    for (const row of rows) {
+      const orderItem =
+        row?.order_item &&
+        typeof row.order_item === 'object' &&
+        !Array.isArray(row.order_item)
+          ? row.order_item
+          : null;
+      const order =
+        row?.order && typeof row.order === 'object' && !Array.isArray(row.order)
+          ? row.order
+          : null;
+      const variantId = this.normalizeOptionalUuid(orderItem?.variant_id);
+      const productId = this.normalizeOptionalUuid(orderItem?.product_id);
+      const matchesVariant = Boolean(
+        variantId && requestedVariantIdSet.has(variantId),
+      );
+      const matchesProduct = Boolean(
+        productId && requestedProductIdSet.has(productId),
+      );
+
+      if (!matchesVariant && !matchesProduct) {
+        continue;
+      }
+
+      const record: DigitalOwnershipRecord = {
+        variant_id: variantId,
+        product_id: productId,
+        owned: true,
+        ownership_status:
+          this.normalizeOptionalText(row.status) === 'GRANTED'
+            ? 'OWNED'
+            : 'PENDING',
+        entitlement_id: row.id,
+        entitlement_status: this.normalizeOptionalText(row.status) || 'PENDING',
+        order_id: order?.id || row.order_id,
+        order_no: this.normalizeOptionalText(order?.order_no),
+        order_status: this.normalizeOptionalText(order?.order_status),
+        payment_status: this.normalizeOptionalText(order?.payment_status),
+        granted_at: this.normalizeOptionalText(row.granted_at),
+        expires_at: this.normalizeOptionalText(row.expires_at),
+      };
+
+      items.push(record);
+      if (
+        variantId &&
+        (!byVariantId[variantId] ||
+          this.shouldPreferDigitalOwnershipRecord(
+            record,
+            byVariantId[variantId],
+          ))
+      ) {
+        byVariantId[variantId] = record;
+      }
+      if (
+        productId &&
+        (!byProductId[productId] ||
+          this.shouldPreferDigitalOwnershipRecord(
+            record,
+            byProductId[productId],
+          ))
+      ) {
+        byProductId[productId] = record;
+      }
+    }
+
+    return {
+      requested: {
+        variant_ids: requestedVariantIds,
+        product_ids: requestedProductIds,
+      },
+      items,
+      by_variant_id: byVariantId,
+      by_product_id: byProductId,
+      owned_variant_ids: Object.keys(byVariantId),
+      owned_product_ids: Object.keys(byProductId),
     };
   }
 
@@ -2411,6 +2572,87 @@ export class V2CheckoutService {
     };
   }
 
+  private buildCheckoutPriceMismatches(
+    cartItems: any[],
+    quote: any,
+  ): CheckoutPriceMismatch[] {
+    const quoteLines = Array.isArray(quote?.lines) ? quote.lines : [];
+    const mismatches: CheckoutPriceMismatch[] = [];
+
+    for (let index = 0; index < cartItems.length; index += 1) {
+      const cartItem = cartItems[index];
+      const quoteLine = quoteLines[index] || null;
+      const snapshotUnitAmount = this.readDisplayPriceSnapshotUnitAmount(
+        cartItem?.display_price_snapshot,
+      );
+      if (snapshotUnitAmount === null) {
+        continue;
+      }
+
+      const pricing = this.toOptionalRecord(quoteLine?.pricing);
+      const currentUnitAmount = this.readOptionalNonNegativeAmount(
+        pricing?.unit_amount,
+      );
+      if (currentUnitAmount === null) {
+        continue;
+      }
+      if (snapshotUnitAmount === currentUnitAmount) {
+        continue;
+      }
+
+      const quantity = this.normalizePositiveInteger(
+        cartItem?.quantity ?? quoteLine?.quantity ?? 1,
+        `cartItems[${index}].quantity`,
+      );
+      mismatches.push({
+        cart_item_id: String(cartItem?.id || ''),
+        product_id: this.normalizeOptionalUuid(
+          cartItem?.product_id || quoteLine?.product_id,
+        ),
+        variant_id: String(cartItem?.variant_id || quoteLine?.variant_id || ''),
+        campaign_id: this.normalizeOptionalUuid(
+          cartItem?.campaign_id || quoteLine?.campaign_id,
+        ),
+        quantity,
+        product_title:
+          this.normalizeOptionalText(cartItem?.variant?.product?.title) ||
+          this.normalizeOptionalText(quoteLine?.product_name_snapshot),
+        variant_title:
+          this.normalizeOptionalText(cartItem?.variant?.title) ||
+          this.normalizeOptionalText(quoteLine?.variant_name_snapshot) ||
+          this.normalizeOptionalText(quoteLine?.title),
+        snapshot_unit_amount: snapshotUnitAmount,
+        current_unit_amount: currentUnitAmount,
+        snapshot_line_total: snapshotUnitAmount * quantity,
+        current_line_total: currentUnitAmount * quantity,
+      });
+    }
+
+    return mismatches.filter(
+      (mismatch) => mismatch.cart_item_id && mismatch.variant_id,
+    );
+  }
+
+  private readDisplayPriceSnapshotUnitAmount(value: unknown): number | null {
+    const snapshot = this.toOptionalRecord(value);
+    if (!snapshot) {
+      return null;
+    }
+    const candidates = [
+      snapshot.final_unit_amount,
+      snapshot.sale_unit_amount,
+      snapshot.unit_amount,
+      snapshot.amount,
+    ];
+    for (const candidate of candidates) {
+      const amount = this.readOptionalNonNegativeAmount(candidate);
+      if (amount !== null) {
+        return amount;
+      }
+    }
+    return null;
+  }
+
   private async insertOrderWithUniqueOrderNo(
     orderRow: Record<string, unknown>,
   ): Promise<any> {
@@ -3707,6 +3949,203 @@ export class V2CheckoutService {
     return data;
   }
 
+  private buildEmptyDigitalOwnershipResult(
+    variantIds: string[],
+    productIds: string[],
+  ): any {
+    return {
+      requested: {
+        variant_ids: variantIds,
+        product_ids: productIds,
+      },
+      items: [],
+      by_variant_id: {},
+      by_product_id: {},
+      owned_variant_ids: [],
+      owned_product_ids: [],
+    };
+  }
+
+  private async findActiveDigitalOwnershipRows(
+    profileId: string,
+    input: { variantIds: string[]; productIds: string[] },
+  ): Promise<any[]> {
+    if (input.variantIds.length === 0 && input.productIds.length === 0) {
+      return [];
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_digital_entitlements')
+      .select(
+        `
+        id,
+        order_id,
+        status,
+        granted_at,
+        expires_at,
+        created_at,
+        order:v2_orders!inner (
+          id,
+          profile_id,
+          order_no,
+          order_status,
+          payment_status,
+          fulfillment_status,
+          placed_at
+        ),
+        order_item:v2_order_items!inner (
+          id,
+          order_id,
+          product_id,
+          variant_id,
+          line_status,
+          product_name_snapshot,
+          variant_name_snapshot
+        )
+      `,
+      )
+      .eq('order.profile_id', profileId)
+      .in('status', ['PENDING', 'GRANTED'])
+      .order('granted_at', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(1000);
+
+    if (error) {
+      throw new ApiException(
+        '디지털 ownership 조회 실패',
+        500,
+        'V2_DIGITAL_OWNERSHIP_FETCH_FAILED',
+      );
+    }
+
+    const variantIdSet = new Set(input.variantIds);
+    const productIdSet = new Set(input.productIds);
+
+    return ((data || []) as any[]).filter((row) => {
+      if (this.shouldSkipDigitalOwnershipRow(row)) {
+        return false;
+      }
+      const orderItem =
+        row?.order_item &&
+        typeof row.order_item === 'object' &&
+        !Array.isArray(row.order_item)
+          ? row.order_item
+          : null;
+      const variantId = this.normalizeOptionalUuid(orderItem?.variant_id);
+      const productId = this.normalizeOptionalUuid(orderItem?.product_id);
+
+      return Boolean(
+        (variantId && variantIdSet.has(variantId)) ||
+        (productId && productIdSet.has(productId)),
+      );
+    });
+  }
+
+  private shouldSkipDigitalOwnershipRow(row: any): boolean {
+    const order =
+      row?.order && typeof row.order === 'object' && !Array.isArray(row.order)
+        ? row.order
+        : null;
+    const orderItem =
+      row?.order_item &&
+      typeof row.order_item === 'object' &&
+      !Array.isArray(row.order_item)
+        ? row.order_item
+        : null;
+    const orderStatus = this.normalizeOptionalText(
+      order?.order_status,
+    )?.toUpperCase();
+    const lineStatus = this.normalizeOptionalText(
+      orderItem?.line_status,
+    )?.toUpperCase();
+
+    return (
+      orderStatus === 'CANCELED' ||
+      lineStatus === 'CANCELED' ||
+      lineStatus === 'REFUNDED'
+    );
+  }
+
+  private shouldPreferDigitalOwnershipRecord(
+    candidate: DigitalOwnershipRecord,
+    current: DigitalOwnershipRecord,
+  ): boolean {
+    const candidateRank = candidate.ownership_status === 'OWNED' ? 2 : 1;
+    const currentRank = current.ownership_status === 'OWNED' ? 2 : 1;
+    if (candidateRank !== currentRank) {
+      return candidateRank > currentRank;
+    }
+
+    const candidateTime =
+      new Date(candidate.granted_at || candidate.expires_at || 0).getTime() ||
+      0;
+    const currentTime =
+      new Date(current.granted_at || current.expires_at || 0).getTime() || 0;
+    return candidateTime > currentTime;
+  }
+
+  private async assertCartHasNoOwnedDigitalVariants(
+    profileId: string,
+    cartItems: any[],
+  ): Promise<void> {
+    const digitalVariantIds =
+      this.collectDigitalVariantIdsFromCartItems(cartItems);
+    await this.assertNoOwnedDigitalVariants(profileId, digitalVariantIds);
+  }
+
+  private collectDigitalVariantIdsFromCartItems(cartItems: any[]): string[] {
+    const digitalVariantIds = new Set<string>();
+
+    for (const item of cartItems) {
+      if (!this.isDigitalVariantSnapshot(item?.variant)) {
+        continue;
+      }
+      const variantId = this.normalizeOptionalUuid(
+        item?.variant_id || item?.variant?.id,
+      );
+      if (variantId) {
+        digitalVariantIds.add(variantId);
+      }
+    }
+
+    return Array.from(digitalVariantIds);
+  }
+
+  private async assertNoOwnedDigitalVariants(
+    profileId: string,
+    variantIds: string[],
+  ): Promise<void> {
+    const normalizedVariantIds = this.normalizeUuidList(
+      variantIds,
+      'variant_ids',
+    );
+    if (normalizedVariantIds.length === 0) {
+      return;
+    }
+
+    const ownership = await this.getDigitalOwnership(profileId, {
+      variantIds: normalizedVariantIds,
+    });
+    const ownedVariantIds = Array.isArray(ownership?.owned_variant_ids)
+      ? ownership.owned_variant_ids
+      : [];
+
+    if (ownedVariantIds.length > 0) {
+      throw new ApiException(
+        '이미 구매한 디지털 상품입니다. 마이페이지에서 다운로드할 수 있습니다.',
+        409,
+        'DIGITAL_ENTITLEMENT_ALREADY_OWNED',
+      );
+    }
+  }
+
+  private isDigitalVariantSnapshot(variant: any): boolean {
+    return (
+      this.normalizeOptionalText(variant?.fulfillment_type)?.toUpperCase() ===
+        'DIGITAL' && variant?.requires_shipping !== true
+    );
+  }
+
   private async fetchDigitalEntitlementById(
     entitlementId: string,
   ): Promise<any> {
@@ -4184,6 +4623,29 @@ export class V2CheckoutService {
     return normalized.length > 0 ? normalized : null;
   }
 
+  private toOptionalRecord(value: unknown): Record<string, unknown> | null {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+    return value as Record<string, unknown>;
+  }
+
+  private readOptionalNonNegativeAmount(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      return Math.round(value);
+    }
+    if (typeof value === 'string' && value.trim().length > 0) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        return Math.round(parsed);
+      }
+    }
+    return null;
+  }
+
   private normalizeOptionalHttpUrl(value: unknown): string | null {
     const normalized = this.normalizeOptionalText(value);
     if (!normalized) {
@@ -4222,6 +4684,37 @@ export class V2CheckoutService {
       return null;
     }
     return normalized;
+  }
+
+  private normalizeUuidList(values: unknown[], fieldName: string): string[] {
+    if (!Array.isArray(values) || values.length === 0) {
+      return [];
+    }
+
+    const normalizedValues: string[] = [];
+    for (const value of values) {
+      const normalized = this.normalizeOptionalUuid(value);
+      if (!normalized) {
+        throw new ApiException(
+          `${fieldName}에 유효하지 않은 uuid가 포함되어 있습니다`,
+          400,
+          'VALIDATION_ERROR',
+        );
+      }
+      if (!normalizedValues.includes(normalized)) {
+        normalizedValues.push(normalized);
+      }
+    }
+
+    if (normalizedValues.length > 100) {
+      throw new ApiException(
+        `${fieldName}는 최대 100개까지 조회할 수 있습니다`,
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+
+    return normalizedValues;
   }
 
   private normalizePositiveInteger(value: unknown, fieldName: string): number {

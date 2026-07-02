@@ -502,8 +502,7 @@ export class V2CatalogController {
     @Query('productIds') productIds?: string | string[],
   ) {
     await this.requireAdmin(authorization);
-    const variantsMap =
-      await this.v2CatalogService.getVariantsMap(productIds);
+    const variantsMap = await this.v2CatalogService.getVariantsMap(productIds);
     return successResponse(variantsMap);
   }
 
@@ -513,8 +512,7 @@ export class V2CatalogController {
     @Query('productIds') productIds?: string | string[],
   ) {
     await this.requireAdmin(authorization);
-    const mediaMap =
-      await this.v2CatalogService.getProductMediaMap(productIds);
+    const mediaMap = await this.v2CatalogService.getProductMediaMap(productIds);
     return successResponse(mediaMap);
   }
 
@@ -1065,6 +1063,30 @@ export class V2CatalogController {
     return successResponse(campaign, 'campaign이 CLOSED 상태로 전환되었습니다');
   }
 
+  @Delete('campaigns/:id')
+  async deleteCampaign(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') campaignId: string,
+  ) {
+    await this.requireAdmin(authorization);
+    await this.v2CatalogService.deleteCampaign(campaignId);
+    return successResponse({ message: 'campaign이 삭제되었습니다' });
+  }
+
+  @Post('campaigns/:id/product-editor/apply')
+  async applyCampaignProductEditor(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') campaignId: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2CatalogService.applyCampaignProductEditor(
+      campaignId,
+      body,
+    );
+    return successResponse(result, 'campaign 상품 편집 변경사항이 저장되었습니다');
+  }
+
   @Get('campaigns/:id/targets')
   async getCampaignTargets(
     @Headers('authorization') authorization: string | undefined,
@@ -1448,6 +1470,28 @@ export class V2CatalogController {
     await this.requireAdmin(authorization);
     const quote = await this.v2CatalogService.buildPriceQuote(body);
     return successResponse(quote);
+  }
+
+  @Post('pricing/base-price-change/analyze')
+  async analyzeBasePriceChange(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const result =
+      await this.v2CatalogService.analyzeVariantBasePriceChange(body);
+    return successResponse(result);
+  }
+
+  @Post('pricing/base-price-change/apply')
+  async applyBasePriceChange(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireAdmin(authorization);
+    const result =
+      await this.v2CatalogService.applyVariantBasePriceChange(body);
+    return successResponse(result);
   }
 
   @Post('pricing/promotions/evaluate')
