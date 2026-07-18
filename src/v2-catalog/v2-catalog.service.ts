@@ -12108,8 +12108,16 @@ export class V2CatalogService {
     }
 
     const projectId = this.normalizeOptionalText(params.projectId);
+    const hasSpecificIncludeTargets =
+      eligibility.include.productIds.size > 0 ||
+      eligibility.include.variantIds.size > 0;
+    // For non-always campaigns, specific targets narrow a PROJECT candidate scope.
+    const projectTargetIncludesProducts =
+      eligibility.campaignType === 'ALWAYS_ON' || !hasSpecificIncludeTargets;
     const includedByProject =
-      !!projectId && eligibility.include.projectIds.has(projectId);
+      projectTargetIncludesProducts &&
+      !!projectId &&
+      eligibility.include.projectIds.has(projectId);
     const includedByProduct = eligibility.include.productIds.has(
       params.productId,
     );
