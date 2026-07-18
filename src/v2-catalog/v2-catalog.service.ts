@@ -12109,7 +12109,9 @@ export class V2CatalogService {
 
     const projectId = this.normalizeOptionalText(params.projectId);
     const includedByProject =
-      !!projectId && eligibility.include.projectIds.has(projectId);
+      eligibility.campaignType === 'ALWAYS_ON' &&
+      !!projectId &&
+      eligibility.include.projectIds.has(projectId);
     const includedByProduct = eligibility.include.productIds.has(
       params.productId,
     );
