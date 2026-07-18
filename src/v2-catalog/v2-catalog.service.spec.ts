@@ -721,6 +721,62 @@ describe('V2CatalogService', () => {
 
       expect(result.selected?.id).toBe('base-item-1');
     });
+
+    it('prefers specific targets over PROJECT scope for non-always campaigns', () => {
+      const projectId = 'project-1';
+      const targetedProductId = 'product-targeted';
+      const targetedVariantId = 'variant-targeted';
+      const untargetedProductId = 'product-untargeted';
+      const untargetedVariantId = 'variant-untargeted';
+      const popupCampaignId = 'popup-campaign';
+      const scope = createProjectCampaignEligibilityScope(projectId, 'POPUP');
+      scope.include.variantIds.add(targetedVariantId);
+      const campaignTargetEligibilityByCampaignId = new Map([
+        [popupCampaignId, scope],
+      ]);
+
+      const targeted = (service as any).isCampaignTargetEligibleForShopPricing({
+        campaignId: popupCampaignId,
+        projectId,
+        productId: targetedProductId,
+        variantId: targetedVariantId,
+        campaignTargetEligibilityByCampaignId,
+      });
+      const untargeted = (
+        service as any
+      ).isCampaignTargetEligibleForShopPricing({
+        campaignId: popupCampaignId,
+        projectId,
+        productId: untargetedProductId,
+        variantId: untargetedVariantId,
+        campaignTargetEligibilityByCampaignId,
+      });
+
+      expect(targeted).toBe(true);
+      expect(untargeted).toBe(false);
+    });
+
+    it('keeps PROJECT scope authoritative for ALWAYS_ON campaigns', () => {
+      const projectId = 'project-1';
+      const alwaysOnCampaignId = 'always-on-campaign';
+      const scope = createProjectCampaignEligibilityScope(
+        projectId,
+        'ALWAYS_ON',
+      );
+      scope.include.variantIds.add('variant-targeted');
+
+      const result = (service as any).isCampaignTargetEligibleForShopPricing({
+        campaignId: alwaysOnCampaignId,
+        projectId,
+        productId: 'product-untargeted',
+        variantId: 'variant-untargeted',
+        campaignTargetEligibilityByCampaignId: new Map([
+          [alwaysOnCampaignId, scope],
+        ]),
+      });
+
+      expect(result).toBe(true);
+    });
   });
 
   describe('computePricingPipeline', () => {
