@@ -523,11 +523,13 @@ describe('V2CatalogService', () => {
       const popupCampaignId = 'popup-campaign';
       const alwaysOnCampaignId = 'always-on-campaign';
       const evaluatedAt = '2026-06-29T03:00:00.000Z';
+      const popupScope = createProjectCampaignEligibilityScope(
+        projectId,
+        'POPUP',
+      );
+      popupScope.include.variantIds.add(variantId);
       const campaignTargetEligibilityByCampaignId = new Map([
-        [
-          popupCampaignId,
-          createProjectCampaignEligibilityScope(projectId, 'POPUP'),
-        ],
+        [popupCampaignId, popupScope],
         [
           alwaysOnCampaignId,
           createProjectCampaignEligibilityScope(projectId, 'ALWAYS_ON'),
@@ -678,7 +680,7 @@ describe('V2CatalogService', () => {
       expect(notTargeted.selected).toBeNull();
     });
 
-    it('uses product option BASE for non-always campaigns with PROJECT targets', () => {
+    it('does not expose products from PROJECT scope alone for non-always campaigns', () => {
       const projectId = 'project-1';
       const productId = 'product-1';
       const variantId = 'variant-1';
@@ -719,7 +721,7 @@ describe('V2CatalogService', () => {
         ]),
       });
 
-      expect(result.selected?.id).toBe('base-item-1');
+      expect(result.selected).toBeNull();
     });
 
     it('prefers specific targets over PROJECT scope for non-always campaigns', () => {
@@ -776,6 +778,27 @@ describe('V2CatalogService', () => {
       });
 
       expect(result).toBe(true);
+    });
+
+    it('keeps exclusions authoritative over specific include targets', () => {
+      const popupCampaignId = 'popup-campaign';
+      const productId = 'product-targeted';
+      const variantId = 'variant-targeted';
+      const scope = createCampaignEligibilityScope(productId, 'POPUP');
+      scope.include.variantIds.add(variantId);
+      scope.exclude.productIds.add(productId);
+
+      const result = (service as any).isCampaignTargetEligibleForShopPricing({
+        campaignId: popupCampaignId,
+        projectId: 'project-1',
+        productId,
+        variantId,
+        campaignTargetEligibilityByCampaignId: new Map([
+          [popupCampaignId, scope],
+        ]),
+      });
+
+      expect(result).toBe(false);
     });
   });
 
