@@ -826,6 +826,11 @@ const V2_PRODUCT_MEDIA_SELECT_COLUMNS =
   'id, product_id, media_type, media_role, media_asset_id, storage_path, public_url, alt_text, sort_order, is_primary, status, metadata, deleted_at, created_at, updated_at';
 const V2_PROJECT_PRODUCT_COVER_MEDIA_SELECT_COLUMNS =
   'id, product_id, media_type, media_role, media_asset_id, storage_path, public_url, alt_text, sort_order, is_primary, status, created_at, updated_at';
+// Preserve the random suffix when this slug becomes the prefix of an 80-char SKU.
+const V2_PRODUCT_SLUG_BASE_MAX_LENGTH = 40;
+const V2_PRODUCT_SLUG_SUFFIX_LENGTH = 12;
+const V2_PRODUCT_SLUG_INSERT_MAX_ATTEMPTS = 3;
+const V2_PRODUCT_SLUG_UNIQUE_CONSTRAINT = 'v2_products_project_slug_unique';
 
 @Injectable()
 export class V2CatalogService {
@@ -2091,7 +2096,7 @@ export class V2CatalogService {
       input.title,
       '상품명은 필수입니다',
     );
-    const slug = this.normalizeRequiredText(
+    const slugBase = this.normalizeRequiredText(
       input.slug,
       '상품 slug는 필수입니다',
     );
@@ -2114,26 +2119,49 @@ export class V2CatalogService {
     }
 
     await this.ensureProjectExists(projectId);
-    await this.assertProductSlugAvailable(projectId, slug);
 
-    const { data, error } = await this.supabase
-      .from('v2_products')
-      .insert({
-        project_id: projectId,
-        product_kind: productKind,
-        fulfillment_type: productKind === 'STANDARD' ? fulfillmentType : null,
-        title,
-        slug,
-        short_description: this.normalizeOptionalText(input.short_description),
-        description: this.normalizeOptionalText(input.description),
-        sort_order: input.sort_order ?? 0,
-        status: input.status ?? 'DRAFT',
-        metadata: input.metadata ?? {},
-      })
-      .select('*')
-      .single();
+    for (
+      let attempt = 0;
+      attempt < V2_PRODUCT_SLUG_INSERT_MAX_ATTEMPTS;
+      attempt += 1
+    ) {
+      const slug = this.generateProductSlug(slugBase);
+      const { data, error } = await this.supabase
+        .from('v2_products')
+        .insert({
+          project_id: projectId,
+          product_kind: productKind,
+          fulfillment_type: productKind === 'STANDARD' ? fulfillmentType : null,
+          title,
+          slug,
+          short_description: this.normalizeOptionalText(
+            input.short_description,
+          ),
+          description: this.normalizeOptionalText(input.description),
+          sort_order: input.sort_order ?? 0,
+          status: input.status ?? 'DRAFT',
+          metadata: input.metadata ?? {},
+        })
+        .select('*')
+        .single();
 
-    if (error || !data) {
+      if (!error && data) {
+        return data;
+      }
+      const isSlugCollision = this.isProductSlugUniqueViolation(error);
+      if (
+        isSlugCollision &&
+        attempt + 1 < V2_PRODUCT_SLUG_INSERT_MAX_ATTEMPTS
+      ) {
+        continue;
+      }
+      if (isSlugCollision) {
+        throw new ApiException(
+          '상품 내부 코드 생성에 실패했습니다. 다시 시도해 주세요',
+          500,
+          'V2_PRODUCT_SLUG_GENERATION_FAILED',
+        );
+      }
       throw new ApiException(
         'v2 상품 생성 실패',
         500,
@@ -2141,7 +2169,11 @@ export class V2CatalogService {
       );
     }
 
-    return data;
+    throw new ApiException(
+      '상품 내부 코드 생성에 실패했습니다. 다시 시도해 주세요',
+      500,
+      'V2_PRODUCT_SLUG_GENERATION_FAILED',
+    );
   }
 
   async updateProduct(
@@ -4104,11 +4136,7 @@ export class V2CatalogService {
       priceChangeVariantIds.add(variantId);
     });
 
-    const [
-      targets,
-      campaignPriceLists,
-      basePriceLists,
-    ] = await Promise.all([
+    const [targets, campaignPriceLists, basePriceLists] = await Promise.all([
       this.fetchCampaignTargets(campaignId),
       this.getPriceLists({ campaignId, scopeType: 'OVERRIDE' }),
       this.getPriceLists({ scopeType: 'BASE', status: 'PUBLISHED' }),
@@ -13840,6 +13868,38 @@ export class V2CatalogService {
         'SLUG_ALREADY_EXISTS',
       );
     }
+  }
+
+  private generateProductSlug(slugBase: string): string {
+    const normalizedBase =
+      slugBase
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, V2_PRODUCT_SLUG_BASE_MAX_LENGTH)
+        .replace(/-+$/g, '') || 'product';
+    const suffix = randomUUID()
+      .replace(/-/g, '')
+      .slice(0, V2_PRODUCT_SLUG_SUFFIX_LENGTH);
+
+    return `${normalizedBase}-${suffix}`;
+  }
+
+  private isProductSlugUniqueViolation(
+    error:
+      | {
+          code?: string | null;
+          message?: string | null;
+        }
+      | null
+      | undefined,
+  ): boolean {
+    return (
+      error?.code === '23505' &&
+      error.message?.includes(V2_PRODUCT_SLUG_UNIQUE_CONSTRAINT) === true
+    );
   }
 
   private async assertSkuAvailable(
