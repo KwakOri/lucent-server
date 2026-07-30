@@ -79,11 +79,197 @@ function createUpdateCampaignSupabaseMock(
   };
 }
 
+function createProductSupabaseMock(
+  results: Array<{
+    data?: Record<string, unknown> | null;
+    error?: Record<string, unknown> | null;
+  }>,
+) {
+  const insertedPayloads: Array<Record<string, unknown>> = [];
+  const pendingResults = [...results];
+  const single = jest.fn(async () => {
+    const result = pendingResults.shift();
+    if (!result) {
+      throw new Error('Missing mocked product insert result');
+    }
+    if (result.error) {
+      return { data: null, error: result.error };
+    }
+
+    return {
+      data: {
+        id: `product-${insertedPayloads.length}`,
+        ...insertedPayloads[insertedPayloads.length - 1],
+        ...(result.data || {}),
+      },
+      error: null,
+    };
+  });
+  const select = jest.fn().mockReturnValue({ single });
+  const insert = jest.fn((payload: Record<string, unknown>) => {
+    insertedPayloads.push(payload);
+    return { select };
+  });
+  const from = jest.fn((table: string) => {
+    if (table === 'v2_products') {
+      return { insert };
+    }
+    throw new Error(`Unexpected table: ${table}`);
+  });
+
+  return {
+    supabase: { from },
+    mocks: {
+      from,
+      insert,
+      select,
+      single,
+      insertedPayloads,
+    },
+  };
+}
+
 describe('V2CatalogService', () => {
   let service: V2CatalogService;
 
   beforeEach(() => {
     service = new V2CatalogService();
+  });
+
+  describe('createProduct', () => {
+    const input = {
+      project_id: 'project-1',
+      product_kind: 'STANDARD' as const,
+      fulfillment_type: 'DIGITAL' as const,
+      title: 'pvc 포토카드',
+      slug: 'pvc',
+    };
+
+    it('allows duplicate product titles by assigning a fresh slug per product', async () => {
+      const { supabase, mocks } = createProductSupabaseMock([
+        { data: {} },
+        { data: {} },
+      ]);
+      jest
+        .spyOn(service as any, 'supabase', 'get')
+        .mockReturnValue(supabase as any);
+      jest
+        .spyOn(service as any, 'ensureProjectExists')
+        .mockResolvedValue(undefined);
+      jest
+        .spyOn(service as any, 'generateProductSlug')
+        .mockReturnValueOnce('pvc-111111111111')
+        .mockReturnValueOnce('pvc-222222222222');
+
+      const first = await service.createProduct(input);
+      const second = await service.createProduct(input);
+
+      expect(first.title).toBe(input.title);
+      expect(second.title).toBe(input.title);
+      expect(first.slug).toBe('pvc-111111111111');
+      expect(second.slug).toBe('pvc-222222222222');
+      expect(mocks.insertedPayloads).toEqual([
+        expect.objectContaining({
+          title: input.title,
+          slug: 'pvc-111111111111',
+        }),
+        expect.objectContaining({
+          title: input.title,
+          slug: 'pvc-222222222222',
+        }),
+      ]);
+    });
+
+    it('retries with a new suffix when the generated slug collides', async () => {
+      const { supabase, mocks } = createProductSupabaseMock([
+        {
+          error: {
+            code: '23505',
+            message:
+              'duplicate key value violates unique constraint "v2_products_project_slug_unique"',
+          },
+        },
+        { data: {} },
+      ]);
+      jest
+        .spyOn(service as any, 'supabase', 'get')
+        .mockReturnValue(supabase as any);
+      jest
+        .spyOn(service as any, 'ensureProjectExists')
+        .mockResolvedValue(undefined);
+      jest
+        .spyOn(service as any, 'generateProductSlug')
+        .mockReturnValueOnce('pvc-collision')
+        .mockReturnValueOnce('pvc-retry');
+
+      const product = await service.createProduct(input);
+
+      expect(product.slug).toBe('pvc-retry');
+      expect(mocks.insert).toHaveBeenCalledTimes(2);
+      expect(mocks.insertedPayloads.map((payload) => payload.slug)).toEqual([
+        'pvc-collision',
+        'pvc-retry',
+      ]);
+    });
+
+    it('stops after three generated slug collisions', async () => {
+      const collision = {
+        error: {
+          code: '23505',
+          message:
+            'duplicate key value violates unique constraint "v2_products_project_slug_unique"',
+        },
+      };
+      const { supabase, mocks } = createProductSupabaseMock([
+        collision,
+        collision,
+        collision,
+      ]);
+      jest
+        .spyOn(service as any, 'supabase', 'get')
+        .mockReturnValue(supabase as any);
+      jest
+        .spyOn(service as any, 'ensureProjectExists')
+        .mockResolvedValue(undefined);
+
+      await expect(service.createProduct(input)).rejects.toThrow(
+        '상품 내부 코드 생성에 실패했습니다. 다시 시도해 주세요',
+      );
+      expect(mocks.insert).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not retry unrelated database errors', async () => {
+      const { supabase, mocks } = createProductSupabaseMock([
+        {
+          error: {
+            code: '23505',
+            message:
+              'duplicate key value violates unique constraint "v2_products_legacy_product_id_unique"',
+          },
+        },
+      ]);
+      jest
+        .spyOn(service as any, 'supabase', 'get')
+        .mockReturnValue(supabase as any);
+      jest
+        .spyOn(service as any, 'ensureProjectExists')
+        .mockResolvedValue(undefined);
+      jest
+        .spyOn(service as any, 'generateProductSlug')
+        .mockReturnValue('pvc-111111111111');
+
+      await expect(service.createProduct(input)).rejects.toThrow(
+        'v2 상품 생성 실패',
+      );
+      expect(mocks.insert).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the unique suffix inside the SKU-safe slug prefix length', () => {
+      const slug = (service as any).generateProductSlug('a'.repeat(100));
+
+      expect(slug).toMatch(/^a{40}-[0-9a-f]{12}$/);
+      expect(slug).toHaveLength(53);
+    });
   });
 
   describe('filterShopPriceCandidates', () => {
