@@ -132,6 +132,7 @@ interface ShippingCandidatesQuery {
   date_to?: string;
   project_id?: string;
   campaign_id?: string;
+  include_reserved?: string;
 }
 
 interface ShippingBatchPreviewBody {
@@ -974,6 +975,8 @@ export class V2AdminController {
       dateTo: query.date_to,
       projectId: query.project_id,
       campaignId: query.campaign_id,
+      includeReserved:
+        query.include_reserved === 'true' || query.include_reserved === '1',
     });
     return successResponse(result);
   }
