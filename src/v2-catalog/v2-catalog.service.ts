@@ -2,14 +2,14 @@ import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { ApiException } from '../common/errors/api.exception';
 import {
-  abortMultipartUploadToR2,
-  buildR2PublicUrl,
-  completeMultipartUploadToR2,
-  createMultipartUploadToR2,
-  createPresignedMultipartUploadPartUrlToR2,
-  createPresignedUploadUrlToR2,
-  deleteFileFromR2,
-  getR2ObjectMetadata,
+    abortMultipartUploadToR2,
+    buildR2PublicUrl,
+    completeMultipartUploadToR2,
+    createMultipartUploadToR2,
+    createPresignedMultipartUploadPartUrlToR2,
+    createPresignedUploadUrlToR2,
+    deleteFileFromR2,
+    getR2ObjectMetadata,
 } from '../images/r2.util';
 import { getSupabaseClient } from '../supabase/supabase.client';
 
@@ -760,6 +760,7 @@ interface ApplyV2BasePriceChangeInput extends AnalyzeV2BasePriceChangeInput {
 type V2ShopSort =
   | 'SORT_ORDER'
   | 'LATEST'
+  | 'UPDATED'
   | 'OLDEST'
   | 'TITLE_ASC'
   | 'TITLE_DESC';
@@ -1528,6 +1529,11 @@ export class V2CatalogService {
       if (sort === 'LATEST') {
         return query
           .order('created_at', { ascending: false })
+          .order('id', { ascending: false });
+      }
+      if (sort === 'UPDATED') {
+        return query
+          .order('updated_at', { ascending: false })
           .order('id', { ascending: false });
       }
       if (sort === 'OLDEST') {
@@ -13076,12 +13082,13 @@ export class V2CatalogService {
     if (
       normalized !== 'SORT_ORDER' &&
       normalized !== 'LATEST' &&
+      normalized !== 'UPDATED' &&
       normalized !== 'OLDEST' &&
       normalized !== 'TITLE_ASC' &&
       normalized !== 'TITLE_DESC'
     ) {
       throw new ApiException(
-        'sort는 SORT_ORDER, LATEST, OLDEST, TITLE_ASC, TITLE_DESC 중 하나여야 합니다',
+        'sort는 SORT_ORDER, LATEST, UPDATED, OLDEST, TITLE_ASC, TITLE_DESC 중 하나여야 합니다',
         400,
         'VALIDATION_ERROR',
       );
