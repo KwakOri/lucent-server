@@ -1144,6 +1144,7 @@ export class V2AdminBatchService {
     dateTo?: string;
     projectId?: string;
     campaignId?: string;
+    includeReserved?: boolean;
   }): Promise<any> {
     const limit = this.normalizeLimit(params.limit, 200, 1000);
     const keyword =
@@ -1152,6 +1153,7 @@ export class V2AdminBatchService {
     const dateTo = this.normalizeOptionalDate(params.dateTo, 'date_to');
     const projectId = this.normalizeOptionalUuid(params.projectId);
     const campaignId = this.normalizeOptionalUuid(params.campaignId);
+    const includeReserved = params.includeReserved === true;
 
     const [rows, reservedOrderIds] = await Promise.all([
       this.fetchQueueRows(limit),
@@ -1168,7 +1170,9 @@ export class V2AdminBatchService {
     const items = rows
       .filter((row) => this.resolveStageFromQueueRow(row) === 'READY_TO_SHIP')
       .filter(
-        (row) => !this.isReservedCandidateOrder(row.order_id, reservedOrderIds),
+        (row) =>
+          includeReserved ||
+          !this.isReservedCandidateOrder(row.order_id, reservedOrderIds),
       )
       .filter((row) =>
         this.matchesDateRange(
@@ -1179,6 +1183,10 @@ export class V2AdminBatchService {
       )
       .map((row) => {
         const normalizedOrderId = this.normalizeOptionalUuid(row.order_id);
+        const isReserved = this.isReservedCandidateOrder(
+          normalizedOrderId,
+          reservedOrderIds,
+        );
         const scope = normalizedOrderId
           ? orderScopeByOrderId.get(normalizedOrderId)
           : null;
@@ -1186,6 +1194,7 @@ export class V2AdminBatchService {
         const campaignIds = scope?.campaign_ids || [];
         return {
           ...row,
+          is_reserved: isReserved,
           project_id: scope?.project_id || null,
           project_name: scope?.project_name || null,
           campaign_id: scope?.campaign_id || null,
@@ -1237,6 +1246,7 @@ export class V2AdminBatchService {
     const queueMap = await this.fetchQueueMapByOrderIds(orderIds);
     const ordersMap = await this.fetchOrdersMapByIds(orderIds);
     const orderItemsMap = await this.fetchOrderItemsMapByOrderIds(orderIds);
+    const reservedOrderIds = await this.fetchReservedShippingCandidateOrderIds();
     const shippingItemsMap =
       this.filterPhysicalOrderItemsByOrderId(orderItemsMap);
 
@@ -1265,6 +1275,15 @@ export class V2AdminBatchService {
           order_id: orderId,
           order_no: row.order_no,
           reason: `현재 단계(${stage})에서는 배송 배치를 생성할 수 없습니다.`,
+        });
+        continue;
+      }
+
+      if (this.isReservedCandidateOrder(orderId, reservedOrderIds)) {
+        blockedRows.push({
+          order_id: orderId,
+          order_no: row.order_no,
+          reason: '이미 진행 중인 배송 배치에 포함된 주문입니다.',
         });
         continue;
       }
