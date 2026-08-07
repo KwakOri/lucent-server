@@ -1,11 +1,11 @@
 import { forwardRef, Inject, Injectable } from '@nestjs/common';
 import { ApiException } from '../common/errors/api.exception';
 import { getSupabaseClient } from '../supabase/supabase.client';
+import { V2FulfillmentService } from '../v2-fulfillment/v2-fulfillment.service';
 import {
   V2AdminActionActor,
   V2AdminActionExecutorService,
 } from './v2-admin-action-executor.service';
-import { V2FulfillmentService } from '../v2-fulfillment/v2-fulfillment.service';
 
 @Injectable()
 export class V2AdminService {
@@ -3680,7 +3680,7 @@ export class V2AdminService {
           has_digital: row?.has_digital === true,
           age_hours: ageHours === null ? null : Number(ageHours.toFixed(2)),
           _priority: priorityByStage.get(stage) || 99,
-          _age_sort: ageHours === null ? -1 : ageHours,
+          _reference_time_sort: createdAtMs === null ? 0 : createdAtMs,
         };
       })
       .filter((row): row is any => Boolean(row));
@@ -3689,12 +3689,12 @@ export class V2AdminService {
       if (a._priority !== b._priority) {
         return a._priority - b._priority;
       }
-      if (a._age_sort !== b._age_sort) {
-        return b._age_sort - a._age_sort;
+      if (a._reference_time_sort !== b._reference_time_sort) {
+        return b._reference_time_sort - a._reference_time_sort;
       }
       const aCreated = this.parseDashboardTimestamp(a.created_at) || 0;
       const bCreated = this.parseDashboardTimestamp(b.created_at) || 0;
-      return aCreated - bCreated;
+      return bCreated - aCreated;
     });
 
     return urgentRows.slice(0, options.limit).map((row) => ({
