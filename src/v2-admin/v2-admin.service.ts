@@ -6,6 +6,7 @@ import {
   V2AdminActionActor,
   V2AdminActionExecutorService,
 } from './v2-admin-action-executor.service';
+import { renderSalesStatsPdf } from './v2-admin-sales-stats-pdf-renderer';
 
 @Injectable()
 export class V2AdminService {
@@ -3179,6 +3180,284 @@ export class V2AdminService {
     };
   }
 
+  async generateSalesStatsPdf(params: {
+    from?: string;
+    to?: string;
+    preset?: string;
+    projectId?: string;
+    campaignId?: string;
+    salesChannelId?: string;
+    campaignType?: string;
+    expandBundleComponents?: boolean;
+  }): Promise<{ buffer: Buffer; fileName: string }> {
+    const campaignId = this.normalizeOptionalUuid(params.campaignId);
+    if (!campaignId) {
+      throw new ApiException(
+        '캠페인을 선택한 후 PDF를 다운로드해주세요',
+        400,
+        'V2_ADMIN_SALES_STATS_PDF_CAMPAIGN_REQUIRED',
+      );
+    }
+
+    const stats = await this.listSalesStats(params);
+    const { data: campaign, error: campaignError } = await this.supabase
+      .from('v2_campaigns')
+      .select('id, code, name, campaign_type, starts_at, ends_at, project_id')
+      .eq('id', campaignId)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (campaignError) {
+      throw new ApiException(
+        '캠페인 정산 PDF 메타데이터 조회 실패',
+        500,
+        'V2_ADMIN_SALES_STATS_PDF_CAMPAIGN_FETCH_FAILED',
+      );
+    }
+    if (!campaign) {
+      throw new ApiException(
+        '존재하지 않거나 삭제된 캠페인입니다',
+        404,
+        'V2_ADMIN_SALES_STATS_PDF_CAMPAIGN_NOT_FOUND',
+      );
+    }
+
+    let projectName: string | null = null;
+    const projectId = this.normalizeOptionalUuid(campaign.project_id);
+    if (projectId) {
+      const { data: project, error: projectError } = await this.supabase
+        .from('v2_projects')
+        .select('id, name')
+        .eq('id', projectId)
+        .is('deleted_at', null)
+        .maybeSingle();
+      if (projectError) {
+        throw new ApiException(
+          '프로젝트 이름 조회 실패',
+          500,
+          'V2_ADMIN_SALES_STATS_PDF_PROJECT_FETCH_FAILED',
+        );
+      }
+      projectName = this.normalizeOptionalText(project?.name);
+    }
+
+    const paymentMix = await this.buildSalesStatsPaymentMix(params);
+    const sales = (stats.by_order || []).flatMap((order: any) =>
+      (order.items || []).map((item: any) => ({
+        soldAt: this.normalizeOptionalIsoDateTime(order.placed_at),
+        orderNo: this.normalizeOptionalText(order.order_no),
+        productName:
+          this.normalizeOptionalText(item.product_name) || '이름 없는 상품',
+        variantName: this.normalizeOptionalText(item.variant_name),
+        quantity: Math.max(0, Number(item.quantity || 0)),
+        amount: Number(item.final_line_total || 0),
+      })),
+    );
+    const saleLineCount = sales.length;
+    const campaignName =
+      this.normalizeOptionalText(campaign.name) || '이름 없는 캠페인';
+    const campaignCode =
+      this.normalizeOptionalText(campaign.code) || campaignId;
+    const currencyCode =
+      this.normalizeOptionalText(stats.summary?.currency_code)?.toUpperCase() ||
+      'KRW';
+
+    const buffer = await renderSalesStatsPdf({
+      campaignName,
+      campaignCode,
+      campaignType:
+        this.normalizeOptionalText(campaign.campaign_type)?.toUpperCase() ||
+        null,
+      projectName,
+      startsAt: campaign.starts_at || null,
+      endsAt: campaign.ends_at || null,
+      generatedAt: new Date(),
+      currencyCode,
+      summary: {
+        ordersCount: Number(stats.summary?.orders_count || 0),
+        saleLineCount,
+        unitsSold: Number(stats.summary?.units_sold || 0),
+        itemGrossAmount: Number(stats.summary?.item_gross_amount || 0),
+        capturedAmount: Number(stats.summary?.captured_amount || 0),
+        refundAmount: Number(stats.summary?.refund_amount || 0),
+        netSettlementAmount: Number(stats.summary?.net_settlement_amount || 0),
+        paymentMix,
+      },
+      daily: (stats.daily || []).map((row: any) => ({
+        date: row.date,
+        orders_count: Number(row.orders_count || 0),
+        units_sold: Number(row.units_sold || 0),
+        item_gross_amount: Number(row.item_gross_amount || 0),
+        captured_amount: Number(row.captured_amount || 0),
+        refund_amount: Number(row.refund_amount || 0),
+        net_settlement_amount: Number(row.net_settlement_amount || 0),
+      })),
+      sales,
+    });
+
+    return {
+      buffer,
+      fileName: `${this.buildSalesStatsPdfFileStem(
+        campaignName,
+        campaignCode,
+      )}_settlement.pdf`,
+    };
+  }
+
+  private async buildSalesStatsPaymentMix(params: {
+    from?: string;
+    to?: string;
+    preset?: string;
+    projectId?: string;
+    campaignId?: string;
+    salesChannelId?: string;
+    campaignType?: string;
+  }): Promise<{
+    cash: number;
+    card: number;
+    transfer: number;
+    other: number;
+  }> {
+    const dateRange = this.resolveSalesStatsDateRange({
+      from: params.from,
+      to: params.to,
+      preset: params.preset,
+    });
+    const filters = {
+      projectId: this.normalizeOptionalUuid(params.projectId),
+      campaignId: this.normalizeOptionalUuid(params.campaignId),
+      salesChannelId: this.normalizeOptionalText(params.salesChannelId),
+      campaignType:
+        this.normalizeOptionalText(params.campaignType)?.toUpperCase() || null,
+    };
+
+    let allocations: any[];
+    try {
+      allocations = await this.fetchFinancialAllocationFacts(
+        dateRange,
+        filters,
+      );
+    } catch (error) {
+      if (!this.isStatsStorageDependencyError(error)) {
+        throw error;
+      }
+      const salesItems = await this.fetchSalesItemFactsFallback(
+        dateRange,
+        filters,
+      );
+      const orderIds = Array.from(
+        new Set(
+          salesItems
+            .map((row: any) => this.normalizeOptionalText(row.order_id))
+            .filter((value: string | null): value is string => Boolean(value)),
+        ),
+      );
+      const payments = await this.fetchPaymentsByOrderIds(orderIds);
+      allocations = this.buildFinancialAllocationsInMemory({
+        salesItems,
+        payments,
+        dateRange,
+      });
+    }
+
+    const paymentIds = Array.from(
+      new Set(
+        allocations
+          .map((row) => this.normalizeOptionalUuid(row.payment_id))
+          .filter((value: string | null): value is string => Boolean(value)),
+      ),
+    );
+    const paymentMethodById = new Map<string, string | null>();
+    for (const paymentIdChunk of this.chunkArray(paymentIds, 200)) {
+      const { data, error } = await this.supabase
+        .from('v2_payments')
+        .select('id, method')
+        .in('id', paymentIdChunk);
+      if (error) {
+        throw new ApiException(
+          '결제수단 조회 실패',
+          500,
+          'V2_ADMIN_SALES_STATS_PDF_PAYMENT_METHOD_FETCH_FAILED',
+        );
+      }
+      for (const row of data || []) {
+        const paymentId = this.normalizeOptionalUuid(row.id);
+        if (paymentId) {
+          paymentMethodById.set(
+            paymentId,
+            this.normalizeOptionalText(row.method),
+          );
+        }
+      }
+    }
+
+    const mix = { cash: 0, card: 0, transfer: 0, other: 0 };
+    for (const allocation of allocations || []) {
+      if (this.normalizeOptionalText(allocation.event_type) !== 'CAPTURE') {
+        continue;
+      }
+      const paymentId = this.normalizeOptionalUuid(allocation.payment_id);
+      const method =
+        (paymentId ? paymentMethodById.get(paymentId) : null) ||
+        this.normalizeOptionalText(allocation.payment_method);
+      const category = this.resolveSalesStatsPaymentCategory(method);
+      mix[category] += Number(allocation.allocated_amount || 0);
+    }
+    return mix;
+  }
+
+  private resolveSalesStatsPaymentCategory(
+    method?: string | null,
+  ): 'cash' | 'card' | 'transfer' | 'other' {
+    const normalized = this.normalizeOptionalText(method)?.toUpperCase() || '';
+    if (normalized.includes('CASH')) {
+      return 'cash';
+    }
+    if (
+      normalized.includes('CARD') ||
+      normalized.includes('CREDIT') ||
+      normalized.includes('PG') ||
+      normalized.includes('KAKAO') ||
+      normalized.includes('NAVER')
+    ) {
+      return 'card';
+    }
+    if (
+      normalized.includes('TRANSFER') ||
+      normalized.includes('BANK') ||
+      normalized.includes('DEPOSIT')
+    ) {
+      return 'transfer';
+    }
+    return 'other';
+  }
+
+  private sanitizeSalesStatsPdfFileName(value: string): string {
+    const sanitized = value
+      .trim()
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^A-Za-z0-9._-]+/g, '_')
+      .replace(/\s+/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 80);
+    return sanitized || 'campaign';
+  }
+
+  private buildSalesStatsPdfFileStem(
+    campaignName: string,
+    campaignCode: string,
+  ): string {
+    const code = this.sanitizeSalesStatsPdfFileName(campaignCode);
+    const name = this.sanitizeSalesStatsPdfFileName(campaignName);
+    const parts = [
+      code !== 'campaign' ? code : null,
+      name !== 'campaign' ? name : null,
+    ].filter((value): value is string => Boolean(value));
+    return (parts.join('_') || 'campaign').slice(0, 100);
+  }
+
   private buildSalesProductRows(rows: any[]): Array<{
     product_id: string | null;
     product_name: string;
@@ -4313,7 +4592,7 @@ export class V2AdminService {
     const { data, error } = await this.supabase
       .from('v2_payments')
       .select(
-        'id, order_id, status, amount, currency_code, refunded_total, captured_at, updated_at, created_at',
+        'id, order_id, status, method, amount, currency_code, refunded_total, captured_at, updated_at, created_at',
       )
       .in('order_id', orderIds)
       .in('status', ['CAPTURED', 'PARTIALLY_REFUNDED', 'REFUNDED']);
@@ -4428,6 +4707,8 @@ export class V2AdminService {
             event_type: 'CAPTURE',
             allocated_amount: row.allocated_amount,
             allocation_policy_version: this.captureAllocationPolicyVersion,
+            payment_id: paymentId,
+            payment_method: payment.method || null,
             currency_code: currencyCode,
             occurred_at: occurredAt,
             occurred_date: occurredAt.slice(0, 10),
@@ -4468,6 +4749,8 @@ export class V2AdminService {
             event_type: 'REFUND',
             allocated_amount: row.allocated_amount,
             allocation_policy_version: this.refundAllocationPolicyVersion,
+            payment_id: paymentId,
+            payment_method: payment.method || null,
             currency_code: currencyCode,
             occurred_at: occurredAt,
             occurred_date: occurredAt.slice(0, 10),

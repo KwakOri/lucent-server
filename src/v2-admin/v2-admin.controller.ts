@@ -1307,6 +1307,36 @@ export class V2AdminController {
     return successResponse(health);
   }
 
+  @Get('ops/sales-stats/pdf')
+  async downloadSalesStatsPdf(
+    @Headers('authorization') authorization: string | undefined,
+    @Query() query: SalesStatsQuery,
+    @Res() response: Response,
+  ) {
+    await this.requireAdmin(authorization);
+    const result = await this.v2AdminService.generateSalesStatsPdf({
+      from: query.from,
+      to: query.to,
+      preset: query.preset,
+      projectId: query.project_id,
+      campaignId: query.campaign_id,
+      salesChannelId: query.sales_channel_id,
+      campaignType: query.campaign_type,
+      expandBundleComponents:
+        query.expand_bundle_components === 'true' ||
+        query.expand_bundle_components === '1',
+    });
+
+    response.setHeader('Content-Type', 'application/pdf');
+    response.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${result.fileName}"; filename*=UTF-8''${encodeURIComponent(result.fileName)}`,
+    );
+    response.setHeader('Cache-Control', 'no-store');
+    response.setHeader('Content-Length', result.buffer.length.toString());
+    response.status(200).send(result.buffer);
+  }
+
   @Get('ops/sales-stats')
   async listSalesStats(
     @Headers('authorization') authorization: string | undefined,
