@@ -2925,22 +2925,33 @@ export class V2AdminService {
     const { salesItems, financialAllocations, storageMode } =
       await this.loadSalesStatsFacts(dateRange, filters);
 
-    const reconciledSalesItems = await this.reconcileBundleParentSalesItems(
-      salesItems || [],
-    );
-
-    const activeSalesItems = reconciledSalesItems.filter(
+    // The persisted sales facts view contains the reconciled line amount and
+    // order grand total. Keep the normal stats request to one sales-facts read
+    // (plus the independent financial-allocation read) instead of re-querying
+    // order items and orders per aggregate. The legacy fallback retains the
+    // old bundle correction for installations before the view migration.
+    const normalizedSalesItems =
+      storageMode === 'PERSISTED'
+        ? salesItems || []
+        : await this.reconcileBundleParentSalesItems(salesItems || []);
+    const activeSalesItems = normalizedSalesItems.filter(
       (row: any) => row?.order_status !== 'CANCELED',
     );
-    const orderGrossByOrderId = await this.fetchSalesOrderGrossByOrderIds(
-      Array.from(
-        new Set(
-          activeSalesItems
-            .map((row: any) => this.normalizeOptionalText(row.order_id))
-            .filter((value: string | null): value is string => Boolean(value)),
-        ),
-      ),
-    );
+    const orderGrossByOrderId = new Map<
+      string,
+      { grossAmount: number; placedDate: string | null }
+    >();
+    for (const row of activeSalesItems) {
+      const orderId = this.normalizeOptionalText(row.order_id);
+      if (!orderId || orderGrossByOrderId.has(orderId)) {
+        continue;
+      }
+      const placedAt = this.normalizeOptionalIsoDateTime(row.placed_at);
+      orderGrossByOrderId.set(orderId, {
+        grossAmount: Number(row.order_grand_total || 0),
+        placedDate: placedAt ? placedAt.slice(0, 10) : row.placed_date || null,
+      });
+    }
 
     const summary = {
       orders_count: new Set(
@@ -2976,141 +2987,88 @@ export class V2AdminService {
     summary.net_settlement_amount =
       summary.captured_amount - summary.refund_amount;
 
-    const byProjectMap = new Map<
-      string,
-      {
-        project_id: string | null;
-        project_name: string;
-        currency_code: string;
-        order_ids: Set<string>;
-        units_sold: number;
-        order_gross_amount: number;
-        captured_amount: number;
-        refund_amount: number;
-      }
-    >();
-
-    const byCampaignMap = new Map<
-      string,
-      {
-        campaign_id: string | null;
-        campaign_name: string;
-        campaign_type: string | null;
-        currency_code: string;
-        order_ids: Set<string>;
-        units_sold: number;
-        order_gross_amount: number;
-        captured_amount: number;
-        refund_amount: number;
-      }
-    >();
-
+    const byOrderMap = new Map<string, any>();
+    const byProductMap = new Map<string, any>();
     for (const row of activeSalesItems) {
-      const orderId = this.normalizeOptionalText(row.order_id) || '';
-      const projectId = this.normalizeOptionalText(row.project_id_snapshot);
-      const projectName =
-        this.normalizeOptionalText(row.project_name_snapshot) ||
-        '미지정 프로젝트';
-      const campaignId = this.normalizeOptionalText(row.campaign_id_snapshot);
-      const campaignName =
-        this.normalizeOptionalText(row.campaign_name_snapshot) || '캠페인 없음';
-      const campaignType = this.normalizeOptionalText(row.campaign_type);
-      const projectKey = projectId || 'UNASSIGNED';
-      const campaignKey = campaignId || 'NO_CAMPAIGN';
-      const currencyCode =
-        this.normalizeOptionalText(row.currency_code) || 'KRW';
+      const orderId = this.normalizeOptionalText(row.order_id);
+      if (!orderId) {
+        continue;
+      }
 
-      const projectBucket = byProjectMap.get(projectKey) || {
-        project_id: projectId,
-        project_name: projectName,
-        currency_code: currencyCode,
+      const orderGross = orderGrossByOrderId.get(orderId);
+      const productId = this.normalizeOptionalText(row.product_id);
+      const productName =
+        this.normalizeOptionalText(row.product_name_snapshot) ||
+        '이름 없는 상품';
+      const variantName = this.normalizeOptionalText(row.variant_name_snapshot);
+      const quantity = Math.max(0, Number(row.quantity || 0));
+      const lineAmount = Number(row.final_line_total || 0);
+
+      const orderBucket = byOrderMap.get(orderId) || {
+        order_id: orderId,
+        order_no: this.normalizeOptionalText(row.order_no),
+        placed_at: row.placed_at || null,
+        order_status: this.normalizeOptionalText(row.order_status),
+        payment_status: this.normalizeOptionalText(row.payment_status),
+        sales_channel_id: this.normalizeOptionalText(row.sales_channel_id),
+        currency_code: this.normalizeOptionalText(row.currency_code) || 'KRW',
+        item_line_count: 0,
+        units_sold: 0,
+        item_gross_amount: 0,
+        order_gross_amount: orderGross?.grossAmount || 0,
+        items: [],
+      };
+      orderBucket.item_line_count += 1;
+      orderBucket.units_sold += quantity;
+      orderBucket.item_gross_amount += lineAmount;
+      orderBucket.items.push({
+        order_item_id: this.normalizeOptionalUuid(row.order_item_id),
+        product_id: productId,
+        product_name: productName,
+        variant_name: variantName,
+        quantity,
+        line_type:
+          this.normalizeOptionalText(row.line_type)?.toUpperCase() || null,
+        final_line_total: lineAmount,
+      });
+      byOrderMap.set(orderId, orderBucket);
+
+      const productKey = productId || `NAME:${productName}`;
+      const productBucket = byProductMap.get(productKey) || {
+        product_id: productId,
+        product_name: productName,
         order_ids: new Set<string>(),
         units_sold: 0,
-        order_gross_amount: 0,
-        captured_amount: 0,
-        refund_amount: 0,
+        item_gross_amount: 0,
       };
-      if (orderId) {
-        projectBucket.order_ids.add(orderId);
-      }
-      projectBucket.units_sold += Number(row.quantity || 0);
-      projectBucket.order_gross_amount += Number(row.final_line_total || 0);
-      byProjectMap.set(projectKey, projectBucket);
-
-      const campaignBucket = byCampaignMap.get(campaignKey) || {
-        campaign_id: campaignId,
-        campaign_name: campaignName,
-        campaign_type: campaignType,
-        currency_code: currencyCode,
-        order_ids: new Set<string>(),
-        units_sold: 0,
-        order_gross_amount: 0,
-        captured_amount: 0,
-        refund_amount: 0,
-      };
-      if (orderId) {
-        campaignBucket.order_ids.add(orderId);
-      }
-      campaignBucket.units_sold += Number(row.quantity || 0);
-      campaignBucket.order_gross_amount += Number(row.final_line_total || 0);
-      byCampaignMap.set(campaignKey, campaignBucket);
+      productBucket.order_ids.add(orderId);
+      productBucket.units_sold += quantity;
+      productBucket.item_gross_amount += lineAmount;
+      byProductMap.set(productKey, productBucket);
     }
 
-    for (const row of financialAllocations) {
-      const projectId = this.normalizeOptionalText(row.project_id_snapshot);
-      const campaignId = this.normalizeOptionalText(row.campaign_id_snapshot);
-      const eventType = this.normalizeOptionalText(row.event_type);
-      const allocatedAmount = Number(row.allocated_amount || 0);
-      const projectKey = projectId || 'UNASSIGNED';
-      const campaignKey = campaignId || 'NO_CAMPAIGN';
-
-      if (byProjectMap.has(projectKey)) {
-        const bucket = byProjectMap.get(projectKey)!;
-        if (eventType === 'CAPTURE') {
-          bucket.captured_amount += allocatedAmount;
-        } else if (eventType === 'REFUND') {
-          bucket.refund_amount += allocatedAmount;
-        }
-      }
-
-      if (byCampaignMap.has(campaignKey)) {
-        const bucket = byCampaignMap.get(campaignKey)!;
-        if (eventType === 'CAPTURE') {
-          bucket.captured_amount += allocatedAmount;
-        } else if (eventType === 'REFUND') {
-          bucket.refund_amount += allocatedAmount;
-        }
-      }
-    }
-
-    const byProject = Array.from(byProjectMap.values())
+    const byOrder = Array.from(byOrderMap.values()).sort((left, right) => {
+      const leftTime = Date.parse(left.placed_at || '') || 0;
+      const rightTime = Date.parse(right.placed_at || '') || 0;
+      return (
+        rightTime - leftTime ||
+        left.order_no?.localeCompare(right.order_no || '') ||
+        0
+      );
+    });
+    const byProduct = Array.from(byProductMap.values())
       .map((bucket) => ({
-        project_id: bucket.project_id,
-        project_name: bucket.project_name,
-        currency_code: bucket.currency_code,
+        product_id: bucket.product_id,
+        product_name: bucket.product_name,
         order_count: bucket.order_ids.size,
         units_sold: bucket.units_sold,
-        order_gross_amount: bucket.order_gross_amount,
-        captured_amount: bucket.captured_amount,
-        refund_amount: bucket.refund_amount,
-        net_settlement_amount: bucket.captured_amount - bucket.refund_amount,
+        item_gross_amount: bucket.item_gross_amount,
       }))
-      .sort((a, b) => b.net_settlement_amount - a.net_settlement_amount);
-
-    const byCampaign = Array.from(byCampaignMap.values())
-      .map((bucket) => ({
-        campaign_id: bucket.campaign_id,
-        campaign_name: bucket.campaign_name,
-        campaign_type: bucket.campaign_type,
-        currency_code: bucket.currency_code,
-        order_count: bucket.order_ids.size,
-        units_sold: bucket.units_sold,
-        order_gross_amount: bucket.order_gross_amount,
-        captured_amount: bucket.captured_amount,
-        refund_amount: bucket.refund_amount,
-        net_settlement_amount: bucket.captured_amount - bucket.refund_amount,
-      }))
-      .sort((a, b) => b.net_settlement_amount - a.net_settlement_amount);
+      .sort(
+        (left, right) =>
+          right.units_sold - left.units_sold ||
+          left.product_name.localeCompare(right.product_name, 'ko-KR'),
+      );
 
     const dailyMap = new Map<
       string,
@@ -3221,8 +3179,8 @@ export class V2AdminService {
           ) || 'KRW',
       },
       daily,
-      by_project: byProject,
-      by_campaign: byCampaign,
+      by_order: byOrder,
+      by_product: byProduct,
       metadata: {
         sales_basis: 'placed_at',
         settlement_basis: 'financial_event.occurred_at',
@@ -3339,52 +3297,6 @@ export class V2AdminService {
     }
 
     return totalsByParentId;
-  }
-
-  private async fetchSalesOrderGrossByOrderIds(
-    orderIds: string[],
-  ): Promise<Map<string, { grossAmount: number; placedDate: string | null }>> {
-    const orderGrossByOrderId = new Map<
-      string,
-      { grossAmount: number; placedDate: string | null }
-    >();
-    if (!Array.isArray(orderIds) || orderIds.length === 0) {
-      return orderGrossByOrderId;
-    }
-
-    const chunks = this.chunkArray(orderIds, 200);
-    for (const chunk of chunks) {
-      const { data, error } = await this.supabase
-        .from('v2_orders')
-        .select('id, grand_total, placed_at')
-        .in('id', chunk);
-
-      if (error) {
-        throw new ApiException(
-          'sales order gross 조회 실패',
-          500,
-          'V2_ADMIN_SALES_ORDER_GROSS_FETCH_FAILED',
-        );
-      }
-
-      for (const row of data || []) {
-        const orderId = this.normalizeOptionalUuid(
-          row?.id as string | null | undefined,
-        );
-        if (!orderId) {
-          continue;
-        }
-        const placedAtIso = this.normalizeOptionalIsoDateTime(
-          row?.placed_at as string | null | undefined,
-        );
-        orderGrossByOrderId.set(orderId, {
-          grossAmount: Number(row?.grand_total || 0),
-          placedDate: placedAtIso ? placedAtIso.slice(0, 10) : null,
-        });
-      }
-    }
-
-    return orderGrossByOrderId;
   }
 
   async getDashboardOverview(params: {
@@ -4078,8 +3990,11 @@ export class V2AdminService {
         id,
         order_id,
         line_type,
+        product_id,
         quantity,
         final_line_total,
+        product_name_snapshot,
+        variant_name_snapshot,
         project_id_snapshot,
         project_name_snapshot,
         campaign_id_snapshot,
@@ -4091,6 +4006,7 @@ export class V2AdminService {
           order_status,
           payment_status,
           currency_code,
+          grand_total,
           placed_at
         )
       `,
@@ -4142,6 +4058,7 @@ export class V2AdminService {
       order_item_id: row.id,
       order_id: row.order_id,
       order_no: row.order?.order_no || null,
+      order_grand_total: Number(row.order?.grand_total || 0),
       sales_channel_id: row.order?.sales_channel_id || null,
       order_status: row.order?.order_status || null,
       payment_status: row.order?.payment_status || null,
@@ -4151,8 +4068,11 @@ export class V2AdminService {
         ? new Date(row.order.placed_at).toISOString().slice(0, 10)
         : null,
       line_type: row.line_type,
+      product_id: row.product_id || null,
       quantity: Number(row.quantity || 0),
       final_line_total: Number(row.final_line_total || 0),
+      product_name_snapshot: row.product_name_snapshot || null,
+      variant_name_snapshot: row.variant_name_snapshot || null,
       project_id_snapshot: row.project_id_snapshot || null,
       project_name_snapshot: row.project_name_snapshot || null,
       campaign_id_snapshot: row.campaign_id_snapshot || null,

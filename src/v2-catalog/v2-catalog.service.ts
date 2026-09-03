@@ -3919,7 +3919,35 @@ export class V2CatalogService {
   async getCampaigns(filters: {
     status?: V2CampaignStatus;
     campaignType?: V2CampaignType;
+    projectId?: string;
   }): Promise<any[]> {
+    if (filters.projectId) {
+      const { data, error } = await this.supabase.rpc(
+        'v2_admin_campaigns_for_project',
+        { p_project_id: filters.projectId },
+      );
+      if (error) {
+        throw new ApiException(
+          'project campaign 목록 조회 실패',
+          500,
+          'V2_PROJECT_CAMPAIGNS_FETCH_FAILED',
+        );
+      }
+
+      return (data || []).filter((campaign: any) => {
+        if (filters.status && campaign.status !== filters.status) {
+          return false;
+        }
+        if (
+          filters.campaignType &&
+          campaign.campaign_type !== filters.campaignType
+        ) {
+          return false;
+        }
+        return true;
+      });
+    }
+
     let query = this.supabase
       .from('v2_campaigns')
       .select(
