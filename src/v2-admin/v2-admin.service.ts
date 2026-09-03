@@ -2907,6 +2907,7 @@ export class V2AdminService {
     campaignId?: string;
     salesChannelId?: string;
     campaignType?: string;
+    expandBundleComponents?: boolean;
   }): Promise<any> {
     const dateRange = this.resolveSalesStatsDateRange({
       from: params.from,
@@ -2937,6 +2938,9 @@ export class V2AdminService {
     const activeSalesItems = normalizedSalesItems.filter(
       (row: any) => row?.order_status !== 'CANCELED',
     );
+    const productSalesItems = params.expandBundleComponents
+      ? await this.expandSalesItemsToBundleComponents(activeSalesItems)
+      : activeSalesItems;
     const orderGrossByOrderId = new Map<
       string,
       { grossAmount: number; placedDate: string | null }
@@ -2988,7 +2992,6 @@ export class V2AdminService {
       summary.captured_amount - summary.refund_amount;
 
     const byOrderMap = new Map<string, any>();
-    const byProductMap = new Map<string, any>();
     for (const row of activeSalesItems) {
       const orderId = this.normalizeOptionalText(row.order_id);
       if (!orderId) {
@@ -3032,19 +3035,6 @@ export class V2AdminService {
         final_line_total: lineAmount,
       });
       byOrderMap.set(orderId, orderBucket);
-
-      const productKey = productId || `NAME:${productName}`;
-      const productBucket = byProductMap.get(productKey) || {
-        product_id: productId,
-        product_name: productName,
-        order_ids: new Set<string>(),
-        units_sold: 0,
-        item_gross_amount: 0,
-      };
-      productBucket.order_ids.add(orderId);
-      productBucket.units_sold += quantity;
-      productBucket.item_gross_amount += lineAmount;
-      byProductMap.set(productKey, productBucket);
     }
 
     const byOrder = Array.from(byOrderMap.values()).sort((left, right) => {
@@ -3056,19 +3046,7 @@ export class V2AdminService {
         0
       );
     });
-    const byProduct = Array.from(byProductMap.values())
-      .map((bucket) => ({
-        product_id: bucket.product_id,
-        product_name: bucket.product_name,
-        order_count: bucket.order_ids.size,
-        units_sold: bucket.units_sold,
-        item_gross_amount: bucket.item_gross_amount,
-      }))
-      .sort(
-        (left, right) =>
-          right.units_sold - left.units_sold ||
-          left.product_name.localeCompare(right.product_name, 'ko-KR'),
-      );
+    const byProduct = this.buildSalesProductRows(productSalesItems);
 
     const dailyMap = new Map<
       string,
@@ -3194,8 +3172,196 @@ export class V2AdminService {
         stats_storage_mode: storageMode,
         item_amount_reconcile:
           'BUNDLE_PARENT_ZERO_FINAL_LINE_TOTAL_FROM_COMPONENTS',
+        product_aggregation: params.expandBundleComponents
+          ? 'BUNDLE_COMPONENTS'
+          : 'ORDER_LINES',
       },
     };
+  }
+
+  private buildSalesProductRows(rows: any[]): Array<{
+    product_id: string | null;
+    product_name: string;
+    order_count: number;
+    units_sold: number;
+    item_gross_amount: number;
+  }> {
+    const byProductMap = new Map<string, any>();
+
+    for (const row of rows || []) {
+      const orderId = this.normalizeOptionalText(row.order_id);
+      if (!orderId) {
+        continue;
+      }
+
+      const productId = this.normalizeOptionalText(row.product_id);
+      const productName =
+        this.normalizeOptionalText(row.product_name_snapshot) ||
+        '이름 없는 상품';
+      const productKey = productId || `NAME:${productName}`;
+      const productBucket = byProductMap.get(productKey) || {
+        product_id: productId,
+        product_name: productName,
+        order_ids: new Set<string>(),
+        units_sold: 0,
+        item_gross_amount: 0,
+      };
+      productBucket.order_ids.add(orderId);
+      productBucket.units_sold += Math.max(0, Number(row.quantity || 0));
+      productBucket.item_gross_amount += Number(row.final_line_total || 0);
+      byProductMap.set(productKey, productBucket);
+    }
+
+    return Array.from(byProductMap.values())
+      .map((bucket) => ({
+        product_id: bucket.product_id,
+        product_name: bucket.product_name,
+        order_count: bucket.order_ids.size,
+        units_sold: bucket.units_sold,
+        item_gross_amount: bucket.item_gross_amount,
+      }))
+      .sort(
+        (left, right) =>
+          right.units_sold - left.units_sold ||
+          left.product_name.localeCompare(right.product_name, 'ko-KR'),
+      );
+  }
+
+  private async expandSalesItemsToBundleComponents(
+    salesItems: any[],
+  ): Promise<any[]> {
+    const parentOrderItemIds = Array.from(
+      new Set(
+        (salesItems || [])
+          .filter(
+            (row) =>
+              this.normalizeOptionalText(row?.line_type)?.toUpperCase() ===
+              'BUNDLE_PARENT',
+          )
+          .map((row) =>
+            this.normalizeOptionalUuid(
+              row?.order_item_id as string | null | undefined,
+            ),
+          )
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+
+    if (parentOrderItemIds.length === 0) {
+      return salesItems || [];
+    }
+
+    const componentRows = await this.fetchBundleComponentSalesItems(
+      parentOrderItemIds,
+    );
+    const componentsByParentId = new Map<string, any[]>();
+    for (const componentRow of componentRows) {
+      const parentId = this.normalizeOptionalUuid(
+        componentRow?.parent_order_item_id as string | null | undefined,
+      );
+      if (!parentId) {
+        continue;
+      }
+      const bucket = componentsByParentId.get(parentId) || [];
+      bucket.push(componentRow);
+      componentsByParentId.set(parentId, bucket);
+    }
+
+    return (salesItems || []).flatMap((row) => {
+      const lineType = this.normalizeOptionalText(row?.line_type)?.toUpperCase();
+      if (lineType !== 'BUNDLE_PARENT') {
+        return [row];
+      }
+
+      const parentId = this.normalizeOptionalUuid(
+        row?.order_item_id as string | null | undefined,
+      );
+      const components = parentId
+        ? componentsByParentId.get(parentId) || []
+        : [];
+
+      // Keep legacy/incomplete bundle rows visible if their component lines
+      // were not persisted, instead of silently dropping the sale.
+      return components.length > 0 ? components : [row];
+    });
+  }
+
+  private async fetchBundleComponentSalesItems(
+    parentOrderItemIds: string[],
+  ): Promise<any[]> {
+    const rows: any[] = [];
+
+    for (const chunk of this.chunkArray(parentOrderItemIds, 200)) {
+      const { data, error } = await this.supabase
+        .from('v2_order_items')
+        .select(
+          `
+          id,
+          order_id,
+          parent_order_item_id,
+          line_type,
+          product_id,
+          variant_id,
+          quantity,
+          final_line_total,
+          product_name_snapshot,
+          variant_name_snapshot,
+          project_id_snapshot,
+          project_name_snapshot,
+          campaign_id_snapshot,
+          campaign_name_snapshot,
+          order:v2_orders!inner(
+            order_no,
+            sales_channel_id,
+            order_status,
+            payment_status,
+            currency_code,
+            grand_total,
+            placed_at
+          )
+        `,
+        )
+        .eq('line_type', 'BUNDLE_COMPONENT')
+        .in('parent_order_item_id', chunk)
+        .order('id', { ascending: true });
+
+      if (error) {
+        throw new ApiException(
+          'bundle component 상품 집계 조회 실패',
+          500,
+          'V2_ADMIN_SALES_BUNDLE_COMPONENTS_FETCH_FAILED',
+        );
+      }
+
+      rows.push(...(data || []));
+    }
+
+    return rows.map((row: any) => ({
+      order_item_id: row.id,
+      order_id: row.order_id,
+      parent_order_item_id: row.parent_order_item_id,
+      order_no: row.order?.order_no || null,
+      order_grand_total: Number(row.order?.grand_total || 0),
+      sales_channel_id: row.order?.sales_channel_id || null,
+      order_status: row.order?.order_status || null,
+      payment_status: row.order?.payment_status || null,
+      currency_code: row.order?.currency_code || 'KRW',
+      placed_at: row.order?.placed_at || null,
+      placed_date: row.order?.placed_at
+        ? new Date(row.order.placed_at).toISOString().slice(0, 10)
+        : null,
+      line_type: row.line_type,
+      product_id: row.product_id || null,
+      variant_id: row.variant_id || null,
+      quantity: Number(row.quantity || 0),
+      final_line_total: Number(row.final_line_total || 0),
+      product_name_snapshot: row.product_name_snapshot || null,
+      variant_name_snapshot: row.variant_name_snapshot || null,
+      project_id_snapshot: row.project_id_snapshot || null,
+      project_name_snapshot: row.project_name_snapshot || null,
+      campaign_id_snapshot: row.campaign_id_snapshot || null,
+      campaign_name_snapshot: row.campaign_name_snapshot || null,
+    }));
   }
 
   private async reconcileBundleParentSalesItems(rows: any[]): Promise<any[]> {

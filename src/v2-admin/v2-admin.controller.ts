@@ -188,6 +188,7 @@ interface SalesStatsQuery {
   campaign_id?: string;
   sales_channel_id?: string;
   campaign_type?: string;
+  expand_bundle_components?: string;
 }
 
 interface DashboardOverviewQuery {
@@ -1320,6 +1321,9 @@ export class V2AdminController {
       campaignId: query.campaign_id,
       salesChannelId: query.sales_channel_id,
       campaignType: query.campaign_type,
+      expandBundleComponents:
+        query.expand_bundle_components === 'true' ||
+        query.expand_bundle_components === '1',
     });
     return successResponse(stats);
   }
