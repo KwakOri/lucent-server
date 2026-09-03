@@ -943,11 +943,13 @@ export class V2CatalogController {
     status?: 'DRAFT' | 'ACTIVE' | 'SUSPENDED' | 'CLOSED' | 'ARCHIVED',
     @Query('campaignType')
     campaignType?: 'POPUP' | 'EVENT' | 'SALE' | 'DROP' | 'ALWAYS_ON',
+    @Query('projectId') projectId?: string,
   ) {
     await this.requireAdmin(authorization);
     const campaigns = await this.v2CatalogService.getCampaigns({
       status,
       campaignType,
+      projectId,
     });
     return successResponse(campaigns);
   }

@@ -4805,6 +4805,11 @@ export type Database = {
           project_name_snapshot: string | null;
           quantity: number | null;
           sales_channel_id: string | null;
+          order_grand_total: number | null;
+          product_id: string | null;
+          product_name_snapshot: string | null;
+          variant_id: string | null;
+          variant_name_snapshot: string | null;
         };
         Relationships: [
           {
