@@ -16,6 +16,7 @@ export interface SalesStatsPdfDailyRow {
   orders_count: number;
   units_sold: number;
   item_gross_amount: number;
+  shipping_amount: number;
   captured_amount: number;
   refund_amount: number;
   net_settlement_amount: number;
@@ -44,6 +45,8 @@ export interface SalesStatsPdfInput {
     saleLineCount: number;
     unitsSold: number;
     itemGrossAmount: number;
+    orderGrossAmount: number;
+    shippingAmount: number;
     capturedAmount: number;
     refundAmount: number;
     netSettlementAmount: number;
@@ -304,7 +307,7 @@ function renderHero(doc: PDFKit.PDFDocument, input: SalesStatsPdfInput) {
     .text(
       `상품매출 ${formatCurrency(input.summary.itemGrossAmount, input.currencyCode)}`,
       innerX + innerWidth - 194,
-      payoutY + 17,
+      payoutY + 11,
       {
         width: 176,
         align: 'right',
@@ -315,9 +318,22 @@ function renderHero(doc: PDFKit.PDFDocument, input: SalesStatsPdfInput) {
     .fontSize(8)
     .fillColor(PDF_COLORS.muted)
     .text(
-      `- 환불 ${formatCurrency(input.summary.refundAmount, input.currencyCode)}`,
+      `+ 배송비 ${formatCurrency(input.summary.shippingAmount, input.currencyCode)}`,
       innerX + innerWidth - 194,
-      payoutY + 36,
+      payoutY + 26,
+      {
+        width: 176,
+        align: 'right',
+        lineBreak: false,
+      },
+    );
+  doc
+    .fontSize(8)
+    .fillColor('#c8c9c0')
+    .text(
+      `= 주문 총액 ${formatCurrency(input.summary.orderGrossAmount, input.currencyCode)}`,
+      innerX + innerWidth - 194,
+      payoutY + 41,
       {
         width: 176,
         align: 'right',
@@ -406,12 +422,53 @@ function renderGrossSummaryCard(
         lineBreak: false,
       },
     );
+  setPdfFont(doc, 'medium');
+  doc
+    .fontSize(7)
+    .fillColor(PDF_COLORS.muted)
+    .text('배송비 / Shipping', x + 18, y + 78, {
+      width: 82,
+      lineBreak: false,
+    });
+  doc
+    .fontSize(7)
+    .fillColor(PDF_COLORS.inkMuted)
+    .text(
+      formatCurrency(input.summary.shippingAmount, input.currencyCode),
+      x + 96,
+      y + 78,
+      {
+        width: 94,
+        align: 'right',
+        lineBreak: false,
+      },
+    );
+  doc
+    .fontSize(7)
+    .fillColor(PDF_COLORS.muted)
+    .text('주문 총액 / Grand', x + 18, y + 91, {
+      width: 82,
+      lineBreak: false,
+    });
+  doc
+    .fontSize(7)
+    .fillColor(PDF_COLORS.ink)
+    .text(
+      formatCurrency(input.summary.orderGrossAmount, input.currencyCode),
+      x + 96,
+      y + 91,
+      {
+        width: 94,
+        align: 'right',
+        lineBreak: false,
+      },
+    );
   drawTinyMetric(
     doc,
     '판매 건수',
     `${formatNumber(input.summary.saleLineCount)}건`,
     x + 18,
-    y + 88,
+    y + 100,
     78,
   );
   drawTinyMetric(
@@ -419,7 +476,7 @@ function renderGrossSummaryCard(
     '주문 건수',
     `${formatNumber(input.summary.ordersCount)}건`,
     x + 106,
-    y + 88,
+    y + 100,
     78,
   );
 }
@@ -611,13 +668,35 @@ function renderSettlementCard(
   });
 
   setPdfFont(doc, 'semiBold');
+  const orderCompositionAdjustment =
+    input.summary.orderGrossAmount -
+    input.summary.itemGrossAmount -
+    input.summary.shippingAmount;
+  const adjustmentText =
+    orderCompositionAdjustment === 0
+      ? ''
+      : ` ${orderCompositionAdjustment > 0 ? '+' : '−'} 기타 조정 ${formatCurrency(Math.abs(orderCompositionAdjustment), input.currencyCode)}`;
   doc
-    .fontSize(9)
+    .fontSize(8)
     .fillColor('#d7d8cf')
+    .text(
+      `상품매출 ${formatCurrency(input.summary.itemGrossAmount, input.currencyCode)} + 배송비 ${formatCurrency(input.summary.shippingAmount, input.currencyCode)}${adjustmentText} = 주문 총액 ${formatCurrency(input.summary.orderGrossAmount, input.currencyCode)}`,
+      innerX,
+      y + 98,
+      {
+        width: width - 36,
+        align: 'right',
+        lineBreak: false,
+        ellipsis: true,
+      },
+    );
+  doc
+    .fontSize(8)
+    .fillColor(PDF_COLORS.accent)
     .text(
       `결제 매출 ${formatCurrency(input.summary.capturedAmount, input.currencyCode)} - 환불 차감 ${formatCurrency(input.summary.refundAmount, input.currencyCode)} = 순매출 ${formatCurrency(input.summary.netSettlementAmount, input.currencyCode)}`,
       innerX,
-      y + 100,
+      y + 112,
       {
         width: width - 36,
         align: 'right',
@@ -899,7 +978,9 @@ function renderSalesRecordSegment(
     );
     currentY += calculateSalesRecordRowHeight(doc, row, columns);
   });
-  doc.y = y + height + 16;
+  // Keep a small gap between order groups without pushing a footer onto an
+  // otherwise empty trailing page when the final group ends near the bottom.
+  doc.y = y + height + 8;
 }
 
 function createSalesRecordColumns(currencyCode: string): SalesRecordColumn[] {

@@ -4806,6 +4806,8 @@ export type Database = {
           quantity: number | null;
           sales_channel_id: string | null;
           order_grand_total: number | null;
+          order_shipping_amount: number | null;
+          order_shipping_discount_total: number | null;
           product_id: string | null;
           product_name_snapshot: string | null;
           variant_id: string | null;
