@@ -2927,11 +2927,12 @@ export class V2AdminService {
     const { salesItems, financialAllocations, storageMode } =
       await this.loadSalesStatsFacts(dateRange, filters);
 
-    // The persisted sales facts view contains the reconciled line amount and
-    // order grand total. Keep the normal stats request to one sales-facts read
-    // (plus the independent financial-allocation read) instead of re-querying
-    // order items and orders per aggregate. The legacy fallback retains the
-    // old bundle correction for installations before the view migration.
+    // The persisted sales facts view contains the reconciled line amount,
+    // order grand total, and order-level shipping amount. Keep the normal
+    // stats request to one sales-facts read (plus the independent
+    // financial-allocation read) instead of re-querying order items and orders
+    // per aggregate. The legacy fallback retains the old bundle correction for
+    // installations before the view migration.
     const normalizedSalesItems =
       storageMode === 'PERSISTED'
         ? salesItems || []
@@ -2944,7 +2945,11 @@ export class V2AdminService {
       : activeSalesItems;
     const orderGrossByOrderId = new Map<
       string,
-      { grossAmount: number; placedDate: string | null }
+      {
+        grossAmount: number;
+        shippingAmount: number;
+        placedDate: string | null;
+      }
     >();
     for (const row of activeSalesItems) {
       const orderId = this.normalizeOptionalText(row.order_id);
@@ -2954,6 +2959,11 @@ export class V2AdminService {
       const placedAt = this.normalizeOptionalIsoDateTime(row.placed_at);
       orderGrossByOrderId.set(orderId, {
         grossAmount: Number(row.order_grand_total || 0),
+        shippingAmount: Math.max(
+          0,
+          Number(row.order_shipping_amount || 0) -
+            Number(row.order_shipping_discount_total || 0),
+        ),
         placedDate: placedAt ? placedAt.slice(0, 10) : row.placed_date || null,
       });
     }
@@ -2974,6 +2984,10 @@ export class V2AdminService {
       ),
       order_gross_amount: Array.from(orderGrossByOrderId.values()).reduce(
         (sum: number, row) => sum + Number(row.grossAmount || 0),
+        0,
+      ),
+      shipping_amount: Array.from(orderGrossByOrderId.values()).reduce(
+        (sum: number, row) => sum + Number(row.shippingAmount || 0),
         0,
       ),
       captured_amount: financialAllocations
@@ -3019,6 +3033,7 @@ export class V2AdminService {
         item_line_count: 0,
         units_sold: 0,
         item_gross_amount: 0,
+        shipping_amount: orderGross?.shippingAmount || 0,
         order_gross_amount: orderGross?.grossAmount || 0,
         items: [],
       };
@@ -3057,6 +3072,7 @@ export class V2AdminService {
         units_sold: number;
         item_gross_amount: number;
         order_gross_amount: number;
+        shipping_amount: number;
         captured_amount: number;
         refund_amount: number;
       }
@@ -3072,6 +3088,7 @@ export class V2AdminService {
         units_sold: 0,
         item_gross_amount: 0,
         order_gross_amount: 0,
+        shipping_amount: 0,
         captured_amount: 0,
         refund_amount: 0,
       });
@@ -3103,6 +3120,7 @@ export class V2AdminService {
       }
       const daily = dailyMap.get(row.placedDate)!;
       daily.order_gross_amount += Number(row.grossAmount || 0);
+      daily.shipping_amount += Number(row.shippingAmount || 0);
     }
 
     for (const row of financialAllocations) {
@@ -3166,6 +3184,8 @@ export class V2AdminService {
         gross_amount_metrics: {
           order_gross_amount: 'v2_orders.grand_total_sum',
           item_gross_amount: 'v2_order_items.final_line_total_sum',
+          shipping_amount:
+            'v2_orders.shipping_amount - v2_orders.shipping_discount_total',
         },
         allocation_policy_versions: policyVersions,
         capture_policy_version: this.captureAllocationPolicyVersion,
@@ -3278,6 +3298,8 @@ export class V2AdminService {
         saleLineCount,
         unitsSold: Number(stats.summary?.units_sold || 0),
         itemGrossAmount: Number(stats.summary?.item_gross_amount || 0),
+        orderGrossAmount: Number(stats.summary?.order_gross_amount || 0),
+        shippingAmount: Number(stats.summary?.shipping_amount || 0),
         capturedAmount: Number(stats.summary?.captured_amount || 0),
         refundAmount: Number(stats.summary?.refund_amount || 0),
         netSettlementAmount: Number(stats.summary?.net_settlement_amount || 0),
@@ -3288,6 +3310,7 @@ export class V2AdminService {
         orders_count: Number(row.orders_count || 0),
         units_sold: Number(row.units_sold || 0),
         item_gross_amount: Number(row.item_gross_amount || 0),
+        shipping_amount: Number(row.shipping_amount || 0),
         captured_amount: Number(row.captured_amount || 0),
         refund_amount: Number(row.refund_amount || 0),
         net_settlement_amount: Number(row.net_settlement_amount || 0),
@@ -4265,7 +4288,9 @@ export class V2AdminService {
     try {
       await this.syncFinancialEventsFromPayments();
       await this.syncOrderItemFinancialAllocations();
-      const salesItems = await this.fetchSalesItemFacts(dateRange, filters);
+      const salesItems = await this.hydrateSalesItemShippingFacts(
+        await this.fetchSalesItemFacts(dateRange, filters),
+      );
       const financialAllocations = await this.fetchFinancialAllocationFacts(
         dateRange,
         filters,
@@ -4348,6 +4373,73 @@ export class V2AdminService {
     }
 
     return data || [];
+  }
+
+  private async hydrateSalesItemShippingFacts(
+    salesItems: any[],
+  ): Promise<any[]> {
+    if (
+      salesItems.length === 0 ||
+      salesItems.every((row: any) =>
+        Object.prototype.hasOwnProperty.call(
+          row || {},
+          'order_shipping_amount',
+        ),
+      )
+    ) {
+      return salesItems;
+    }
+
+    const orderIds = Array.from(
+      new Set(
+        salesItems
+          .map((row: any) => this.normalizeOptionalText(row?.order_id))
+          .filter((value: string | null): value is string => Boolean(value)),
+      ),
+    );
+    if (orderIds.length === 0) {
+      return salesItems;
+    }
+
+    const { data, error } = await this.supabase
+      .from('v2_orders')
+      .select('id, shipping_amount, shipping_discount_total')
+      .in('id', orderIds);
+    if (error) {
+      throw new ApiException(
+        '주문 배송비 조회 실패',
+        500,
+        'V2_ADMIN_SALES_SHIPPING_FETCH_FAILED',
+      );
+    }
+
+    const shippingByOrderId = new Map<
+      string,
+      { amount: number; discountTotal: number }
+    >(
+      (data || []).map(
+        (row: any): [string, { amount: number; discountTotal: number }] => [
+          row.id,
+          {
+            amount: Number(row.shipping_amount || 0),
+            discountTotal: Number(row.shipping_discount_total || 0),
+          },
+        ],
+      ),
+    );
+    return salesItems.map((row: any) => {
+      if (
+        Object.prototype.hasOwnProperty.call(row || {}, 'order_shipping_amount')
+      ) {
+        return row;
+      }
+      const shipping = shippingByOrderId.get(row.order_id);
+      return {
+        ...row,
+        order_shipping_amount: shipping?.amount || 0,
+        order_shipping_discount_total: shipping?.discountTotal || 0,
+      };
+    });
   }
 
   private async fetchFinancialAllocationFacts(
@@ -4452,6 +4544,8 @@ export class V2AdminService {
           payment_status,
           currency_code,
           grand_total,
+          shipping_amount,
+          shipping_discount_total,
           placed_at
         )
       `,
@@ -4504,6 +4598,10 @@ export class V2AdminService {
       order_id: row.order_id,
       order_no: row.order?.order_no || null,
       order_grand_total: Number(row.order?.grand_total || 0),
+      order_shipping_amount: Number(row.order?.shipping_amount || 0),
+      order_shipping_discount_total: Number(
+        row.order?.shipping_discount_total || 0,
+      ),
       sales_channel_id: row.order?.sales_channel_id || null,
       order_status: row.order?.order_status || null,
       payment_status: row.order?.payment_status || null,
