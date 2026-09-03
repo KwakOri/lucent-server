@@ -3305,16 +3305,6 @@ export class V2AdminService {
         netSettlementAmount: Number(stats.summary?.net_settlement_amount || 0),
         paymentMix,
       },
-      daily: (stats.daily || []).map((row: any) => ({
-        date: row.date,
-        orders_count: Number(row.orders_count || 0),
-        units_sold: Number(row.units_sold || 0),
-        item_gross_amount: Number(row.item_gross_amount || 0),
-        shipping_amount: Number(row.shipping_amount || 0),
-        captured_amount: Number(row.captured_amount || 0),
-        refund_amount: Number(row.refund_amount || 0),
-        net_settlement_amount: Number(row.net_settlement_amount || 0),
-      })),
       sales,
     });
 

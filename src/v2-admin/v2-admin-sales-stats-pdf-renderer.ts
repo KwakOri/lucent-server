@@ -11,17 +11,6 @@ export interface SalesStatsPdfPaymentMix {
   other: number;
 }
 
-export interface SalesStatsPdfDailyRow {
-  date: string;
-  orders_count: number;
-  units_sold: number;
-  item_gross_amount: number;
-  shipping_amount: number;
-  captured_amount: number;
-  refund_amount: number;
-  net_settlement_amount: number;
-}
-
 export interface SalesStatsPdfSaleRecord {
   soldAt: string | null;
   orderNo: string | null;
@@ -52,7 +41,6 @@ export interface SalesStatsPdfInput {
     netSettlementAmount: number;
     paymentMix: SalesStatsPdfPaymentMix;
   };
-  daily: SalesStatsPdfDailyRow[];
   sales: SalesStatsPdfSaleRecord[];
 }
 
@@ -78,12 +66,6 @@ type SalesRecordGroup = {
   rows: SalesStatsPdfSaleRecord[];
   totalAmount: number;
 };
-type DailyChartStat = {
-  label: string;
-  amount: number;
-  count: number;
-};
-
 const PDF_MARGIN = 36;
 const PAGE_BOTTOM_GAP = 28;
 const PDF_COLORS = {
@@ -165,9 +147,6 @@ export function renderSalesStatsPdf(
     renderSectionTitle(doc, '01', '정산 요약', 'SUMMARY');
     renderSummarySection(doc, input);
 
-    ensurePageSpace(doc, 250);
-    renderSectionTitle(doc, '02', '날짜별 통계', 'DAILY');
-    renderDailyStatsGraph(doc, input.daily, input.currencyCode);
     renderSalesRecordsSection(doc, input);
 
     doc.end();
@@ -706,125 +685,6 @@ function renderSettlementCard(
     );
 }
 
-function renderDailyStatsGraph(
-  doc: PDFKit.PDFDocument,
-  dailyRows: SalesStatsPdfDailyRow[],
-  currencyCode: string,
-) {
-  ensurePageSpace(doc, 234);
-
-  const stats = buildDailyChartStats(dailyRows);
-  const chartX = getContentX(doc);
-  const chartY = doc.y;
-  const chartWidth = getContentWidth(doc);
-  const chartHeight = 206;
-  const plotX = chartX + 34;
-  const plotY = chartY + 42;
-  const plotWidth = chartWidth - 68;
-  const plotHeight = 112;
-  const baselineY = plotY + plotHeight;
-  const maxAmount = Math.max(...stats.map((stat) => stat.amount), 0);
-  const totalAmount = stats.reduce((sum, stat) => sum + stat.amount, 0);
-  const totalCount = stats.reduce((sum, stat) => sum + stat.count, 0);
-
-  drawRoundedRect(
-    doc,
-    chartX,
-    chartY,
-    chartWidth,
-    chartHeight,
-    18,
-    PDF_COLORS.white,
-    PDF_COLORS.line,
-  );
-  setPdfFont(doc, 'medium');
-  doc
-    .fontSize(9)
-    .fillColor(PDF_COLORS.muted)
-    .text(
-      `날짜별 정산 기준 순매출 · 합계 ${formatCurrency(totalAmount, currencyCode)} / ${formatNumber(totalCount)}건`,
-      chartX + 22,
-      chartY + 20,
-      {
-        width: chartWidth - 44,
-        ellipsis: true,
-        lineBreak: false,
-      },
-    );
-
-  if (stats.length === 0) {
-    doc
-      .fontSize(13)
-      .fillColor(PDF_COLORS.muted)
-      .text('판매 통계가 없습니다.', chartX + 22, chartY + 102, {
-        width: chartWidth - 44,
-        align: 'center',
-        lineBreak: false,
-      });
-    doc.y = chartY + chartHeight + 28;
-    return;
-  }
-
-  [0, 0.5, 1].forEach((ratio) => {
-    const gridY = baselineY - plotHeight * ratio;
-    doc
-      .lineWidth(0.4)
-      .strokeColor(PDF_COLORS.line)
-      .moveTo(plotX, gridY)
-      .lineTo(plotX + plotWidth, gridY)
-      .stroke();
-  });
-
-  const barSlotWidth = plotWidth / stats.length;
-  const barWidth = Math.min(34, barSlotWidth * 0.42);
-  stats.forEach((stat, index) => {
-    const slotX = plotX + index * barSlotWidth;
-    const barX = slotX + (barSlotWidth - barWidth) / 2;
-    const barHeight =
-      maxAmount > 0
-        ? Math.max((stat.amount / maxAmount) * (plotHeight - 12), 4)
-        : 4;
-    const barY = baselineY - barHeight;
-    const barColor =
-      stat.amount === maxAmount ? PDF_COLORS.accent : PDF_COLORS.dark;
-    drawRoundedRect(doc, barX, barY, barWidth, barHeight, 4, barColor);
-    setPdfFont(doc, 'semiBold');
-    doc
-      .fontSize(8)
-      .fillColor(PDF_COLORS.ink)
-      .text(`${formatNumber(stat.count)}건`, slotX, barY - 13, {
-        width: barSlotWidth,
-        align: 'center',
-        lineBreak: false,
-      });
-    setPdfFont(doc, 'semiBold');
-    doc
-      .fontSize(8)
-      .fillColor(PDF_COLORS.inkMuted)
-      .text(stat.label, slotX, baselineY + 10, {
-        width: barSlotWidth,
-        align: 'center',
-        lineBreak: false,
-      });
-    setPdfFont(doc, 'regular');
-    doc
-      .fontSize(8)
-      .fillColor(PDF_COLORS.muted)
-      .text(
-        formatCompactCurrency(stat.amount, currencyCode),
-        slotX,
-        baselineY + 25,
-        {
-          width: barSlotWidth,
-          align: 'center',
-          lineBreak: false,
-        },
-      );
-  });
-
-  doc.y = chartY + chartHeight + 28;
-}
-
 function renderSalesRecordsSection(
   doc: PDFKit.PDFDocument,
   input: SalesStatsPdfInput,
@@ -832,9 +692,9 @@ function renderSalesRecordsSection(
   ensurePageSpace(doc, 126);
   renderSectionTitle(
     doc,
-    '03',
+    '02',
     '판매 기록',
-    `${formatNumber(input.sales.length)}건`,
+    `${formatNumber(input.sales.length)}건 · 주문일 기준`,
   );
 
   if (input.sales.length === 0) {
@@ -851,7 +711,7 @@ function renderSalesRecordsSection(
     let cursor = 0;
     while (cursor < group.rows.length) {
       if (pageNeedsContinuationTitle) {
-        renderSectionTitle(doc, '03', '판매 기록', '계속');
+        renderSectionTitle(doc, '02', '판매 기록', '계속 · 주문일 기준');
         pageNeedsContinuationTitle = false;
       }
 
@@ -985,7 +845,7 @@ function renderSalesRecordSegment(
 
 function createSalesRecordColumns(currencyCode: string): SalesRecordColumn[] {
   return [
-    { label: '시각', width: 44, render: (row) => formatTime(row.soldAt) },
+    { label: '주문 시각', width: 44, render: (row) => formatTime(row.soldAt) },
     { label: '주문번호', width: 88, render: (row) => row.orderNo || '-' },
     {
       label: '상품',
@@ -1331,48 +1191,27 @@ function buildSalesRecordGroups(
     group.totalAmount += Number(sale.amount || 0);
     groups.set(key, group);
   }
-  return [...groups.values()];
-}
-
-function buildDailyChartStats(rows: SalesStatsPdfDailyRow[]): DailyChartStat[] {
-  const normalized = (rows || [])
-    .filter((row) => row && typeof row.date === 'string')
-    .map((row) => ({
-      date: row.date,
-      amount: Number(row.net_settlement_amount || 0),
-      count: Number(row.orders_count || 0),
-    }))
-    .filter((row) => row.amount !== 0 || row.count !== 0)
-    .sort((left, right) => left.date.localeCompare(right.date));
-  if (normalized.length <= 8) {
-    return normalized.map((row) => ({
-      label: formatDateStatLabel(row.date),
-      amount: row.amount,
-      count: row.count,
+  return [...groups.values()]
+    .sort((left, right) => {
+      if (left.key === 'unknown') {
+        return right.key === 'unknown' ? 0 : 1;
+      }
+      if (right.key === 'unknown') {
+        return -1;
+      }
+      return left.key.localeCompare(right.key);
+    })
+    .map((group) => ({
+      ...group,
+      rows: [...group.rows].sort((left, right) => {
+        const leftTime = Date.parse(left.soldAt || '') || 0;
+        const rightTime = Date.parse(right.soldAt || '') || 0;
+        return (
+          leftTime - rightTime ||
+          (left.orderNo || '').localeCompare(right.orderNo || '')
+        );
+      }),
     }));
-  }
-
-  // A campaign can run for one or two months. Keep the flea_market card
-  // readable while representing the whole range instead of silently dropping
-  // dates after the first eight.
-  const bucketCount = 8;
-  return Array.from({ length: bucketCount }, (_, index) => {
-    const start = Math.floor((index * normalized.length) / bucketCount);
-    const end = Math.floor(((index + 1) * normalized.length) / bucketCount) - 1;
-    const bucket = normalized.slice(start, end + 1);
-    const first = bucket[0];
-    const last = bucket[bucket.length - 1] || first;
-    return {
-      label:
-        first && last && first.date !== last.date
-          ? `${formatMonthDay(first.date)}-${formatMonthDay(last.date)}`
-          : first
-            ? formatMonthDay(first.date)
-            : '-',
-      amount: bucket.reduce((sum, row) => sum + row.amount, 0),
-      count: bucket.reduce((sum, row) => sum + row.count, 0),
-    };
-  });
 }
 
 function getContentX(doc: PDFKit.PDFDocument): number {
@@ -1555,11 +1394,6 @@ function formatDateStatLabel(dateKey: string): string {
   return `${month}.${day} (${weekdayFormatter.format(date)})`;
 }
 
-function formatMonthDay(dateKey: string): string {
-  const [, month, day] = dateKey.split('-');
-  return month && day ? `${month}.${day}` : dateKey;
-}
-
 function formatDateTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -1607,12 +1441,4 @@ function formatCurrency(value: number, currencyCode: string): string {
   } catch {
     return `${formatNumber(value)}원`;
   }
-}
-
-function formatCompactCurrency(value: number, currencyCode: string): string {
-  const rounded = Math.round(Number(value) || 0);
-  if (currencyCode.toUpperCase() === 'KRW' && rounded >= 10000) {
-    return `${(rounded / 10000).toLocaleString('ko-KR', { maximumFractionDigits: 1 })}만원`;
-  }
-  return formatCurrency(rounded, currencyCode);
 }
