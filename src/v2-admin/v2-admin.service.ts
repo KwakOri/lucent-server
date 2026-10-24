@@ -1,5 +1,6 @@
 import { forwardRef, Inject, Injectable } from '@nestjs/common';
 import { ApiException } from '../common/errors/api.exception';
+import { selectInChunks } from '../common/supabase-chunk';
 import { getSupabaseClient } from '../supabase/supabase.client';
 import { V2FulfillmentService } from '../v2-fulfillment/v2-fulfillment.service';
 import {
@@ -2154,10 +2155,12 @@ export class V2AdminService {
       return new Map();
     }
 
-    const { data, error } = await this.supabase
-      .from('v2_orders')
-      .select('id, customer_snapshot, shipping_address_snapshot')
-      .in('id', normalizedOrderIds);
+    const { data, error } = await selectInChunks(normalizedOrderIds, (ids) =>
+      this.supabase
+        .from('v2_orders')
+        .select('id, customer_snapshot, shipping_address_snapshot')
+        .in('id', ids),
+    );
 
     if (error) {
       throw new ApiException(
@@ -2245,14 +2248,17 @@ export class V2AdminService {
       return new Map();
     }
 
-    const { data, error } = await this.supabase
-      .from('v2_order_items')
-      .select(
-        'id, order_id, line_type, quantity, product_name_snapshot, variant_name_snapshot, final_line_total, created_at',
-      )
-      .in('order_id', normalizedOrderIds)
-      .in('line_type', ['STANDARD', 'BUNDLE_PARENT'])
-      .order('created_at', { ascending: true });
+    // 주문 ID로 나눠 조회한다. 한 주문의 항목은 한 청크에 모이므로 주문 안 created_at 순서는 같다.
+    const { data, error } = await selectInChunks(normalizedOrderIds, (ids) =>
+      this.supabase
+        .from('v2_order_items')
+        .select(
+          'id, order_id, line_type, quantity, product_name_snapshot, variant_name_snapshot, final_line_total, created_at',
+        )
+        .in('order_id', ids)
+        .in('line_type', ['STANDARD', 'BUNDLE_PARENT'])
+        .order('created_at', { ascending: true }),
+    );
 
     if (error) {
       throw new ApiException(
@@ -5037,12 +5043,17 @@ export class V2AdminService {
       return;
     }
 
-    const { data: orderItems, error: itemsError } = await this.supabase
-      .from('v2_order_items')
-      .select('id, order_id, line_type, quantity, final_line_total')
-      .in('order_id', orderIds)
-      .in('line_type', ['STANDARD', 'BUNDLE_PARENT'])
-      .order('id', { ascending: true });
+    // 주문 ID로 나눠 조회한다. 한 주문의 항목은 한 청크에 모이므로 배분에 쓰는 주문 안 id 순서는 같다.
+    const { data: orderItems, error: itemsError } = await selectInChunks(
+      orderIds,
+      (ids) =>
+        this.supabase
+          .from('v2_order_items')
+          .select('id, order_id, line_type, quantity, final_line_total')
+          .in('order_id', ids)
+          .in('line_type', ['STANDARD', 'BUNDLE_PARENT'])
+          .order('id', { ascending: true }),
+    );
 
     if (itemsError) {
       throw new ApiException(
@@ -5069,10 +5080,12 @@ export class V2AdminService {
     }
 
     const { data: existingAllocations, error: existingError } =
-      await this.supabase
-        .from('v2_order_item_financial_allocations')
-        .select('financial_event_id, order_item_id, allocated_amount')
-        .in('financial_event_id', eventIds);
+      await selectInChunks(eventIds, (ids) =>
+        this.supabase
+          .from('v2_order_item_financial_allocations')
+          .select('financial_event_id, order_item_id, allocated_amount')
+          .in('financial_event_id', ids),
+      );
 
     if (existingError) {
       throw new ApiException(
