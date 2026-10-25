@@ -608,3 +608,91 @@ describe('V2AdminService 매출 allocation 동기화 청크', () => {
     ).toBe(7000);
   });
 });
+
+function buildPaymentTables(orderCount: number): Record<string, Row[]> {
+  const statuses = ['CAPTURED', 'PENDING', 'PARTIALLY_REFUNDED', 'REFUNDED'];
+  const payments: Row[] = [];
+  for (let order = 1; order <= orderCount; order += 1) {
+    for (let index = 0; index < 2; index += 1) {
+      const sequence = payments.length + 1;
+      payments.push({
+        id: `50000000-0000-4000-8000-${String(sequence).padStart(12, '0')}`,
+        order_id: orderId(order),
+        status: statuses[sequence % statuses.length],
+        method: 'CARD',
+        amount: 1000 * order,
+        currency_code: 'KRW',
+        refunded_total: 0,
+        captured_at: '2026-10-10T00:00:00.000Z',
+        updated_at: '2026-10-10T00:00:00.000Z',
+        created_at: '2026-10-10T00:00:00.000Z',
+      });
+    }
+  }
+  return { v2_payments: payments };
+}
+
+describe('V2AdminService 결제 fallback 조회 청크 (OPS-33)', () => {
+  const STATUSES = ['CAPTURED', 'PARTIALLY_REFUNDED', 'REFUNDED'];
+  const settledOf = (tables: Record<string, Row[]>, ids: string[]) =>
+    tables.v2_payments.filter(
+      (row) => ids.includes(row.order_id) && STATUSES.includes(row.status),
+    );
+
+  it('주문 240건(URL 한도 초과)도 100건씩 나눠 결제 행을 모두 돌려준다', async () => {
+    const tables = buildPaymentTables(240);
+    const fake = createFakeSupabase({ tables });
+    const service = createAdminService(fake);
+    const ids = Array.from({ length: 240 }, (_, index) => orderId(index + 1));
+
+    const payments = await (service as any).fetchPaymentsByOrderIds(ids);
+
+    expect(payments).toEqual(settledOf(tables, ids));
+    expect(payments).toHaveLength(360);
+    const calls = callsTo(fake, 'v2_payments');
+    expect(calls).toHaveLength(3);
+    for (const call of calls) {
+      expect(call.urlLength).toBeLessThanOrEqual(FAKE_URL_LIMIT);
+      expect(call.filters[1]).toEqual({
+        op: 'in',
+        column: 'status',
+        values: STATUSES,
+      });
+    }
+    expect(
+      calls.map(
+        (call) => (call.filters[0] as { values: unknown[] }).values.length,
+      ),
+    ).toEqual([100, 100, 40]);
+  });
+
+  it('주문 100건 이하는 기존과 같은 요청 한 번이다', async () => {
+    const tables = buildPaymentTables(100);
+    const fake = createFakeSupabase({ tables });
+    const service = createAdminService(fake);
+    const ids = Array.from({ length: 100 }, (_, index) => orderId(index + 1));
+
+    const payments = await (service as any).fetchPaymentsByOrderIds(ids);
+
+    expect(payments).toEqual(settledOf(tables, ids));
+    expect(callsTo(fake, 'v2_payments').map((call) => call.filters)).toEqual([
+      [
+        { op: 'in', column: 'order_id', values: ids },
+        { op: 'in', column: 'status', values: STATUSES },
+      ],
+    ]);
+  });
+
+  it('청크 조회가 실패하면 기존 오류 코드로 끝난다', async () => {
+    const fake = createFakeSupabase({
+      tables: buildPaymentTables(240),
+      fail: { v2_payments: 0 },
+    });
+    const service = createAdminService(fake);
+    const ids = Array.from({ length: 240 }, (_, index) => orderId(index + 1));
+
+    await expect(
+      captureErrorCode((service as any).fetchPaymentsByOrderIds(ids)),
+    ).resolves.toBe('V2_ADMIN_PAYMENTS_FALLBACK_FETCH_FAILED');
+  });
+});

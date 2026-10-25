@@ -4683,13 +4683,16 @@ export class V2AdminService {
       return [];
     }
 
-    const { data, error } = await this.supabase
-      .from('v2_payments')
-      .select(
-        'id, order_id, status, method, amount, currency_code, refunded_total, captured_at, updated_at, created_at',
-      )
-      .in('order_id', orderIds)
-      .in('status', ['CAPTURED', 'PARTIALLY_REFUNDED', 'REFUNDED']);
+    // 주문이 많으면 in() 한 번은 URL 한도(414)에 걸린다(OPS-33). 주문 ID로 나눠 조회한다.
+    const { data, error } = await selectInChunks(orderIds, (ids) =>
+      this.supabase
+        .from('v2_payments')
+        .select(
+          'id, order_id, status, method, amount, currency_code, refunded_total, captured_at, updated_at, created_at',
+        )
+        .in('order_id', ids)
+        .in('status', ['CAPTURED', 'PARTIALLY_REFUNDED', 'REFUNDED']),
+    );
 
     if (error) {
       throw new ApiException(
