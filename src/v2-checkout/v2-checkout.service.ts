@@ -626,10 +626,12 @@ export class V2CheckoutService {
 
     void this.commerceNotificationsService.notifyOrderPlaced(order);
 
+    const resultOrder = await this.confirmZeroAmountDigitalOrder(order);
+
     return {
       idempotent_replayed: false,
       quote_reference: quote?.quote_reference || null,
-      order,
+      order: resultOrder,
     };
   }
 
@@ -1818,6 +1820,58 @@ export class V2CheckoutService {
         `payment callback entitlement ensure skipped: order_id=${input.orderId}, order_no=${input.orderNo || '-'}, payment_status=${input.callbackStatus}, external_reference=${input.externalReference}, reason=${message}`,
       );
     }
+  }
+
+  // 결제할 금액이 0원인 디지털 전용 주문은 입금 확인을 기다리지 않고, 관리자 입금 확인과 같은
+  // 결제 콜백 경로로 결제 확정과 디지털 권한 발급까지 진행한다. 실패하면 주문은 입금 대기로 남긴다.
+  private async confirmZeroAmountDigitalOrder(order: any): Promise<any> {
+    if (!this.isZeroAmountDigitalOnlyOrder(order)) {
+      return order;
+    }
+
+    const orderId = order.id as string;
+    try {
+      return await this.applyPaymentCallback(orderId, {
+        status: 'CAPTURED',
+        provider: 'FREE',
+        amount: 0,
+        external_reference: `ZERO-AMOUNT-${orderId}`,
+        metadata: {
+          source: 'V2_CHECKOUT_ZERO_AMOUNT_ORDER',
+        },
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : '알 수 없는 오류';
+      this.logger.warn(
+        `zero amount order auto confirm skipped: order_id=${orderId}, order_no=${this.normalizeOptionalText(order.order_no) || '-'}, reason=${message}`,
+      );
+      return order;
+    }
+  }
+
+  private isZeroAmountDigitalOnlyOrder(order: any): boolean {
+    if (order?.grand_total !== 0) {
+      return false;
+    }
+
+    const items = Array.isArray(order?.items) ? (order.items as any[]) : [];
+    const actionableItems = items.filter((item) => {
+      if (this.normalizeOptionalText(item?.line_type) === 'BUNDLE_PARENT') {
+        return false;
+      }
+      const lineStatus = this.normalizeOptionalText(item?.line_status);
+      return lineStatus !== 'CANCELED' && lineStatus !== 'REFUNDED';
+    });
+
+    return (
+      actionableItems.length > 0 &&
+      actionableItems.every(
+        (item) =>
+          this.normalizeOptionalText(item?.fulfillment_type_snapshot) ===
+            'DIGITAL' && item?.requires_shipping_snapshot !== true,
+      )
+    );
   }
 
   private async reserveTrackedInventoryForOrderItems(
