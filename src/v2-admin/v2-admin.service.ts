@@ -3830,8 +3830,11 @@ export class V2AdminService {
       this.getShippingBatchStatusCounts(),
     ]);
 
+    const digitalGrantedOrderIds =
+      await this.fetchDashboardDigitalGrantedOrderIds(orderQueue.items || []);
     const orderStageCounts = this.buildDashboardOrderStageCounts(
       orderQueue.items || [],
+      digitalGrantedOrderIds,
     );
     const paymentPendingCount = Number(orderStageCounts.PAYMENT_PENDING || 0);
     const readyToShipCount = Number(orderStageCounts.READY_TO_SHIP || 0);
@@ -3903,7 +3906,72 @@ export class V2AdminService {
     };
   }
 
-  private buildDashboardOrderStageCounts(rows: any[]): Record<string, number> {
+  // 결제 확정·미완료 디지털 전용 주문 중 권한이 1건 이상이고 모두 GRANTED인 주문 ID.
+  // 주문 관리 판정(V2AdminOrderTransitionService.resolveCurrentStage)과 같은 기준이다.
+  private async fetchDashboardDigitalGrantedOrderIds(
+    rows: any[],
+  ): Promise<Set<string>> {
+    const candidateOrderIds = Array.from(
+      new Set(
+        (rows || [])
+          .filter(
+            (row) =>
+              row?.has_digital === true &&
+              row?.has_physical !== true &&
+              this.resolveDashboardOrderStage(row) === 'PRODUCTION',
+          )
+          .map((row) => this.normalizeOptionalUuid(row?.order_id))
+          .filter((orderId): orderId is string => Boolean(orderId)),
+      ),
+    );
+    if (candidateOrderIds.length === 0) {
+      return new Set();
+    }
+
+    // 주문당 권한 행이 20개를 넘어도 청크 결과가 max_rows(1000)에 잘리지 않게 50건씩 나눈다.
+    const { data, error } = await selectInChunks(
+      candidateOrderIds,
+      (ids) =>
+        this.supabase
+          .from('v2_digital_entitlements')
+          .select('order_id, status')
+          .in('order_id', ids),
+      { chunkSize: 50 },
+    );
+    if (error) {
+      throw new ApiException(
+        '대시보드 entitlement 조회 실패',
+        500,
+        'V2_ADMIN_DASHBOARD_ENTITLEMENT_FETCH_FAILED',
+      );
+    }
+
+    const allGrantedByOrderId = new Map<string, boolean>();
+    for (const row of data || []) {
+      const orderId = this.normalizeOptionalUuid(row.order_id);
+      if (!orderId) {
+        continue;
+      }
+      const isGranted = String(row.status || '').toUpperCase() === 'GRANTED';
+      allGrantedByOrderId.set(
+        orderId,
+        (allGrantedByOrderId.get(orderId) ?? true) && isGranted,
+      );
+    }
+
+    const grantedOrderIds = new Set<string>();
+    for (const [orderId, allGranted] of allGrantedByOrderId) {
+      if (allGranted) {
+        grantedOrderIds.add(orderId);
+      }
+    }
+    return grantedOrderIds;
+  }
+
+  private buildDashboardOrderStageCounts(
+    rows: any[],
+    digitalGrantedOrderIds?: ReadonlySet<string>,
+  ): Record<string, number> {
     const counts: Record<string, number> = {
       PAYMENT_PENDING: 0,
       PAYMENT_CONFIRMED: 0,
@@ -3915,7 +3983,10 @@ export class V2AdminService {
     };
 
     for (const row of rows || []) {
-      const stage = this.resolveDashboardOrderStage(row);
+      const stage = this.resolveDashboardOrderStage(
+        row,
+        digitalGrantedOrderIds,
+      );
       counts[stage] = Number(counts[stage] || 0) + 1;
     }
 
@@ -3924,6 +3995,7 @@ export class V2AdminService {
 
   private resolveDashboardOrderStage(
     row: any,
+    digitalGrantedOrderIds?: ReadonlySet<string>,
   ):
     | 'PAYMENT_PENDING'
     | 'PAYMENT_CONFIRMED'
@@ -3943,6 +4015,11 @@ export class V2AdminService {
       this.isDashboardCanceledStatus(paymentStatus) ||
       this.isDashboardCanceledStatus(fulfillmentStatus)
     ) {
+      return 'CANCELED';
+    }
+
+    // 전액 환불은 주문 상태가 CONFIRMED로 남고 항목이 모두 REFUNDED라 취소로 센다.
+    if (paymentStatus === 'REFUNDED') {
       return 'CANCELED';
     }
 
@@ -3989,6 +4066,10 @@ export class V2AdminService {
 
     if (hasDigital) {
       if (orderStatus === 'COMPLETED' || fulfillmentStatus === 'FULFILLED') {
+        return 'DELIVERED';
+      }
+      const orderId = this.normalizeOptionalUuid(row?.order_id);
+      if (orderId && digitalGrantedOrderIds?.has(orderId)) {
         return 'DELIVERED';
       }
       return 'PRODUCTION';
