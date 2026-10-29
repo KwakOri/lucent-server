@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ApiException } from '../common/errors/api.exception';
+import { selectInChunks } from '../common/supabase-chunk';
 import { createPresignedDownloadUrlFromR2 } from '../images/r2.util';
 import { CommerceNotificationsService } from '../notifications/commerce-notifications.service';
 import { getSupabaseClient } from '../supabase/supabase.client';
@@ -697,9 +698,18 @@ export class V2CheckoutService {
       };
     }
 
-    const items = await Promise.all(
-      orderIds.map((orderId: string) => this.fetchOrderAggregate(orderId)),
-    );
+    const [orders, entitlementSummaryByOrderId] = await Promise.all([
+      Promise.all(
+        orderIds.map((orderId: string) => this.fetchOrderAggregate(orderId)),
+      ),
+      this.fetchDigitalEntitlementSummariesByOrderIds(orderIds),
+    ]);
+    const items = orders.map((order: any) => ({
+      ...order,
+      digital_entitlement_summary: entitlementSummaryByOrderId
+        ? entitlementSummaryByOrderId.get(order.id) || { total: 0, granted: 0 }
+        : null,
+    }));
 
     const total = count || items.length;
     return {
@@ -709,6 +719,58 @@ export class V2CheckoutService {
       page,
       totalPages: total > 0 ? Math.ceil(total / limit) : 1,
     };
+  }
+
+  // 주문 목록 화면이 디지털 주문 완료를 판정할 수 있게 주문별 권한 행 수와 GRANTED 수를 센다.
+  // 집합은 주문 관리 판정(resolveCurrentStage)과 같이 상태와 상관없이 그 주문의 권한 행 전부다.
+  // 조회가 실패하면 목록은 그대로 응답하고 null을 돌려준다(화면은 기존 규칙으로 판정한다).
+  private async fetchDigitalEntitlementSummariesByOrderIds(
+    orderIds: string[],
+  ): Promise<Map<string, { total: number; granted: number }> | null> {
+    let rows: any[];
+    try {
+      // 주문당 권한 행이 20개를 넘어도 청크 결과가 max_rows(1000)에 잘리지 않게 50건씩 나눈다.
+      const { data, error } = await selectInChunks(
+        orderIds,
+        (ids) =>
+          this.supabase
+            .from('v2_digital_entitlements')
+            .select('order_id, status')
+            .in('order_id', ids),
+        { chunkSize: 50 },
+      );
+      if (error) {
+        throw new Error(
+          this.normalizeOptionalText(error.message) || '알 수 없는 오류',
+        );
+      }
+      rows = data || [];
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : '알 수 없는 오류';
+      this.logger.warn(
+        `V2_ORDERS_ENTITLEMENT_SUMMARY_FETCH_FAILED: order list entitlement summary skipped: order_count=${orderIds.length}, reason=${message}`,
+      );
+      return null;
+    }
+
+    const summaryByOrderId = new Map<
+      string,
+      { total: number; granted: number }
+    >();
+    for (const row of rows) {
+      const orderId = this.normalizeOptionalText(row.order_id);
+      if (!orderId) {
+        continue;
+      }
+      const summary = summaryByOrderId.get(orderId) || { total: 0, granted: 0 };
+      summary.total += 1;
+      if (String(row.status || '').toUpperCase() === 'GRANTED') {
+        summary.granted += 1;
+      }
+      summaryByOrderId.set(orderId, summary);
+    }
+    return summaryByOrderId;
   }
 
   async getOrderById(orderId: string, profileId: string): Promise<any> {
