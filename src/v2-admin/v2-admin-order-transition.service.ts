@@ -167,11 +167,19 @@ export class V2AdminOrderTransitionService {
     const actor = this.normalizeActor(input.actor);
     const requestedAt = new Date().toISOString();
 
-    const ordersById = await this.fetchOrdersById(orderIds);
-    let queueByOrderId = await this.fetchOrderQueueByOrderId(orderIds);
-    let shipmentsByOrderId = await this.fetchShipmentsByOrderId(orderIds);
-    const entitlementsByOrderId =
-      await this.fetchEntitlementsByOrderId(orderIds);
+    // 서로 독립인 읽기 4개를 함께 시작한다. 여러 개가 실패하면 순차 실행 때와 같은
+    // 오류가 나가도록 orders → queue → shipments → entitlements 순서로 꺼낸다.
+    const [ordersResult, queueResult, shipmentsResult, entitlementsResult] =
+      await Promise.allSettled([
+        this.fetchOrdersById(orderIds),
+        this.fetchOrderQueueByOrderId(orderIds),
+        this.fetchShipmentsByOrderId(orderIds),
+        this.fetchEntitlementsByOrderId(orderIds),
+      ]);
+    const ordersById = this.unwrapSettled(ordersResult);
+    let queueByOrderId = this.unwrapSettled(queueResult);
+    let shipmentsByOrderId = this.unwrapSettled(shipmentsResult);
+    const entitlementsByOrderId = this.unwrapSettled(entitlementsResult);
     let shipmentBootstrapErrors = new Map<string, string>();
 
     if (
@@ -1907,6 +1915,13 @@ export class V2AdminOrderTransitionService {
       email: this.normalizeOptionalText(actor?.email || null),
       isLocalBypass: Boolean(actor?.isLocalBypass),
     };
+  }
+
+  private unwrapSettled<T>(result: PromiseSettledResult<T>): T {
+    if (result.status === 'rejected') {
+      throw result.reason;
+    }
+    return result.value;
   }
 
   private async fetchOrdersById(orderIds: string[]): Promise<Map<string, any>> {

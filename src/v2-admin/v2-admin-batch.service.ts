@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { existsSync } from 'fs';
 import * as PDFDocument from 'pdfkit';
 import { ApiException } from '../common/errors/api.exception';
+import { selectInChunks } from '../common/supabase-chunk';
 import { getSupabaseClient } from '../supabase/supabase.client';
 import { V2AdminActionActor } from './v2-admin-action-executor.service';
 import { V2AdminOrderTransitionService } from './v2-admin-order-transition.service';
@@ -141,17 +142,11 @@ export class V2AdminBatchService {
     const projectId = this.normalizeOptionalUuid(params.projectId);
     const campaignId = this.normalizeOptionalUuid(params.campaignId);
 
-    const [rows, reservedOrderIds] = await Promise.all([
+    const [{ rows, orderScopeResult }, reservedOrderIds] = await Promise.all([
       this.fetchQueueRows(limit),
       this.fetchReservedProductionCandidateOrderIds(),
     ]);
-    const orderScopeByOrderId = await this.fetchOrderScopeByOrderIds(
-      rows
-        .map((row) => this.normalizeOptionalUuid(row.order_id))
-        .filter((orderId: string | null): orderId is string =>
-          Boolean(orderId),
-        ),
-    );
+    const orderScopeByOrderId = this.unwrapSettled(orderScopeResult);
 
     const items = rows
       .filter(
@@ -1155,17 +1150,11 @@ export class V2AdminBatchService {
     const campaignId = this.normalizeOptionalUuid(params.campaignId);
     const includeReserved = params.includeReserved === true;
 
-    const [rows, reservedOrderIds] = await Promise.all([
+    const [{ rows, orderScopeResult }, reservedOrderIds] = await Promise.all([
       this.fetchQueueRows(limit),
       this.fetchReservedShippingCandidateOrderIds(),
     ]);
-    const orderScopeByOrderId = await this.fetchOrderScopeByOrderIds(
-      rows
-        .map((row) => this.normalizeOptionalUuid(row.order_id))
-        .filter((orderId: string | null): orderId is string =>
-          Boolean(orderId),
-        ),
-    );
+    const orderScopeByOrderId = this.unwrapSettled(orderScopeResult);
 
     const items = rows
       .filter((row) => this.resolveStageFromQueueRow(row) === 'READY_TO_SHIP')
@@ -3704,7 +3693,10 @@ export class V2AdminBatchService {
     return `${uniqueProjectNames[0]} 외 ${uniqueProjectNames.length - 1}`;
   }
 
-  private async fetchQueueRows(limit: number): Promise<QueueRow[]> {
+  private async fetchQueueRows(limit: number): Promise<{
+    rows: QueueRow[];
+    orderScopeResult: PromiseSettledResult<Map<string, OrderScopeContext>>;
+  }> {
     const { data, error } = await this.supabase
       .from('v2_admin_order_queue_view')
       .select('*')
@@ -3724,18 +3716,33 @@ export class V2AdminBatchService {
       .map((row) => this.normalizeOptionalUuid(row.order_id))
       .filter((orderId: string | null): orderId is string => Boolean(orderId));
 
-    const depositorNameByOrderId =
-      await this.fetchOrderDepositorNameByOrderIds(orderIds);
+    // 입금자명과 주문 범위(항목)는 서로 독립인 읽기라 함께 시작한다. 범위 조회 오류는
+    // 호출처가 잠금 배치 조회 뒤에 꺼내 순차 실행 때와 같은 오류가 나가게 한다.
+    const [depositorResult, orderScopeResult] = await Promise.allSettled([
+      this.fetchOrderDepositorNameByOrderIds(orderIds),
+      this.fetchOrderScopeByOrderIds(orderIds),
+    ]);
+    const depositorNameByOrderId = this.unwrapSettled(depositorResult);
 
-    return rows.map((row) => {
-      const orderId = this.normalizeOptionalUuid(row.order_id);
-      return {
-        ...row,
-        depositor_name: orderId
-          ? depositorNameByOrderId.get(orderId) || null
-          : null,
-      };
-    });
+    return {
+      rows: rows.map((row) => {
+        const orderId = this.normalizeOptionalUuid(row.order_id);
+        return {
+          ...row,
+          depositor_name: orderId
+            ? depositorNameByOrderId.get(orderId) || null
+            : null,
+        };
+      }),
+      orderScopeResult,
+    };
+  }
+
+  private unwrapSettled<T>(result: PromiseSettledResult<T>): T {
+    if (result.status === 'rejected') {
+      throw result.reason;
+    }
+    return result.value;
   }
 
   private isReservedCandidateOrder(
@@ -3984,22 +3991,25 @@ export class V2AdminBatchService {
       return new Map();
     }
 
-    const { data, error } = await this.supabase
-      .from('v2_order_items')
-      .select(
-        [
-          'order_id',
-          'project_id_snapshot',
-          'project_name_snapshot',
-          'campaign_id_snapshot',
-          'campaign_name_snapshot',
-          'display_snapshot',
-          'line_status',
-          'created_at',
-        ].join(', '),
-      )
-      .in('order_id', normalizedOrderIds)
-      .order('created_at', { ascending: true });
+    // 주문 ID로 나눠 조회한다. 한 주문의 항목은 한 청크에 모이므로 주문 안 created_at 순서는 같다.
+    const { data, error } = await selectInChunks(normalizedOrderIds, (ids) =>
+      this.supabase
+        .from('v2_order_items')
+        .select(
+          [
+            'order_id',
+            'project_id_snapshot',
+            'project_name_snapshot',
+            'campaign_id_snapshot',
+            'campaign_name_snapshot',
+            'display_snapshot',
+            'line_status',
+            'created_at',
+          ].join(', '),
+        )
+        .in('order_id', ids)
+        .order('created_at', { ascending: true }),
+    );
 
     if (error) {
       throw new ApiException(
@@ -4212,10 +4222,12 @@ export class V2AdminBatchService {
       return new Map();
     }
 
-    const { data, error } = await this.supabase
-      .from('v2_orders')
-      .select('id, customer_snapshot, shipping_address_snapshot')
-      .in('id', normalizedOrderIds);
+    const { data, error } = await selectInChunks(normalizedOrderIds, (ids) =>
+      this.supabase
+        .from('v2_orders')
+        .select('id, customer_snapshot, shipping_address_snapshot')
+        .in('id', ids),
+    );
 
     if (error) {
       throw new ApiException(
